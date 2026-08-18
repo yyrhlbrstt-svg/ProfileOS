@@ -160,7 +160,13 @@ class SectionProperties(BaseModel):
         def fmt(value: float | None, digits: int = 2) -> str:
             if value is None:
                 return "—"
-            if value != 0 and (abs(value) >= 1e7 or abs(value) < 1e-3):
+            # Symmetric sections give I_xy and theta as floating-point dust
+            # (~1e-13) rather than exact zero. Showing that as "1.005e-13"
+            # implies a precision that is not there and reads as a defect, so
+            # anything that small relative to the section is simply zero.
+            if abs(value) < 1e-9:
+                return "0"
+            if abs(value) >= 1e7 or abs(value) < 1e-3:
                 return f"{value:.{digits}e}"
             return f"{value:,.{digits}f}"
 
