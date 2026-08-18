@@ -30,6 +30,7 @@ sections, which is why it is only a fallback.
 from __future__ import annotations
 
 import math
+import warnings
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -134,13 +135,22 @@ def torsion_fea(
     except Exception:  # noqa: BLE001 - purely informational
         pass
 
+    # sectionproperties reports problems (notably a disjoint section, where the
+    # warping solution is not physically meaningful) as warnings rather than
+    # exceptions. Capturing them keeps that judgement attached to the result
+    # instead of scrolling past on stderr.
+    captured: list[str] = []
+
     j_value: float
     cw_value: float | None = None
     shear_centre: tuple[float, float] | None = None
 
     if compute_warping:
         try:
-            section.calculate_warping_properties()
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                section.calculate_warping_properties()
+                captured.extend(str(w.message).strip() for w in caught)
             j_value = float(section.get_j())
             cw_value = float(section.get_gamma())
             sc_x, sc_y = section.get_sc()
@@ -156,10 +166,28 @@ def torsion_fea(
                 raise WarpingAnalysisError(f"Torsion solve failed: {inner}") from inner
     else:
         try:
-            section.calculate_warping_properties()
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                section.calculate_warping_properties()
+                captured.extend(str(w.message).strip() for w in caught)
             j_value = float(section.get_j())
         except Exception as exc:  # noqa: BLE001
             raise WarpingAnalysisError(f"Torsion solve failed: {exc}") from exc
+
+    # A disjoint section has no single warping solution, so C_w and the shear
+    # centre are dropped rather than reported as if they meant something. J
+    # remains valid: it is the sum of the parts' individual torsion constants.
+    disjoint = any("disjoint" in message.lower() for message in captured)
+    if disjoint:
+        cw_value = None
+        shear_centre = None
+        warnings_out.append(
+            "Section has disconnected regions, so the warping constant and shear "
+            "centre are undefined; J is the sum of the separate regions."
+        )
+    warnings_out.extend(
+        message.replace("\n", " ") for message in captured if "disjoint" not in message.lower()
+    )
 
     _log.info(
         "FEA torsion: J = %.4g mm^4, C_w = %s, %s elements",

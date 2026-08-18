@@ -314,3 +314,35 @@ class TestMemberChecks:
         )
         # Fixing both ends cuts the mid-span moment and deflection sharply.
         assert fixed.max_utilisation < simple.max_utilisation
+
+
+class TestDisjointSectionWarping:
+    """A section in disconnected parts has no single warping solution."""
+
+    @pytest.fixture(scope="class")
+    def disjoint(self):
+        from shapely.geometry import MultiPolygon, Polygon
+
+        left = Polygon([(0, 0), (40, 0), (40, 100), (0, 100)])
+        right = Polygon([(80, 0), (120, 0), (120, 100), (80, 100)])
+        return analyse_section(MultiPolygon([left, right]))
+
+    def test_torsion_constant_is_still_reported(self, disjoint):
+        # J is additive across disconnected parts, so it remains meaningful.
+        assert disjoint.j is not None and disjoint.j > 0
+
+    def test_warping_constant_is_withheld(self, disjoint):
+        assert disjoint.cw is None
+        assert disjoint.shear_centre_x is None
+
+    def test_the_reason_is_recorded(self, disjoint):
+        assert any("disconnected" in w for w in disjoint.warnings)
+
+    def test_connected_section_still_gets_a_warping_result(self):
+        polygon = Polygon(
+            [(0, 0), (50, 0), (50, 50), (0, 50)], [[(3, 3), (47, 3), (47, 47), (3, 47)]]
+        )
+        props = analyse_section(polygon)
+        assert props.cw is not None
+        assert props.shear_centre_x is not None
+        assert not any("disconnected" in w for w in props.warnings)
