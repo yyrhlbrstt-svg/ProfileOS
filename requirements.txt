@@ -22,6 +22,7 @@ matplotlib>=3.8
 # Headless service API
 fastapi>=0.110
 uvicorn>=0.27
+python-multipart>=0.0.9
 
 # Development
 pytest>=8.0
