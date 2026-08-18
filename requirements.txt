@@ -25,3 +25,6 @@ uvicorn>=0.27
 
 # Development
 pytest>=8.0
+
+# Shop-floor QR labels
+segno>=1.5
