@@ -17,6 +17,7 @@ from .hotreload import (
     HotReloadManager,
     PluginContext,
     PluginLoader,
+    register_builtin_schemas,
     validate_plugin_source,
 )
 from .logging_setup import configure_logging, get_logger, set_level
@@ -42,6 +43,7 @@ __all__ = [
     "HotReloadManager",
     "PluginContext",
     "PluginLoader",
+    "register_builtin_schemas",
     "validate_plugin_source",
     "configure_logging",
     "get_logger",

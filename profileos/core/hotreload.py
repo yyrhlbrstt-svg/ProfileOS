@@ -271,8 +271,31 @@ class DataSchemaRegistry:
         return sorted(self._schemas)
 
 
-#: Data-plugin schemas, populated by the engines at import time.
+#: Data-plugin schemas, populated by :func:`register_builtin_schemas`.
 DATA_SCHEMAS = DataSchemaRegistry()
+
+_BUILTIN_SCHEMAS_REGISTERED = False
+
+
+def register_builtin_schemas() -> None:
+    """Register the data-plugin schemas the shipped engines understand.
+
+    Imported lazily and once: the schemas live in the engine packages (so each
+    owns its own document shape), but the loader is what needs them, and
+    importing every engine at core-import time would make ``profileos.core``
+    drag in shapely, OR-Tools and the rest.
+    """
+    global _BUILTIN_SCHEMAS_REGISTERED
+    if _BUILTIN_SCHEMAS_REGISTERED:
+        return
+
+    from ..elements.rules import SYSTEM_RULES_SCHEMA
+    from ..plumbing.pipes import PIPE_CATALOGUE_SCHEMA
+    from ..quoting.suppliers import PRICE_LIST_SCHEMA
+
+    for schema in (SYSTEM_RULES_SCHEMA, PRICE_LIST_SCHEMA, PIPE_CATALOGUE_SCHEMA):
+        DATA_SCHEMAS.register(schema)
+    _BUILTIN_SCHEMAS_REGISTERED = True
 
 
 def _xml_to_dict(element: ET.Element) -> Any:
@@ -383,6 +406,7 @@ class PluginLoader:
     """Loads, validates and reloads plugins from disk."""
 
     def __init__(self, settings: Settings | None = None, *, strict: bool = True) -> None:
+        register_builtin_schemas()
         self.settings = settings or get_settings()
         #: When strict, a rejected plugin raises; otherwise it is logged and skipped.
         self.strict = strict
@@ -737,6 +761,7 @@ __all__ = [
     "DataSchema",
     "DataSchemaRegistry",
     "DATA_SCHEMAS",
+    "register_builtin_schemas",
     "load_data_document",
     "PluginContext",
     "LoadedPlugin",
