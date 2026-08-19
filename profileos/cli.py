@@ -52,6 +52,7 @@ update_app = typer.Typer(help="Signed content updates.")
 licence_app = typer.Typer(help="Hardware authentication and licensing.")
 schema_app = typer.Typer(help="JSON Schemas for every document the suite reads.")
 systems_app = typer.Typer(help="Which profile systems exist, and how far each is trusted.")
+draw_app = typer.Typer(help="Shop drawings: elevations, wall sections and sheets.")
 
 app.add_typer(geometry_app, name="section")
 app.add_typer(nest_app, name="nest")
@@ -68,6 +69,7 @@ app.add_typer(update_app, name="update")
 app.add_typer(licence_app, name="licence")
 app.add_typer(schema_app, name="schema")
 app.add_typer(systems_app, name="systems")
+app.add_typer(draw_app, name="draw")
 
 
 # --------------------------------------------------------------------------- #
@@ -735,6 +737,152 @@ def pipe_catalogues() -> None:
             str(len(catalogue.sizes)), f"{catalogue.effective_roughness:g} mm",
         )
     console.print(table)
+
+
+@draw_app.command("package")
+def draw_package(
+    project: Path = typer.Argument(..., help="Project JSON with the elements."),
+    output: Path = typer.Option(Path("drawings"), "--output", "-o", help="Where to write."),
+    system: str = typer.Option("generic", "--system", help="Profile system id."),
+    size: str = typer.Option("A3", "--size", help="A0 | A1 | A2 | A3 | A4."),
+    elevation_scale: int = typer.Option(20, "--elevation-scale"),
+    detail_scale: int = typer.Option(5, "--detail-scale"),
+    profile_dxf: Optional[Path] = typer.Option(
+        None, "--profile", help="DXF of the frame section, for real wall details."
+    ),
+    formats: str = typer.Option("pdf,dxf,svg", "--formats"),
+) -> None:
+    """Produce the whole shop drawing package for a project.
+
+    Elevations at the stated scale, wall sections at theirs, one title block
+    filled the same way on every sheet, and a not-for-construction stamp on all
+    of them when the systems behind the drawing are not confirmed.
+    """
+    from datetime import date
+
+    from .branding import active_brand
+    from .drawing import PackageInfo, Revision, SheetSize, build_package
+    from .elements import ElementBuilder
+    from .models.orders import Project
+    from .systems import DIRECTORY
+
+    if not project.is_file():
+        _fail(f"Project not found: {project}")
+    try:
+        parsed = Project.model_validate_json(project.read_text(encoding="utf-8"))
+    except Exception as exc:  # noqa: BLE001 - user-supplied file
+        _fail("Could not parse the project file", exc)
+
+    openings = getattr(parsed, "openings", None) or []
+    if not openings:
+        _fail(
+            "The project has no elements to draw. Add openings to it, or build "
+            "one with `profileos element build`."
+        )
+
+    builder = (
+        ElementBuilder.for_system(system)
+        if DIRECTORY.get(system) is not None
+        else ElementBuilder()
+    )
+    builds = [builder.build(opening) for opening in openings]
+
+    profile = None
+    if profile_dxf:
+        from .geometry import profile_from_dxf
+
+        if not profile_dxf.is_file():
+            _fail(f"Profile DXF not found: {profile_dxf}")
+        profile, _ = profile_from_dxf(str(profile_dxf), profile_dxf.stem, system)
+
+    brand = active_brand()
+    info = PackageInfo(
+        project=parsed.name,
+        client=getattr(parsed, "client", "") or "",
+        company=getattr(brand, "name", "") or "",
+        company_line=getattr(brand, "tagline", "") or "",
+        number_prefix=f"{parsed.name[:3].upper()}-A",
+        drawn_by=getattr(brand, "name", "") or "",
+        size=SheetSize(size.upper()),
+        revisions=[Revision("A", date.today(), "Issued for approval", "")],
+    )
+    package = build_package(
+        builds, info,
+        elevation_scale=elevation_scale, detail_scale=detail_scale, profile=profile,
+    )
+    written = package.write(output, formats=tuple(f.strip() for f in formats.split(",")))
+
+    console.print(
+        _kv_table(
+            f"Drawing package - {parsed.name}",
+            [
+                ("Sheets", len(package.sheets)),
+                ("Numbers", ", ".join(package.numbers())),
+                ("Elevation scale", f"1:{elevation_scale}"),
+                ("Detail scale", f"1:{detail_scale}"),
+                ("Files", len(written)),
+            ],
+        )
+    )
+    for stamp in package.stamps:
+        console.print(f"[yellow]{stamp}[/yellow]")
+    console.print(f"[green]Wrote[/green] {output}")
+
+
+@draw_app.command("detail")
+def draw_detail(
+    detail: str = typer.Argument(..., help="head | sill | jamb | mullion | transom."),
+    output: Path = typer.Option(Path("detail.pdf"), "--output", "-o"),
+    wall: str = typer.Option("stone", "--wall", help="stone | block."),
+    scale: int = typer.Option(5, "--scale"),
+    profile_dxf: Optional[Path] = typer.Option(None, "--profile"),
+) -> None:
+    """Draw one wall section on its own sheet."""
+    from .drawing import RENDERED_BLOCK, STONE_CLAD_CONCRETE, SectionStyle, wall_section
+    from .drawing.section import Detail
+    from .drawing.sheet import Sheet, SheetSize, TitleBlock, Viewport
+
+    try:
+        which = Detail(detail.lower())
+    except ValueError:
+        _fail(f"Unknown detail {detail!r}. Known: {', '.join(d.value for d in Detail)}")
+
+    build_up = RENDERED_BLOCK if wall.lower().startswith("b") else STONE_CLAD_CONCRETE
+    profile = None
+    if profile_dxf:
+        from .geometry import profile_from_dxf
+
+        profile, _ = profile_from_dxf(str(profile_dxf), profile_dxf.stem, "detail")
+
+    result = wall_section(
+        which, build_up=build_up, style=SectionStyle(scale=scale), profile=profile
+    )
+    sheet = Sheet(
+        size=SheetSize.A3,
+        title_block=TitleBlock(
+            title=f"{which.hebrew} / {which.english}",
+            number=which.value.upper(),
+            scale=f"1:{scale}",
+            notes=tuple(result.notes),
+        ),
+    )
+    area = sheet.drawing_area()
+    sheet.add(
+        Viewport(
+            drawing=result.drawing, scale=scale,
+            frame=(area[0], area[1] + 10.0, area[2] - sheet.block_width - 10.0, area[3] - 20.0),
+        )
+    )
+    suffix = output.suffix.lower()
+    if suffix == ".dxf":
+        sheet.to_dxf(output)
+    elif suffix == ".svg":
+        output.write_text(sheet.to_svg(), encoding="utf-8")
+    else:
+        sheet.to_pdf(output)
+    for note in result.notes:
+        console.print(f"[yellow]{note}[/yellow]")
+    console.print(f"[green]Wrote[/green] {output}")
 
 
 @systems_app.command("list")
