@@ -142,6 +142,10 @@ class Settings(BaseModel):
     log_level: str = "INFO"
     log_file: Path | None = None
     locale: str = "en"
+    #: The fabricator this installation belongs to. Their name and contact
+    #: details go on every quotation, job card and machine-program header, so
+    #: the choice has to survive a restart rather than living in a variable.
+    brand_id: str = "profileos"
     #: Directories scanned by the hot-reload plugin framework.
     plugin_dirs: list[Path] = Field(default_factory=list)
     #: Poll interval for the plugin/config watcher, in seconds.

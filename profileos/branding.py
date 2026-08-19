@@ -161,22 +161,46 @@ BUILTIN_BRANDS: dict[str, Brand] = {
     DADI_BRAND.id: DADI_BRAND,
 }
 
-_active_brand_id: str = "profileos"
+#: Set by :func:`set_active_brand` for the life of the process. ``None`` means
+#: no in-process override, so the persisted setting decides.
+_active_brand_id: str | None = None
+
+
+def configured_brand_id() -> str:
+    """The brand this installation is set to, from settings unless overridden."""
+    if _active_brand_id is not None:
+        return _active_brand_id
+    try:
+        from .core.config import get_settings
+
+        return (get_settings().brand_id or "profileos").strip().lower()
+    except Exception:  # noqa: BLE001 - branding must never break on settings
+        return "profileos"
 
 
 def get_brand(brand_id: str | None = None) -> Brand:
     """Return a brand, preferring registry (plugin) entries over built-ins."""
-    key = (brand_id or _active_brand_id).strip().lower()
+    key = (brand_id or configured_brand_id()).strip().lower()
     registered = BRANDS.get_or_none(key)
     if isinstance(registered, Brand):
         return registered
     return BUILTIN_BRANDS.get(key, DEFAULT_BRAND)
 
 
-def set_active_brand(brand_id: str) -> Brand:
-    """Choose which brand the application presents."""
+def set_active_brand(brand_id: str, *, persist: bool = False) -> Brand:
+    """Choose which brand the application presents.
+
+    ``persist`` writes the choice to settings, so the next launch — and the
+    machine programs it posts — carry the same operator.
+    """
     global _active_brand_id
     _active_brand_id = brand_id.strip().lower()
+    if persist:
+        from .core.config import get_settings, save_settings
+
+        settings = get_settings()
+        settings.brand_id = _active_brand_id
+        save_settings(settings)
     return get_brand()
 
 
@@ -208,6 +232,7 @@ __all__ = [
     "BRAND_SCHEMA",
     "get_brand",
     "set_active_brand",
+    "configured_brand_id",
     "active_brand",
     "register_brand",
 ]

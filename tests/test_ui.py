@@ -9,7 +9,9 @@ wired to nothing, a view that crashes when handed real engine output.
 
 from __future__ import annotations
 
+import json
 import os
+from pathlib import Path
 
 import pytest
 
@@ -24,6 +26,8 @@ from profileos.mes import Stage  # noqa: E402
 from profileos.ui.main_window import MainWindow  # noqa: E402
 from profileos.ui.theme import DARK, LIGHT, stylesheet  # noqa: E402
 
+SAMPLES = Path(__file__).resolve().parents[1] / "data" / "samples"
+
 
 @pytest.fixture(scope="module")
 def qt_app():
@@ -36,7 +40,12 @@ def window(qt_app):
     win = MainWindow(DARK)
     win.resize(1400, 900)
     yield win
+    # close() only hides it. A window left alive is still restyled every time
+    # any other window applies a palette, so leaking one per test makes each
+    # test slower than the last.
     win.close()
+    win.deleteLater()
+    QCoreApplication.processEvents()
 
 
 def pump(times: int = 4) -> None:
@@ -65,8 +74,16 @@ class TestTheme:
 class TestWindow:
     def test_all_pages_are_present(self, window):
         assert [p.title for p in window.pages] == [
-            "Profile", "Element", "Nesting", "Machining", "Quotation", "Shop floor",
+            "Profile", "Element", "Nesting", "Glass", "Machining",
+            "Quotation", "Shop floor", "Catalogue", "System",
         ]
+
+    def test_every_page_is_reachable_from_the_sidebar(self, window):
+        """A page nothing navigates to may as well not exist."""
+        from profileos.ui.main_window import NAV_SECTIONS
+
+        reachable = sorted(index for _, indices in NAV_SECTIONS for index in indices)
+        assert reachable == list(range(len(window.pages)))
 
     def test_navigation_switches_pages(self, window):
         for index in range(len(window.pages)):
@@ -92,24 +109,24 @@ class TestWorkflow:
     """Drive the full workflow through the interface, as a user would."""
 
     def test_profile_page_analyses_the_sample(self, window):
-        window.go_to(0)
-        window.pages[0].load_sample()
+        window.go_to_page("Profile")
+        window.page("Profile").load_sample()
         pump()
         assert window.session.section_properties is not None
         assert window.session.section_properties.area == pytest.approx(1719.2, abs=1.0)
-        assert window.pages[0].properties.rowCount() > 10
+        assert window.page("Profile").properties.rowCount() > 10
 
     def test_wind_check_populates(self, window):
-        window.pages[0].load_sample()
-        window.pages[0].span.setValue(2000.0)
-        window.pages[0].run_check()
+        window.page("Profile").load_sample()
+        window.page("Profile").span.setValue(2000.0)
+        window.page("Profile").run_check()
         pump()
-        assert window.pages[0].checks.rowCount() >= 3
-        assert "Maximum span" in window.pages[0].max_span.text()
+        assert window.page("Profile").checks.rowCount() >= 3
+        assert "Maximum span" in window.page("Profile").max_span.text()
 
     def test_element_page_builds(self, window):
-        window.go_to(1)
-        page = window.pages[1]
+        window.go_to_page("Element")
+        page = window.page("Element")
         page.width.setValue(2400.0)
         page.height.setValue(1800.0)
         page.columns.setValue(3)
@@ -120,28 +137,28 @@ class TestWorkflow:
         assert page.panes.rowCount() == 3
 
     def test_nesting_page_optimises(self, window):
-        window.pages[1].build_element()
-        window.go_to(2)
-        window.pages[2].run()
+        window.page("Element").build_element()
+        window.go_to_page("Nesting")
+        window.page("Nesting").run()
         pump()
         report = window.session.nesting_report
         assert report is not None and report.total_bars > 0
-        assert window.pages[2].summary.rowCount() > 0
+        assert window.page("Nesting").summary.rowCount() > 0
 
     def test_nesting_without_elements_is_reported_not_crashed(self, window, monkeypatch):
         recorded: list[str] = []
         monkeypatch.setattr(
-            type(window.pages[2]), "report",
+            type(window.page("Nesting")), "report",
             lambda self, exc, context="": recorded.append(str(exc)),
         )
         window.session.clear_builds()
-        window.go_to(2)
-        window.pages[2].run()
+        window.go_to_page("Nesting")
+        window.page("Nesting").run()
         assert recorded and "No elements" in recorded[0]
 
     def test_machining_page_posts(self, window):
-        window.go_to(3)
-        page = window.pages[3]
+        window.go_to_page("Machining")
+        page = window.page("Machining")
         page.post()
         pump()
         assert window.session.post_results
@@ -149,11 +166,11 @@ class TestWorkflow:
         assert "interference" in page.clamp_status.text()
 
     def test_machining_defaults_to_a_machining_centre(self, window):
-        assert window.pages[3].driver.currentData() == "elumatec.ncx"
+        assert window.page("Machining").driver.currentData() == "elumatec.ncx"
 
     @pytest.mark.parametrize("driver_key", ["elumatec.ncx", "kaban.kbn", "iso.gcode", "fom.cam"])
     def test_every_driver_posts_from_the_ui(self, window, driver_key):
-        page = window.pages[3]
+        page = window.page("Machining")
         index = page.driver.findData(driver_key)
         assert index >= 0
         page.driver.setCurrentIndex(index)
@@ -162,18 +179,18 @@ class TestWorkflow:
         assert page.code.toPlainText().strip()
 
     def test_quote_page_prices(self, window):
-        window.pages[1].build_element()
-        window.go_to(4)
-        window.pages[4].run()
+        window.page("Element").build_element()
+        window.go_to_page("Quotation")
+        window.page("Quotation").run()
         pump()
         quote = window.session.quote
         assert quote is not None and quote.net_price > quote.total_cost
-        assert window.pages[4].waterfall.rowCount() > 5
+        assert window.page("Quotation").waterfall.rowCount() > 5
 
     def test_shop_floor_releases_and_scans(self, window):
-        window.pages[1].build_element()
-        window.go_to(5)
-        page = window.pages[5]
+        window.page("Element").build_element()
+        window.go_to_page("Shop floor")
+        page = window.page("Shop floor")
         page.release()
         pump()
 
@@ -188,9 +205,9 @@ class TestWorkflow:
         assert "cut" in page.scan_result.text()
 
     def test_invalid_scan_shows_the_reason(self, window):
-        window.pages[1].build_element()
-        window.go_to(5)
-        page = window.pages[5]
+        window.page("Element").build_element()
+        window.go_to_page("Shop floor")
+        page = window.page("Shop floor")
         page.release()
         page.item.setCurrentIndex(0)
         page.stage.setCurrentText("shipped")
@@ -199,28 +216,28 @@ class TestWorkflow:
         assert "cannot go from" in page.scan_result.text()
 
     def test_status_bar_summarises_the_session(self, window):
-        window.pages[0].load_sample()
-        window.pages[1].build_element()
+        window.page("Profile").load_sample()
+        window.page("Element").build_element()
         pump()
         assert "element(s)" in window.session.describe()
 
 
 class TestSessionInvalidation:
     def test_adding_an_element_invalidates_the_nesting(self, window):
-        window.go_to(1)
-        window.pages[1].build_element()
-        window.go_to(2)
-        window.pages[2].run()
+        window.go_to_page("Element")
+        window.page("Element").build_element()
+        window.go_to_page("Nesting")
+        window.page("Nesting").run()
         assert window.session.nesting_report is not None
 
         # A new element changes the cut list, so the old plan must not linger.
-        window.go_to(1)
-        window.pages[1].name.setCurrentText("W-99")
-        window.pages[1].build_element()
+        window.go_to_page("Element")
+        window.page("Element").name.setCurrentText("W-99")
+        window.page("Element").build_element()
         assert window.session.nesting_report is None
 
     def test_rebuilding_the_same_element_replaces_it(self, window):
-        page = window.pages[1]
+        page = window.page("Element")
         page.name.setCurrentText("W-01")
         page.build_element()
         first = window.session.builds[0].opening.element_id
@@ -230,3 +247,318 @@ class TestSessionInvalidation:
         page.build_element()
         assert len(window.session.builds) == count + 1
         assert window.session.builds[0].opening.element_id == first
+
+
+class TestGlassPage:
+    """The 2D nester, driven through its own controls."""
+
+    def _page(self, window):
+        return {p.title: p for p in window.pages}["Glass"]
+
+    def test_nests_the_projects_glass(self, window):
+        window.page("Element").build_element()
+        page = self._page(window)
+        window.go_to_page(page.title)
+        page.run()
+        pump()
+
+        report = window.session.glass_report
+        assert report is not None
+        assert report.sheet_count > 0
+        assert report.yield_pct > 0
+        assert page.summary.rowCount() == len(report.results)
+        # Nothing unverifiable may reach the operator.
+        assert report.warnings == []
+
+    def test_every_shipped_layout_is_cuttable(self, window):
+        from profileos.nesting import verify_guillotine
+
+        window.page("Element").build_element()
+        page = self._page(window)
+        page.run()
+        pump()
+        for result in window.session.glass_report.results.values():
+            for layout in result.layouts:
+                assert verify_guillotine(layout, result.spec) == []
+
+    def test_the_stage_limit_is_honoured(self, window):
+        window.page("Element").build_element()
+        page = self._page(window)
+        page.stages.setCurrentText("2")
+        page.run()
+        pump()
+        for result in window.session.glass_report.results.values():
+            assert all(layout.stages_used <= 2 for layout in result.layouts)
+
+    def test_bad_stock_input_is_reported_not_crashed(self, window, monkeypatch):
+        recorded: list[str] = []
+        page = self._page(window)
+        monkeypatch.setattr(
+            type(page), "report",
+            lambda self, exc, context="": recorded.append(str(exc)),
+        )
+        window.page("Element").build_element()
+        page.stock.setCurrentText("not-a-size")
+        page.run()
+        assert recorded and "WIDTHxHEIGHT" in recorded[0]
+
+    def test_nesting_without_elements_is_reported_not_crashed(self, window, monkeypatch):
+        recorded: list[str] = []
+        page = self._page(window)
+        monkeypatch.setattr(
+            type(page), "report",
+            lambda self, exc, context="": recorded.append(str(exc)),
+        )
+        window.session.clear_builds()
+        page.run()
+        assert recorded and "no elements" in recorded[0].lower()
+
+    def test_adding_an_element_invalidates_the_glass_plan(self, window):
+        window.page("Element").build_element()
+        self._page(window).run()
+        pump()
+        assert window.session.glass_report is not None
+        window.page("Element").width.setValue(3000.0)
+        window.page("Element").build_element()
+        assert window.session.glass_report is None
+
+    def test_the_view_survives_being_painted(self, window):
+        window.page("Element").build_element()
+        page = self._page(window)
+        window.go_to_page(page.title)
+        page.run()
+        pump()
+        assert not page.view.grab().isNull()
+
+    def test_maps_are_exported_for_every_sheet(self, window, tmp_path, monkeypatch):
+        from PySide6.QtWidgets import QFileDialog
+
+        window.page("Element").build_element()
+        page = self._page(window)
+        page.run()
+        pump()
+        monkeypatch.setattr(
+            QFileDialog, "getExistingDirectory",
+            staticmethod(lambda *a, **k: str(tmp_path)),
+        )
+        page.export_maps()
+        written = sorted(tmp_path.glob("*.svg"))
+        assert len(written) == window.session.glass_report.sheet_count
+        assert written[0].read_text(encoding="utf-8").startswith("<svg")
+
+
+class TestCataloguePage:
+    def _page(self, window):
+        return {p.title: p for p in window.pages}["Catalogue"]
+
+    @pytest.fixture
+    def sources(self, tmp_path):
+        table = tmp_path / "supplier.csv"
+        table.write_text(
+            "code;description;kg/m;A;Ix;Iy;b;h\n"
+            "mullion_mb70;Mullion 70/100;4,642;17,192;122,518;95,975;70,0;100,0\n"
+            "glazing_bead;Glazing bead;0,412;1,525;0,735;0,255;18,0;22,0\n",
+            encoding="utf-8",
+        )
+        return SAMPLES, table
+
+    def test_ingests_and_separates_verified_from_conflicting(self, window, sources):
+        drawings, table = sources
+        page = self._page(window)
+        window.go_to_page(page.title)
+        page._drawings = drawings
+        page._table = table
+        page.series.setCurrentText("MB-70")
+        page.run()
+        pump()
+
+        report = window.session.catalogue_report
+        assert report is not None
+        statuses = {entry.profile_id: entry.status for entry in report.entries}
+        assert statuses["mullion_mb70"] == "verified"
+        # The table's Ix for the bead is wrong on purpose.
+        assert statuses["glazing_bead"] == "conflict"
+        assert page.entries.rowCount() == len(report.entries)
+
+    def test_selecting_a_row_explains_the_conflict(self, window, sources):
+        drawings, table = sources
+        page = self._page(window)
+        page._drawings, page._table = drawings, table
+        page.run()
+        pump()
+        index = [e.profile_id for e in window.session.catalogue_report.entries].index(
+            "glazing_bead"
+        )
+        page.entries.selectRow(index)
+        pump()
+        detail = page.detail.toPlainText()
+        assert "conflict" in detail
+        assert "ixx" in detail
+
+    def test_ingesting_nothing_is_reported_not_crashed(self, window, monkeypatch):
+        recorded: list[str] = []
+        page = self._page(window)
+        monkeypatch.setattr(
+            type(page), "report",
+            lambda self, exc, context="": recorded.append(str(exc)),
+        )
+        page._drawings = None
+        page._table = None
+        page.run()
+        assert recorded
+
+    def test_conflicting_profiles_are_withheld_from_the_saved_library(
+        self, window, sources, tmp_path, monkeypatch
+    ):
+        from PySide6.QtWidgets import QFileDialog
+
+        drawings, table = sources
+        page = self._page(window)
+        page._drawings, page._table = drawings, table
+        page.run()
+        pump()
+
+        target = tmp_path / "library.json"
+        monkeypatch.setattr(
+            QFileDialog, "getSaveFileName",
+            staticmethod(lambda *a, **k: (str(target), "")),
+        )
+        page.export_plugin()
+        payload = json.loads(target.read_text(encoding="utf-8"))
+        assert "glazing_bead" in payload["excluded_for_conflict"]
+        assert "mullion_mb70" in {p["profile_id"] for p in payload["profiles"]}
+
+
+class TestSystemPage:
+    def _page(self, window):
+        return {p.title: p for p in window.pages}["System"]
+
+    def test_the_comparison_claims_only_what_exists(self, window):
+        from profileos import compare
+
+        # The page renders the matrix, so a stale claim would be shown to a
+        # customer. Catching it here keeps that from being the first sign.
+        assert compare.verify_claims() == {}
+        page = self._page(window)
+        window.go_to_page(page.title)
+        # The tab is filled the first time it is opened, so opening it is what
+        # exercises the rendering path a customer would see.
+        page.tabs.setCurrentIndex(page._compare_index)
+        pump()
+        assert page._compare_built
+        assert not window.grab().isNull()
+
+    def test_the_comparison_is_not_built_until_it_is_opened(self, window):
+        """Verifying the claims imports every engine; the window must not wait."""
+        assert self._page(window)._compare_built is False
+
+    def test_checking_without_a_key_is_refused_with_a_reason(self, window, monkeypatch):
+        recorded: list[str] = []
+        page = self._page(window)
+        monkeypatch.setattr(
+            type(page), "report",
+            lambda self, exc, context="": recorded.append(str(exc)),
+        )
+        page._update_key = None
+        page.check_updates()
+        assert recorded and "public key" in recorded[0]
+
+    def test_applying_without_checking_is_refused(self, window, monkeypatch):
+        recorded: list[str] = []
+        page = self._page(window)
+        monkeypatch.setattr(
+            type(page), "report",
+            lambda self, exc, context="": recorded.append(str(exc)),
+        )
+        page._update_plan = None
+        page.apply_updates()
+        assert recorded and "Check for updates" in recorded[0]
+
+    def test_a_signed_update_is_installed_and_goes_live(self, window, tmp_path):
+        """The whole point of the mechanism, end to end and in one process.
+
+        Publish a price list, install it through the page, and ask the pricing
+        engine for a price it could not have answered a moment earlier — with
+        no restart in between.
+        """
+        from profileos.core.config import get_settings
+        from profileos.core.hotreload import register_builtin_schemas
+        from profileos.quoting.suppliers import find_price
+        from profileos.security.keys import SigningKey
+        from profileos.updates import PackageKind, build_manifest, build_package
+        from profileos.updates import publish_directory
+
+        register_builtin_schemas()
+        settings = get_settings()
+        settings.data_dir = tmp_path / "data"
+        settings.config_dir = tmp_path / "config"
+        settings.ensure_directories()
+
+        document = json.dumps({
+            "kind": "price_list",
+            "id": "ui-test-supplier",
+            "name": "UI test supplier",
+            "currency": "ILS",
+            "entries": [{"code": "UI-TEST-4301", "unit": "m", "price": 41.5}],
+        }).encode("utf-8")
+
+        key = SigningKey.generate()
+        package = build_package(
+            "ui.test.prices", PackageKind.PRICE_LIST, document,
+            "ui_test_prices.json", key, version="1.2.0",
+        )
+        feed = publish_directory(
+            {"ui_test_prices.json": document}, build_manifest([package], key),
+            tmp_path / "feed",
+        )
+        public = tmp_path / "issuer.pub"
+        public.write_bytes(key.public_key().to_pem())
+
+        assert find_price("UI-TEST-4301", 1.0) is None
+
+        page = self._page(window)
+        page.update_source.setText(str(feed))
+        page._update_key = public
+        page.check_updates()
+        pump()
+        assert page.update_table.rowCount() == 1
+        assert page.apply_button.isEnabled()
+
+        page.apply_updates()
+        pump()
+        assert page.installed_table.rowCount() == 1
+
+        priced = find_price("UI-TEST-4301", 1.0)
+        assert priced is not None, "the update did not go live without a restart"
+        supplier, total = priced
+        assert supplier.name == "UI test supplier"
+        assert total == pytest.approx(41.5)
+
+    def test_changing_the_operator_reaches_the_sidebar(self, window):
+        from profileos.branding import set_active_brand
+
+        page = self._page(window)
+        try:
+            index = page.brand_picker.findData("dadi")
+            assert index >= 0, "the Dadi operator should be selectable"
+            page.brand_picker.setCurrentIndex(index)
+            pump()
+            assert "דאדי" in window.sidebar.logo.text()
+            assert "בית אל" in page._brand_values["City"].text()
+        finally:
+            set_active_brand("profileos")
+
+    def test_the_operator_tab_never_stacks_stale_labels(self, window):
+        """Rebuilding the tab used to leave the old text painted over the new."""
+        from profileos.branding import set_active_brand
+
+        page = self._page(window)
+        try:
+            page.brand_picker.setCurrentIndex(page.brand_picker.findData("dadi"))
+            pump()
+            page.brand_picker.setCurrentIndex(page.brand_picker.findData("profileos"))
+            pump()
+            assert page._brand_values["City"].text() == "not set"
+            assert "דאדי" not in window.sidebar.logo.text()
+        finally:
+            set_active_brand("profileos")

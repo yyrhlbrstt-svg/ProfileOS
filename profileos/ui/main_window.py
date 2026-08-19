@@ -29,9 +29,10 @@ _log = get_logger("ui.window")
 #: Sidebar grouping. Navigation follows the order work moves through the shop.
 NAV_SECTIONS: list[tuple[str, list[int]]] = [
     ("Design", [0, 1]),
-    ("Production", [2, 3]),
-    ("Commercial", [4]),
-    ("Factory", [5]),
+    ("Production", [2, 3, 4]),
+    ("Commercial", [5]),
+    ("Factory", [6]),
+    ("Library", [7, 8]),
 ]
 
 
@@ -51,18 +52,26 @@ class Sidebar(QWidget):
         from ..branding import active_brand
 
         brand = active_brand()
-        logo = QLabel(brand.display_name)
-        logo.setObjectName("SidebarLogo")
-        logo.setWordWrap(True)
-        version = QLabel(brand.tagline or f"v{__version__}")
-        version.setObjectName("SidebarVersion")
-        layout.addWidget(logo)
-        layout.addWidget(version)
+        self.logo = QLabel(brand.display_name)
+        self.logo.setObjectName("SidebarLogo")
+        self.logo.setWordWrap(True)
+        self.version = QLabel(brand.tagline or f"v{__version__}")
+        self.version.setObjectName("SidebarVersion")
+        layout.addWidget(self.logo)
+        layout.addWidget(self.version)
 
         self.group = QButtonGroup(self)
         self.group.setExclusive(True)
         self.buttons: list[QPushButton] = []
         self._layout = layout
+
+    def refresh_brand(self) -> None:
+        """Re-read the operator, so the sidebar follows a change on the System page."""
+        from ..branding import active_brand
+
+        brand = active_brand()
+        self.logo.setText(brand.display_name)
+        self.version.setText(brand.tagline or f"v{__version__}")
 
     def add_section(self, title: str) -> None:
         label = QLabel(title.upper())
@@ -130,6 +139,11 @@ class MainWindow(QMainWindow):
         self.apply_palette(palette)
 
     # -- navigation ---------------------------------------------------------- #
+
+    def refresh_brand(self) -> None:
+        """Called when the System page changes which fabricator this is."""
+        self.sidebar.refresh_brand()
+
     def go_to(self, index: int) -> None:
         if not (0 <= index < len(self.pages)):
             return
@@ -137,6 +151,23 @@ class MainWindow(QMainWindow):
         self.sidebar.buttons[index].setChecked(True)
         self.pages[index].refresh()
         self._update_status()
+
+    def page(self, title: str) -> Page:
+        """Find a page by its title.
+
+        Pages get inserted as the suite grows, so anything that reaches for one
+        by position breaks the moment a page lands before it. Titles do not
+        move.
+        """
+        for page in self.pages:
+            if page.title == title:
+                return page
+        raise KeyError(f"No page titled {title!r}; have {[p.title for p in self.pages]}")
+
+    def go_to_page(self, title: str) -> Page:
+        page = self.page(title)
+        self.go_to(self.pages.index(page))
+        return page
 
     def _install_shortcuts(self) -> None:
         """Ctrl+1..6 jump straight to a page; Ctrl+T toggles the theme."""
@@ -156,7 +187,13 @@ class MainWindow(QMainWindow):
         self.colours = palette
         application = QApplication.instance()
         if application is not None:
-            application.setStyleSheet(stylesheet(palette))
+            sheet = stylesheet(palette)
+            # setStyleSheet on the application re-polishes every widget alive in
+            # the process, so setting the same sheet again is not free — it is
+            # the cost of a full restyle for no change at all.
+            if application.property("profileos_stylesheet") != sheet:
+                application.setStyleSheet(sheet)
+                application.setProperty("profileos_stylesheet", sheet)
         # Painted views hold their own colours, so they need telling directly.
         for page in self.pages:
             page.colours = palette

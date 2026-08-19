@@ -864,4 +864,237 @@ class ClampView(QWidget):
         painter.end()
 
 
-__all__ = ["CanvasView", "SectionView", "ElevationView", "NestingView", "ClampView"]
+@dataclass
+class _SheetGeometry:
+    """Layout constants for the glass cutting map, in pixels."""
+
+    gap: int = 22
+    label_height: int = 22
+    margin: int = 16
+    #: A sheet is never drawn taller than this. Scaling purely to the widget's
+    #: width fills the viewport with one plate, and a cutting plan is reviewed
+    #: by comparing sheets against each other, not by admiring one of them.
+    max_sheet_height: int = 300
+    #: Below this a placed part gets no text; a squeezed label is worse than none.
+    min_label_width: int = 54
+    min_label_height: int = 26
+
+
+class SheetView(QWidget):
+    """Draws the sheet layouts from a 2D nesting result.
+
+    Sheets are stacked vertically and each is scaled to the widget's width, so
+    the map reads the way a stack of jumbo plates is worked through: one sheet
+    at a time, top to bottom, in cutting order.
+
+    The y axis is flipped on the way in. The nester's origin is the bottom-left
+    corner of the usable area, because that is where a cutting table's origin
+    is; Qt's is the top-left. Drawing the two the same way round would mirror
+    every layout vertically, which looks plausible and is wrong.
+    """
+
+    def __init__(self, palette: Palette = DARK, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.palette_colours = palette
+        self.setObjectName("Canvas")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setMinimumHeight(280)
+        self.setMouseTracking(True)
+
+        self._result: Any = None
+        self._geometry = _SheetGeometry()
+        self._hover: int | None = None
+
+    def set_result(self, result: Any) -> None:
+        self._result = result
+        self._resize_to_content()
+        self.update()
+
+    def _sheet_height(self, layout: Any, scale: float) -> float:
+        return layout.stock.height * scale
+
+    def _scale(self, layout: Any) -> float:
+        geometry = self._geometry
+        usable = max(self.width() - 2 * geometry.margin, 80)
+        return min(
+            usable / max(layout.stock.width, 1.0),
+            geometry.max_sheet_height / max(layout.stock.height, 1.0),
+        )
+
+    def _resize_to_content(self) -> None:
+        if self._result is None or not self._result.layouts:
+            self.setMinimumHeight(280)
+            return
+        geometry = self._geometry
+        total = geometry.margin
+        for layout in self._result.layouts:
+            total += (
+                self._sheet_height(layout, self._scale(layout))
+                + geometry.label_height
+                + geometry.gap
+            )
+        self.setMinimumHeight(int(max(280, total)))
+
+    def resizeEvent(self, event: Any) -> None:
+        super().resizeEvent(event)
+        self._resize_to_content()
+
+    def _sheet_at(self, y: float) -> int | None:
+        if self._result is None:
+            return None
+        geometry = self._geometry
+        cursor = geometry.margin
+        for index, layout in enumerate(self._result.layouts):
+            height = (
+                self._sheet_height(layout, self._scale(layout)) + geometry.label_height
+            )
+            if cursor <= y <= cursor + height:
+                return index
+            cursor += height + geometry.gap
+        return None
+
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:
+        self._hover = self._sheet_at(event.position().y())
+        self.update()
+
+    def leaveEvent(self, event: Any) -> None:
+        self._hover = None
+        self.update()
+
+    def paintEvent(self, event: Any) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        palette = self.palette_colours
+        painter.fillRect(self.rect(), _colour(palette.surface_sunken))
+
+        if self._result is None or not self._result.layouts:
+            painter.setPen(QPen(_colour(palette.text_faint)))
+            painter.setFont(QFont("Inter", 12))
+            painter.drawText(
+                self.rect(),
+                Qt.AlignmentFlag.AlignCenter,
+                "Nest the project's glass to see the cutting maps",
+            )
+            painter.end()
+            return
+
+        geometry = self._geometry
+        cursor = float(geometry.margin)
+        for index, layout in enumerate(self._result.layouts):
+            scale = self._scale(layout)
+            height = self._sheet_height(layout, scale)
+            self._paint_sheet(painter, layout, index, cursor, scale, height)
+            cursor += height + geometry.label_height + geometry.gap
+
+        painter.end()
+
+    def _paint_sheet(
+        self, painter: QPainter, layout: Any, index: int, top: float,
+        scale: float, height: float,
+    ) -> None:
+        palette = self.palette_colours
+        geometry = self._geometry
+        width = layout.stock.width * scale
+        # Centred: once the height cap governs the scale, a left-aligned plate
+        # leaves the map hanging off one edge of a mostly empty panel.
+        left = max(float(geometry.margin), (self.width() - width) / 2.0)
+
+        if index == self._hover:
+            painter.fillRect(
+                QRectF(0, top - 4, self.width(), height + geometry.label_height + 8),
+                _colour(palette.surface_raised),
+            )
+
+        # The bought sheet.
+        painter.setBrush(QBrush(_colour(palette.bar_stock)))
+        painter.setPen(QPen(_colour(palette.border_strong), 1))
+        painter.drawRect(QRectF(left, top, width, height))
+
+        # The usable area inside the edge trim, dashed because it is a boundary
+        # rather than a cut.
+        trim = layout.spec.edge_trim * scale
+        if trim > 0.4:
+            pen = QPen(_colour(palette.border_strong), 1, Qt.PenStyle.DashLine)
+            painter.setPen(pen)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRect(
+                QRectF(left + trim, top + trim, width - 2 * trim, height - 2 * trim)
+            )
+
+        def to_x(value: float) -> float:
+            return left + trim + value * scale
+
+        def to_y(value: float) -> float:
+            """Usable-area y (up) to widget y (down)."""
+            return top + height - trim - value * scale
+
+        # Reusable off-cuts, drawn under the parts so a part always wins.
+        for rect in layout.reusable_offcuts():
+            box = QRectF(
+                to_x(rect.x),
+                to_y(rect.top),
+                rect.width * scale,
+                rect.height * scale,
+            )
+            painter.setBrush(QBrush(_colour(palette.warning, 40)))
+            painter.setPen(QPen(_colour(palette.warning, 150), 1, Qt.PenStyle.DashLine))
+            painter.drawRect(box)
+            if box.width() > 60 and box.height() > 18:
+                painter.setFont(QFont(MONO_FONTS[0], 8))
+                painter.setPen(QPen(_colour(palette.warning)))
+                painter.drawText(
+                    box,
+                    Qt.AlignmentFlag.AlignCenter,
+                    f"{rect.width:.0f}x{rect.height:.0f}",
+                )
+
+        for position, placement in enumerate(layout.placements):
+            box = QRectF(
+                to_x(placement.x),
+                to_y(placement.top),
+                max(placement.width * scale - 1.0, 1.0),
+                max(placement.height * scale - 1.0, 1.0),
+            )
+            colour = palette.bar_piece if position % 2 == 0 else palette.bar_piece_alt
+            painter.setBrush(QBrush(_colour(colour, 200)))
+            painter.setPen(QPen(_colour(colour), 1))
+            painter.drawRect(box)
+
+            if (
+                box.width() < geometry.min_label_width
+                or box.height() < geometry.min_label_height
+            ):
+                continue
+            painter.setFont(QFont(MONO_FONTS[0], 8))
+            painter.setPen(
+                QPen(
+                    _colour(
+                        palette.text_inverse
+                        if palette.mode.value == "light"
+                        else "#0f1216"
+                    )
+                )
+            )
+            turned = " R" if placement.rotated else ""
+            painter.drawText(
+                box,
+                Qt.AlignmentFlag.AlignCenter,
+                f"{placement.part.name}\n{placement.width:.0f}x{placement.height:.0f}{turned}",
+            )
+
+        # Caption under the sheet.
+        painter.setFont(QFont(MONO_FONTS[0], 9))
+        painter.setPen(QPen(_colour(palette.text_muted)))
+        stages = f", {layout.stages_used}-stage" if layout.stages_used else ""
+        painter.drawText(
+            QRectF(left, top + height + 2, width, geometry.label_height),
+            Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+            f"sheet {index + 1}  {layout.stock.name}  "
+            f"{layout.piece_count} pieces  {layout.yield_pct:.1f}% yield{stages}",
+        )
+
+
+__all__ = [
+    "CanvasView", "SectionView", "ElevationView", "NestingView", "ClampView",
+    "SheetView",
+]

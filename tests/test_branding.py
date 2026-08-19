@@ -131,8 +131,17 @@ class TestBrandPropagation:
 
 class TestBrandPlugin:
     def test_a_registered_brand_overrides_a_builtin(self):
-        register_brand(Brand(id="dadi", name="Overridden"))
-        assert get_brand("dadi").name == "Overridden"
+        # BRANDS is a process-wide registry. Left in place, this override makes
+        # every later test — in this file and every other — see "Overridden"
+        # where it expects the built-in operator.
+        from profileos.branding import BRANDS
+
+        try:
+            register_brand(Brand(id="dadi", name="Overridden"))
+            assert get_brand("dadi").name == "Overridden"
+        finally:
+            BRANDS.remove("dadi")
+        assert get_brand("dadi").name == 'דאדי בע"מ'
 
     def test_brand_is_a_hot_reloadable_kind(self):
         from profileos.core.hotreload import DATA_SCHEMAS, register_builtin_schemas

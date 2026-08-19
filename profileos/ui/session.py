@@ -32,6 +32,10 @@ class Session:
     # Nesting
     project: Any = None
     nesting_report: Any = None
+    glass_report: Any = None
+
+    # Catalogue
+    catalogue_report: Any = None
 
     # Machining
     machining_job: Any = None
@@ -65,6 +69,14 @@ class Session:
         self.section_path = path
         self._notify("section")
 
+    def set_glass(self, report: Any) -> None:
+        self.glass_report = report
+        self._notify("glass")
+
+    def set_catalogue(self, report: Any) -> None:
+        self.catalogue_report = report
+        self._notify("catalogue")
+
     def add_build(self, build: Any) -> None:
         """Add an element, replacing any earlier build of the same element id."""
         element_id = build.opening.element_id
@@ -72,6 +84,7 @@ class Session:
         self.builds.append(build)
         # A new element invalidates anything derived from the old cut list.
         self.nesting_report = None
+        self.glass_report = None
         self.bom = None
         self.quote = None
         self._notify("builds")
