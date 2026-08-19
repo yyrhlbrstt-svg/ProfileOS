@@ -51,6 +51,7 @@ plugin_app = typer.Typer(help="Plugin registries and hot reload.")
 update_app = typer.Typer(help="Signed content updates.")
 licence_app = typer.Typer(help="Hardware authentication and licensing.")
 schema_app = typer.Typer(help="JSON Schemas for every document the suite reads.")
+systems_app = typer.Typer(help="Which profile systems exist, and how far each is trusted.")
 
 app.add_typer(geometry_app, name="section")
 app.add_typer(nest_app, name="nest")
@@ -66,6 +67,7 @@ app.add_typer(plugin_app, name="plugin")
 app.add_typer(update_app, name="update")
 app.add_typer(licence_app, name="licence")
 app.add_typer(schema_app, name="schema")
+app.add_typer(systems_app, name="systems")
 
 
 # --------------------------------------------------------------------------- #
@@ -693,6 +695,153 @@ def pipe_catalogues() -> None:
             str(len(catalogue.sizes)), f"{catalogue.effective_roughness:g} mm",
         )
     console.print(table)
+
+
+@systems_app.command("list")
+def systems_list(
+    search: Optional[str] = typer.Option(None, "--search", "-s", help="Series, maker or Hebrew name."),
+    manufacturer: Optional[str] = typer.Option(None, "--manufacturer", "-m"),
+    family: Optional[str] = typer.Option(None, "--family", "-f"),
+    cuttable: bool = typer.Option(False, "--cuttable", help="Only series that may be cut."),
+) -> None:
+    """The system directory, with what may be done with each series."""
+    from .systems import DIRECTORY, SystemFamily
+
+    entries = DIRECTORY.search(search) if search else list(DIRECTORY)
+    if manufacturer:
+        entries = [e for e in entries if e.manufacturer == manufacturer.lower()]
+    if family:
+        try:
+            wanted = SystemFamily(family.lower())
+        except ValueError:
+            _fail(f"Unknown family {family!r}. Known: {', '.join(f.value for f in SystemFamily)}")
+        entries = [e for e in entries if e.family is wanted]
+    if cuttable:
+        entries = [e for e in entries if DIRECTORY.readiness(e.id).may_cut]
+
+    if not entries:
+        console.print("[yellow]Nothing matched.[/yellow]")
+        return
+
+    table = Table(title="Profile systems", header_style="dim")
+    table.add_column("Series", style="cyan")
+    table.add_column("Maker")
+    table.add_column("Type")
+    table.add_column("Quote", justify="center")
+    table.add_column("Cut", justify="center")
+    table.add_column("Figures from", style="dim")
+    for entry in sorted(entries, key=lambda e: (e.manufacturer, e.series)):
+        readiness = DIRECTORY.readiness(entry.id)
+        maker = DIRECTORY.manufacturer(entry.manufacturer)
+        table.add_row(
+            entry.display,
+            maker.hebrew if maker else entry.manufacturer,
+            entry.family.hebrew if entry.family else "[yellow]לא סווג[/]",
+            "[green]yes[/]" if readiness.may_quote else "[red]no[/]",
+            "[green]yes[/]" if readiness.may_cut else "[red]no[/]",
+            entry.source or "—",
+        )
+    console.print(table)
+
+
+@systems_app.command("show")
+def systems_show(entry_id: str = typer.Argument(..., help="System id, e.g. 'klil-7300'.")) -> None:
+    """Everything known about one series, including what is not known."""
+    from .systems import DIRECTORY, UnclassifiedSystem
+
+    entry = DIRECTORY.get(entry_id)
+    if entry is None:
+        matches = DIRECTORY.search(entry_id)
+        hint = f" Did you mean: {', '.join(m.id for m in matches[:5])}?" if matches else ""
+        _fail(f"No system {entry_id!r}.{hint}")
+
+    readiness = DIRECTORY.readiness(entry.id)
+    maker = DIRECTORY.manufacturer(entry.manufacturer)
+    console.print(
+        _kv_table(
+            entry.display,
+            [
+                ("Maker", f"{maker.hebrew} ({maker.name})" if maker else entry.manufacturer),
+                ("Type", entry.family.hebrew if entry.family else "not classified"),
+                ("Thermally broken", "yes" if entry.thermally_broken else "not recorded"),
+                ("Figures", DIRECTORY.provenance_for(entry.id).hebrew),
+                ("Source", entry.source or "—"),
+                ("May quote", "yes" if readiness.may_quote else "no"),
+                ("May cut", "yes" if readiness.may_cut else "no"),
+            ],
+        )
+    )
+    for reason in readiness.reasons:
+        console.print(f"  [yellow]{reason}[/yellow]")
+    if readiness.banner:
+        console.print(f"\n[red]{readiness.banner}[/red]")
+
+    try:
+        rules, provenance = DIRECTORY.rules_for(entry.id)
+    except UnclassifiedSystem:
+        return
+    console.print(
+        _kv_table(
+            f"Deductions in use ({provenance.value})",
+            [
+                ("Frame face", f"{rules.frame.face_width:.1f} mm"),
+                ("Mitred corners", "yes" if rules.frame.mitred_corners else "no"),
+                ("Sash overlap", f"{rules.sash.frame_overlap:.1f} mm"),
+                ("Rebate clearance", f"{rules.sash.rebate_clearance:.1f} mm"),
+                ("Glass edge cover", f"{rules.glass.edge_cover:.1f} mm"),
+                ("Glass clearance", f"{rules.glass.edge_clearance:.1f} mm"),
+                ("Max glass", f"{rules.glass.max_glass_thickness:.1f} mm"),
+                ("Mullion face", f"{rules.mullion.face_width:.1f} mm"),
+            ],
+        )
+    )
+
+
+@systems_app.command("classify")
+def systems_classify(
+    entry_id: str = typer.Argument(..., help="System id."),
+    family: str = typer.Argument(..., help="casement | sliding | tilt_turn | ..."),
+    source: str = typer.Option(..., "--source", help="Where the classification comes from."),
+) -> None:
+    """Say what kind of system a named series is. Does not make it cuttable."""
+    from .systems import DIRECTORY, SystemFamily
+
+    try:
+        wanted = SystemFamily(family.lower())
+    except ValueError:
+        _fail(f"Unknown family {family!r}. Known: {', '.join(f.value for f in SystemFamily)}")
+    try:
+        entry = DIRECTORY.classify(entry_id, wanted, source=source)
+    except KeyError as exc:
+        _fail(str(exc))
+    console.print(
+        f"[green]{entry.display}[/green] is a {wanted.hebrew} system. "
+        "It can now be quoted; loading the supplier's catalogue is what allows cutting."
+    )
+
+
+@systems_app.command("coverage")
+def systems_coverage() -> None:
+    """How much of the directory is actually usable."""
+    from .systems import DIRECTORY
+
+    counts = DIRECTORY.coverage()
+    console.print(
+        _kv_table(
+            "System directory",
+            [
+                ("Series listed", counts["total"]),
+                ("Ready to cut", counts["confirmed"]),
+                ("Quotable on stand-ins", counts["typical"]),
+                ("Not classified", counts["unclassified"]),
+            ],
+        )
+    )
+    if counts["confirmed"] == 0:
+        console.print(
+            "[yellow]No series has its supplier's own figures yet. Load a "
+            "catalogue with `profileos catalogue ingest` to cut from one.[/yellow]"
+        )
 
 
 @schema_app.command("list")

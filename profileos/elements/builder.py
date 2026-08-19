@@ -29,6 +29,7 @@ from ..core.logging_setup import get_logger
 from ..core.profiling import timed
 from ..glazing.glass import GlassBuildUp, STANDARD_BUILDUPS
 from ..models.orders import CutItem, CutOrientation
+from ..systems.model import Provenance
 from .model import Cell, ElementKind, Opening, OpeningType, Sash
 from .rules import SystemRules, get_system_rules
 
@@ -160,6 +161,25 @@ class ElementBuild:
     gaskets: list[GasketRun] = field(default_factory=list)
     hardware: list[HardwareItem] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    #: How far the deductions these parts were computed from can be trusted.
+    #: This travels with the build all the way to the cut list, because that is
+    #: the last moment anybody can stop a bar being cut to a guessed figure.
+    provenance: Provenance = Provenance.TYPICAL
+
+    @property
+    def may_be_cut(self) -> bool:
+        """Whether these lengths came from the system supplier's own figures."""
+        return self.provenance.may_be_cut_to
+
+    @property
+    def production_banner(self) -> str | None:
+        """The line that has to appear on any sheet made from guessed numbers."""
+        if self.may_be_cut:
+            return None
+        return (
+            "לא לייצור — הקיזוזים אינם מקטלוג היצרן. "
+            "NOT FOR PRODUCTION — these deductions are not the supplier's."
+        )
 
     # -- aggregates --------------------------------------------------------- #
     @property
@@ -279,12 +299,41 @@ class ElementBuilder:
         *,
         glass_catalogue: dict[str, GlassBuildUp] | None = None,
         default_glass: GlassBuildUp | None = None,
+        provenance: Provenance = Provenance.TYPICAL,
     ) -> None:
+        """
+        ``provenance`` defaults to *typical* rather than *confirmed*: rules
+        handed in directly are good enough to quote from, and treating them as
+        the supplier's own figures without being told so is exactly the
+        assumption that gets a job cut short. Use :meth:`for_system` to carry a
+        real provenance through from the系 directory.
+        """
         self.rules = rules
+        self.provenance = provenance
         self.glass_catalogue = glass_catalogue or dict(STANDARD_BUILDUPS)
         self.default_glass = default_glass or self.glass_catalogue.get(
             "dgu-6-16-4"
         ) or next(iter(self.glass_catalogue.values()))
+
+    @classmethod
+    def for_system(
+        cls,
+        entry_id: str,
+        *,
+        directory: Any = None,
+        glass_catalogue: dict[str, GlassBuildUp] | None = None,
+    ) -> "ElementBuilder":
+        """Build for a named series, carrying its provenance with it.
+
+        This is the route that lets a cut sheet say, truthfully, whether it may
+        be worked to. Constructing the builder with a rule set directly cannot
+        know where that rule set came from, so it stays cautious.
+        """
+        from ..systems import DIRECTORY
+
+        source = directory if directory is not None else DIRECTORY
+        rules, provenance = source.rules_for(entry_id)
+        return cls(rules, glass_catalogue=glass_catalogue, provenance=provenance)
 
     # -- geometry ----------------------------------------------------------- #
     def inner_opening(self, opening: Opening, rules: SystemRules) -> Rect:
@@ -333,7 +382,7 @@ class ElementBuilder:
     def build(self, opening: Opening, *, sill_height: float = 0.0) -> ElementBuild:
         """Compute the full production package for ``opening``."""
         rules = self.rules or get_system_rules(opening.system_id)
-        build = ElementBuild(opening=opening, rules=rules)
+        build = ElementBuild(opening=opening, rules=rules, provenance=self.provenance)
 
         inner = self.inner_opening(opening, rules)
         rects = self.cell_rects(opening, rules)

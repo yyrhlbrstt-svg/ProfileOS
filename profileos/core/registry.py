@@ -247,6 +247,10 @@ MATERIALS: Registry[Any] = Registry("materials")
 #: Profile system libraries, keyed by system series.
 PROFILE_SYSTEMS: Registry[Any] = Registry("profile_systems")
 
+#: Directories of system series, keyed by catalogue id. These name what a
+#: series *is*; PROFILE_SYSTEMS holds what its deductions *are*.
+SYSTEM_CATALOGUES: Registry[Any] = Registry("system_catalogues")
+
 #: Supplier price lists for the quoting engine.
 SUPPLIERS: Registry[Any] = Registry("suppliers")
 
@@ -258,6 +262,7 @@ NESTING_STRATEGIES: Registry[Any] = Registry("nesting_strategies")
 
 ALL_REGISTRIES: dict[str, Registry[Any]] = {
     "post_processors": POST_PROCESSORS,
+    "system_catalogues": SYSTEM_CATALOGUES,
     "macros": MACROS,
     "tool_libraries": TOOL_LIBRARIES,
     "machines": MACHINES,
@@ -283,6 +288,7 @@ __all__ = [
     "MACHINES",
     "MATERIALS",
     "PROFILE_SYSTEMS",
+    "SYSTEM_CATALOGUES",
     "SUPPLIERS",
     "PIPE_CATALOGUES",
     "NESTING_STRATEGIES",
