@@ -133,10 +133,65 @@ async def analyse_upload(
             "regions": len(section.topology.regions),
             "chambers": section.topology.chamber_count,
         },
+        "features": _feature_payload(section, material),
         "validation": [
             {"severity": i.severity, "code": i.code, "message": i.message}
             for i in section.validation.issues
         ],
+    }
+
+
+def _feature_payload(section: Any, material: str | None) -> dict[str, Any]:
+    """The grooves, rebates and channels read off a section.
+
+    Bundled into the analysis response rather than given its own endpoint: an
+    importer wants the section properties and what the section *is* from one
+    upload, not two.
+    """
+    from ..geometry.features import features_for_section
+
+    report = features_for_section(section, material=material)
+    return {
+        "envelope_mm": [report.width, report.height],
+        "mass_per_metre_kg": report.mass_per_metre,
+        "paint_area_per_metre_m2": report.paint_area_per_metre,
+        "glass_capacity_mm": report.glass_capacity,
+        "takes_euro_hardware": report.takes_euro_hardware,
+        "thermal_break_width_mm": report.thermal_break_width,
+        "screw_ports": [
+            {"centre": list(centre), "diameter_mm": diameter}
+            for centre, diameter in report.screw_ports
+        ],
+        "polyamide_strips": [
+            {
+                "width_mm": strip.width,
+                "area_mm2": strip.area,
+                "centre": list(strip.centre),
+                "evidence": list(strip.evidence),
+            }
+            for strip in report.strips
+        ],
+        "detected": [
+            {
+                "kind": feature.kind.value,
+                "kind_he": feature.kind.hebrew,
+                "mouth_mm": feature.pocket.mouth,
+                "depth_mm": feature.pocket.depth,
+                "undercut_mm": feature.pocket.undercut,
+                "centre": list(feature.pocket.centre),
+                "direction": list(feature.pocket.direction),
+                "glass_capacity_mm": feature.glass_capacity,
+                "bite_mm": feature.bite,
+                "strip_width_mm": feature.strip_width,
+                "steps": [
+                    {"span_mm": s.span, "depth_mm": s.height, "openings": s.parts}
+                    for s in feature.pocket.steps
+                ],
+                "note": feature.note,
+            }
+            for feature in report.features
+        ],
+        "warnings": report.warnings,
     }
 
 

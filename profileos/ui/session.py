@@ -37,6 +37,9 @@ class Session:
     # Catalogue
     catalogue_report: Any = None
 
+    #: What was read off the section geometry: grooves, rebates, channels.
+    section_features: Any = None
+
     # ERP
     company: Any = None
 
@@ -71,6 +74,10 @@ class Session:
         self.loaded_section = section
         self.section_path = path
         self._notify("section")
+
+    def set_features(self, report: Any) -> None:
+        self.section_features = report
+        self._notify("features")
 
     def set_glass(self, report: Any) -> None:
         self.glass_report = report

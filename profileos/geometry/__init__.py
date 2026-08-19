@@ -34,6 +34,20 @@ from ..models.profile import (
 from ..models.results import GeometryReport
 from .contour import ContourChainer, Ring, Segment, rings_from_segments
 from .dxf_reader import DxfExtraction, DxfReader, DxfReadOptions, read_dxf
+from .features import (
+    DetectedFeature,
+    FeatureKind,
+    FeatureSpec,
+    Pocket,
+    ProfileFeatureReport,
+    ThermalStrip,
+    describe_section,
+    detect_features,
+    features_for_profile,
+    features_for_section,
+    find_pockets,
+    paint_area_per_metre,
+)
 from .primitives import Point, bounding_box
 from .shapely_bridge import (
     points_to_polygon,
@@ -305,6 +319,19 @@ __all__ = [
     "validate_section",
     "measure_wall_thickness",
     "detect_thermal_break",
+    # feature recognition
+    "DetectedFeature",
+    "FeatureKind",
+    "FeatureSpec",
+    "Pocket",
+    "ProfileFeatureReport",
+    "ThermalStrip",
+    "describe_section",
+    "detect_features",
+    "features_for_profile",
+    "features_for_section",
+    "find_pockets",
+    "paint_area_per_metre",
     # high level
     "load_section",
     "profile_from_dxf",

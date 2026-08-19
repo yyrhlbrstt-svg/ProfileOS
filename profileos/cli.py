@@ -234,6 +234,134 @@ def section_info(dxf: Path = typer.Argument(..., help="DXF file to inspect.")) -
         console.print(table)
 
 
+@geometry_app.command("features")
+def section_features(
+    dxf: Path = typer.Argument(..., help="DXF file to read features from."),
+    material: Optional[str] = typer.Option(None, "--material", "-m", help="Alloy id."),
+    json_out: Optional[Path] = typer.Option(None, "--json", help="Write the report as JSON."),
+) -> None:
+    """Read the grooves, rebates and channels straight off a section.
+
+    Everything printed is measured from the drawing: the mouth and depth of
+    every pocket, the glass the rebate takes, the polyamide strip width, the
+    linear mass and the coated area per metre.
+    """
+    from .geometry import load_section
+    from .geometry.features import features_for_section
+
+    if not dxf.is_file():
+        _fail(f"DXF not found: {dxf}")
+    try:
+        section = load_section(str(dxf))
+        report = features_for_section(section, material=material)
+    except ProfileOSError as exc:
+        _fail(str(exc))
+
+    console.print(
+        _kv_table(
+            dxf.name,
+            [
+                ("Envelope", f"{report.width:.1f} x {report.height:.1f} mm"),
+                ("Mass", f"{report.mass_per_metre:.3f} kg/m"),
+                ("Paint area", f"{report.paint_area_per_metre:.4f} m2/m"),
+                (
+                    "Glass capacity",
+                    f"{report.glass_capacity:.1f} mm" if report.glass_capacity else "-",
+                ),
+                ("Euro groove", "yes" if report.takes_euro_hardware else "no"),
+                (
+                    "Thermal break",
+                    f"{report.thermal_break_width:.1f} mm"
+                    if report.thermal_break_width
+                    else "none found",
+                ),
+                ("Screw ports", len(report.screw_ports)),
+            ],
+        )
+    )
+
+    if report.features:
+        table = Table(title="Features", box=None, header_style="dim")
+        table.add_column("Feature", style="cyan")
+        table.add_column("Mouth", justify="right")
+        table.add_column("Depth", justify="right")
+        table.add_column("Undercut", justify="right")
+        table.add_column("At", justify="right")
+        table.add_column("Note", style="dim")
+        for feature in report.features:
+            pocket = feature.pocket
+            table.add_row(
+                f"{feature.kind.value}  {feature.kind.hebrew}",
+                f"{pocket.mouth:.2f}",
+                f"{pocket.depth:.2f}",
+                f"{pocket.undercut:.2f}" if pocket.undercut > 0.4 else "-",
+                f"{pocket.centre[0]:.1f}, {pocket.centre[1]:.1f}",
+                feature.note,
+            )
+        console.print(table)
+    else:
+        console.print("[yellow]No features found on this section.[/yellow]")
+
+    for strip in report.strips:
+        console.print(
+            f"[green]Polyamide strip {strip.width:.1f} mm[/green] "
+            f"({', '.join(strip.evidence)})"
+        )
+    for warning in report.warnings:
+        console.print(f"[yellow]{warning}[/yellow]")
+
+    if json_out:
+        payload = {
+            "source": str(dxf),
+            "envelope_mm": [report.width, report.height],
+            "bounds_mm": list(report.bounds),
+            "mass_per_metre_kg": report.mass_per_metre,
+            "paint_area_per_metre_m2": report.paint_area_per_metre,
+            "glass_capacity_mm": report.glass_capacity,
+            "thermal_break_width_mm": report.thermal_break_width,
+            "screw_ports": [
+                {"centre": list(centre), "diameter_mm": diameter}
+                for centre, diameter in report.screw_ports
+            ],
+            "polyamide_strips": [
+                {
+                    "width_mm": strip.width,
+                    "area_mm2": strip.area,
+                    "centre": list(strip.centre),
+                    "evidence": list(strip.evidence),
+                }
+                for strip in report.strips
+            ],
+            "features": [
+                {
+                    "kind": feature.kind.value,
+                    "kind_he": feature.kind.hebrew,
+                    "mouth_mm": feature.pocket.mouth,
+                    "depth_mm": feature.pocket.depth,
+                    "undercut_mm": feature.pocket.undercut,
+                    "centre": list(feature.pocket.centre),
+                    "direction": list(feature.pocket.direction),
+                    "glass_capacity_mm": feature.glass_capacity,
+                    "bite_mm": feature.bite,
+                    "strip_width_mm": feature.strip_width,
+                    "steps": [
+                        {
+                            "span_mm": step.span,
+                            "depth_mm": step.height,
+                            "openings": step.parts,
+                        }
+                        for step in feature.pocket.steps
+                    ],
+                }
+                for feature in report.features
+            ],
+            "warnings": report.warnings,
+        }
+        json_out.parent.mkdir(parents=True, exist_ok=True)
+        json_out.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+        console.print(f"[green]Wrote[/green] {json_out}")
+
+
 # --------------------------------------------------------------------------- #
 # Nesting
 # --------------------------------------------------------------------------- #

@@ -126,9 +126,28 @@ class ProfilePage(Page):
         side_layout.setContentsMargins(0, 0, 0, 0)
         side_layout.setSpacing(METRICS.space(3))
 
-        properties_card = Card("Section properties")
+        properties_card = Card("Section")
+        tabs = QTabWidget()
         self.properties = DataTable(["Symbol", "Value", "Unit"])
-        properties_card.add(self.properties, 1)
+        tabs.addTab(self.properties, "Properties")
+
+        features_panel = QWidget()
+        features_layout = QVBoxLayout(features_panel)
+        features_layout.setContentsMargins(0, 0, 0, 0)
+        features_layout.setSpacing(METRICS.space(2))
+        self.feature_summary = DataTable(["", ""])
+        self.feature_summary.horizontalHeader().setVisible(False)
+        self.feature_summary.setMaximumHeight(METRICS.row_height * 6 + 4)
+        features_layout.addWidget(self.feature_summary)
+        self.features = DataTable(["Feature", "Mouth", "Depth", "Undercut"])
+        features_layout.addWidget(self.features, 1)
+        self.feature_notes = QLabel("")
+        self.feature_notes.setWordWrap(True)
+        self.feature_notes.setObjectName("Muted")
+        features_layout.addWidget(self.feature_notes)
+        tabs.addTab(features_panel, "Features")
+
+        properties_card.add(tabs, 1)
         side_layout.addWidget(properties_card, 1)
 
         check_card = Card("Wind load check")
@@ -197,8 +216,50 @@ class ProfilePage(Page):
             f"{path.name} — {section.width:.0f} × {section.height:.0f} mm, "
             f"{section.topology.chamber_count} chamber(s)"
         )
+        self.show_features(section, properties.material_id)
         self.status(f"Analysed {path.name}")
         self.run_check()
+
+    def show_features(self, section: Any, material: str | None) -> None:
+        """Fill the Features tab with what was read off the drawing.
+
+        A failure here must not cost the operator the structural analysis they
+        actually asked for, so it is reported in the panel rather than raised.
+        """
+        from ..geometry.features import features_for_section
+
+        try:
+            report = features_for_section(section, material=material)
+        except Exception as exc:  # noqa: BLE001 - the section is still usable
+            _log.warning("Feature recognition failed: %s", exc)
+            self.feature_summary.set_rows([["Feature recognition", "unavailable"]])
+            self.features.set_rows([])
+            self.feature_notes.setText(str(exc))
+            return
+
+        self.session.set_features(report)
+        self.feature_summary.set_rows(
+            [[label, value] for label, value in report.summary_rows()]
+        )
+        rows = []
+        colours: dict[tuple[int, int], str] = {}
+        for index, feature in enumerate(report.features):
+            pocket = feature.pocket
+            rows.append([
+                f"{feature.kind.hebrew} · {feature.kind.value}",
+                f"{pocket.mouth:.2f}",
+                f"{pocket.depth:.2f}",
+                f"{pocket.undercut:.2f}" if pocket.undercut > 0.4 else "—",
+            ])
+            if feature.kind.value != "pocket":
+                colours[(index, 0)] = self.colours.accent
+        self.features.set_rows(rows, numeric_columns=(1, 2, 3), colours=colours)
+
+        notes = [strip.evidence and
+                 f"Polyamide strip {strip.width:.1f} mm ({', '.join(strip.evidence)})"
+                 for strip in report.strips]
+        notes.extend(report.warnings)
+        self.feature_notes.setText("  ".join(note for note in notes if note))
 
     def run_check(self) -> None:
         if self.session.section_properties is None:
