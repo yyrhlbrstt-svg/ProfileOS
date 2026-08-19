@@ -536,4 +536,211 @@ def label(payload: str, kind: str = "code128") -> str:
         raise _handle(exc) from exc
 
 
+# --------------------------------------------------------------------------- #
+# 3D views
+# --------------------------------------------------------------------------- #
+
+class ViewRequest(ElementRequest):
+    """An element to model, plus how it should be shown."""
+
+    #: "presentation" (three-quarter, perspective) or "elevation" (head-on).
+    view: str = "presentation"
+    #: "natural" or "bronze".
+    finish: str = "natural"
+    show_glass: bool = True
+
+
+@app.post("/view/svg", response_class=PlainTextResponse, tags=["view"])
+def view_svg(request: ViewRequest) -> str:
+    """Render an element to printable SVG.
+
+    Text, not an image: the response scales to any sheet and can be dropped
+    straight into a quotation or a submittal.
+    """
+    from ..elements import ElementBuilder
+    from ..viz3d import (
+        BRONZE_MATERIALS,
+        DEFAULT_MATERIALS,
+        RenderOptions,
+        ViewStyle,
+        build_element_scene,
+        elevation_camera,
+        presentation_camera,
+        render_svg,
+    )
+
+    try:
+        build = ElementBuilder().build(_to_opening(request), sill_height=request.sill_height)
+        scene = build_element_scene(build, style=ViewStyle(show_glass=request.show_glass))
+        camera = (
+            elevation_camera(scene) if request.view == "elevation"
+            else presentation_camera(scene)
+        )
+        return render_svg(
+            scene, camera,
+            RenderOptions(
+                materials=dict(
+                    BRONZE_MATERIALS if request.finish == "bronze" else DEFAULT_MATERIALS
+                )
+            ),
+        )
+    except ProfileOSError as exc:
+        raise _handle(exc) from exc
+
+
+@app.post("/view/gltf", tags=["view"])
+def view_gltf(request: ViewRequest) -> dict[str, Any]:
+    """Export an element as glTF 2.0, ready for any 3D tool."""
+    import json as _json
+
+    from ..elements import ElementBuilder
+    from ..viz3d import ViewStyle, build_element_scene, to_gltf
+
+    try:
+        build = ElementBuilder().build(_to_opening(request), sill_height=request.sill_height)
+        scene = build_element_scene(build, style=ViewStyle(show_glass=request.show_glass))
+        return _json.loads(to_gltf(scene))
+    except ProfileOSError as exc:
+        raise _handle(exc) from exc
+
+
+@app.post("/view/viewer", response_class=HTMLResponse, tags=["view"])
+def view_viewer(request: ViewRequest) -> str:
+    """A self-contained interactive viewer for one element.
+
+    Everything is inlined, so the page works from a memory stick in a site
+    office with no network — which is where it is usually opened.
+    """
+    from ..elements import ElementBuilder
+    from ..viz3d import ViewStyle, build_element_scene, render_viewer
+
+    try:
+        build = ElementBuilder().build(_to_opening(request), sill_height=request.sill_height)
+        scene = build_element_scene(build, style=ViewStyle(show_glass=request.show_glass))
+        return render_viewer(scene)
+    except ProfileOSError as exc:
+        raise _handle(exc) from exc
+
+
+# --------------------------------------------------------------------------- #
+# ERP
+# --------------------------------------------------------------------------- #
+
+class ScheduleRequest(BaseModel):
+    """A job's work content, and when it is wanted."""
+
+    job_id: str = "JOB"
+    elements: int = Field(default=1, ge=0)
+    cuts: int = Field(default=0, ge=0)
+    machining_operations: int = Field(default=0, ge=0)
+    panes: int = Field(default=0, ge=0)
+    start: Optional[str] = None
+    due: Optional[str] = None
+
+
+@app.post("/erp/schedule", tags=["erp"])
+def erp_schedule(request: ScheduleRequest) -> dict[str, Any]:
+    """Place a job on the shop's finite capacity and say when it finishes."""
+    from datetime import date as _date
+
+    from ..erp import DEFAULT_WORK_CENTRES, JobDemand, Scheduler
+
+    def parse(value: Optional[str]) -> Optional[_date]:
+        if not value:
+            return None
+        try:
+            return _date.fromisoformat(value)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=422, detail={"message": f"Not a date: {value!r}"}
+            ) from exc
+
+    demand = JobDemand(
+        job_id=request.job_id, elements=request.elements, cuts=request.cuts,
+        machining_operations=request.machining_operations, panes=request.panes,
+        due=parse(request.due),
+    )
+    plan = Scheduler().schedule([demand], start=parse(request.start))
+    return {
+        "completion": plan.completion[demand.job_id].isoformat(),
+        "late_days": plan.late[demand.job_id],
+        "operations": [
+            {
+                "operation": str(operation.operation),
+                "work_centre": operation.work_centre,
+                "start": operation.start.isoformat(),
+                "finish": operation.finish.isoformat(),
+                "hours": round(operation.hours, 3),
+            }
+            for operation in sorted(plan.operations, key=lambda o: (o.start, o.operation))
+        ],
+        "utilisation": plan.utilisation(DEFAULT_WORK_CENTRES),
+        "bottleneck": plan.bottleneck(DEFAULT_WORK_CENTRES),
+        "warnings": plan.warnings,
+    }
+
+
+class RequirementsRequest(BaseModel):
+    """Gross demand, and what is already on the rack or on order."""
+
+    #: ``{"4301": 486.0}`` — item code to quantity.
+    demand: dict[str, float]
+    on_hand: dict[str, float] = Field(default_factory=dict)
+    allocated: dict[str, float] = Field(default_factory=dict)
+    on_order: dict[str, float] = Field(default_factory=dict)
+
+
+@app.post("/erp/requirements", tags=["erp"])
+def erp_requirements(request: RequirementsRequest) -> list[dict[str, Any]]:
+    """Turn gross demand into what actually has to be bought."""
+    from ..erp import StockItem, StockLedger, requirements
+
+    stock = StockLedger()
+    for code in set(request.demand) | set(request.on_hand):
+        stock.add_item(StockItem(code, code))
+        if request.on_hand.get(code):
+            stock.receive(code, request.on_hand[code], 0.0)
+        if request.allocated.get(code):
+            stock.allocate(code, request.allocated[code])
+        if request.on_order.get(code):
+            stock.order(code, request.on_order[code])
+
+    return [
+        {
+            "item": row.item,
+            "gross": round(row.gross, 3),
+            "free": round(row.free, 3),
+            "on_order": round(row.on_order, 3),
+            "net": round(row.net, 3),
+            "must_order": row.must_order,
+            "explain": row.explain(),
+        }
+        for row in requirements(request.demand, stock)
+    ]
+
+
+@app.get("/erp/vat", tags=["erp"])
+def erp_vat(on: str) -> dict[str, Any]:
+    """The statutory VAT rate in force on a date."""
+    from datetime import date as _date
+
+    from ..erp import ISRAELI_VAT_HISTORY, vat_rate
+
+    try:
+        when = _date.fromisoformat(on)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422, detail={"message": f"Not a date: {on!r}"}
+        ) from exc
+    return {
+        "date": when.isoformat(),
+        "rate": vat_rate(when),
+        "history": [
+            {"from": effective.isoformat(), "rate": rate}
+            for effective, rate in ISRAELI_VAT_HISTORY
+        ],
+    }
+
+
+
 __all__ = ["app"]

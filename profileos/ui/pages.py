@@ -1870,13 +1870,529 @@ class SystemPage(Page):
         layout.addWidget(legend)
 
 
+
+# --------------------------------------------------------------------------- #
+# 3D views
+# --------------------------------------------------------------------------- #
+
+class ViewPage(Page):
+    """See the element the way the customer will."""
+
+    title = "3D view"
+    subtitle = "Presentation and technical views of the designed elements"
+
+    def build(self) -> None:
+        from PySide6.QtSvgWidgets import QSvgWidget
+
+        render = QPushButton("Render")
+        render.setObjectName("Primary")
+        render.clicked.connect(self.render_scene)
+        self.header.add_action(render)
+
+        export = QPushButton("Export")
+        export.clicked.connect(self.export_scene)
+        self.header.add_action(export)
+
+        self.stats = StatRow([
+            ("parts", "Parts"), ("triangles", "Triangles"),
+            ("metal", "Metal"), ("size", "Size"), ("panes", "Panes"),
+        ])
+        self.body.addWidget(self.stats)
+
+        controls = Card("View")
+        row = QHBoxLayout()
+        row.setSpacing(METRICS.space(4))
+
+        self.element = QComboBox()
+        self.view = QComboBox()
+        self.view.addItems(["presentation", "elevation"])
+        self.finish = QComboBox()
+        self.finish.addItems(["natural", "bronze"])
+        self.glass = QComboBox()
+        self.glass.addItems(["with glass", "frames only"])
+
+        for label, widget in [("Element", self.element), ("View", self.view),
+                              ("Finish", self.finish), ("Glazing", self.glass)]:
+            caption = QLabel(label)
+            caption.setObjectName("FieldLabel")
+            row.addWidget(caption)
+            row.addWidget(widget)
+        row.addStretch(1)
+        controls.add_layout(row)
+        self.body.addWidget(controls)
+
+        self.canvas = QSvgWidget()
+        self.canvas.setMinimumHeight(420)
+        self.body.addWidget(self.canvas, 1)
+
+        note = QLabel(
+            "The model is swept from the same profile sections and placed by the "
+            "same system rules that produce the cut list, so what is drawn here "
+            "is what the shop will make. Export writes printable SVG, glTF for "
+            "any 3D tool, and a self-contained interactive viewer."
+        )
+        note.setObjectName("Hint")
+        note.setWordWrap(True)
+        self.body.addWidget(note)
+
+        for widget in (self.element, self.view, self.finish, self.glass):
+            widget.currentTextChanged.connect(self._redraw)
+        self._scene = None
+
+    def refresh(self) -> None:
+        ids = [build.opening.element_id for build in self.session.builds]
+        current = self.element.currentText()
+        self.element.blockSignals(True)
+        self.element.clear()
+        self.element.addItems(ids)
+        if current in ids:
+            self.element.setCurrentText(current)
+        self.element.blockSignals(False)
+        self.header.set_subtitle(
+            f"{len(ids)} element(s) designed" if ids else "Design an element first"
+        )
+
+    def _build_for(self, element_id: str):
+        """The build the picker names — or the first one, if it names nothing.
+
+        The picker is filled by :meth:`refresh`, which runs when the page is
+        navigated to. Reaching the page another way — a keyboard shortcut, a
+        restored layout — leaves it empty while the session plainly has
+        elements in it, and erroring at the user in that state is a bug, not a
+        message worth showing.
+        """
+        for build in self.session.builds:
+            if build.opening.element_id == element_id:
+                return build
+        if self.session.builds and not element_id:
+            self.refresh()
+            return self.session.builds[0]
+        return None
+
+    def render_scene(self) -> None:
+        from ..viz3d import ViewStyle, build_element_scene
+
+        build = self._build_for(self.element.currentText())
+        if build is None:
+            self.report(
+                ProfileOSError("No elements have been designed yet"), "Nothing to render"
+            )
+            return
+        try:
+            self._scene = build_element_scene(
+                build,
+                style=ViewStyle(show_glass=self.glass.currentText() == "with glass"),
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "Could not build the model")
+            return
+
+        scene = self._scene
+        size = scene.size
+        panes = sum(1 for mesh in scene.meshes if mesh.material == "glass")
+        self.stats.update_many({
+            "parts": (str(len(scene.meshes)), "modelled solids"),
+            "triangles": (f"{scene.triangle_count:,}", ""),
+            "metal": (f"{scene.aluminium_volume() * 2.70e-6:.1f} kg", "at 2.70 g/cm³"),
+            "size": (f"{size[0]:.0f}×{size[1]:.0f}", f"{size[2]:.0f} mm deep"),
+            "panes": (str(panes), ""),
+        })
+        self._redraw()
+
+    def _redraw(self) -> None:
+        if self._scene is None:
+            return
+        from ..viz3d import (
+            BRONZE_MATERIALS,
+            DEFAULT_MATERIALS,
+            RenderOptions,
+            elevation_camera,
+            presentation_camera,
+            render_svg,
+        )
+
+        options = RenderOptions(
+            width=1200, height=760,
+            materials=dict(
+                BRONZE_MATERIALS if self.finish.currentText() == "bronze"
+                else DEFAULT_MATERIALS
+            ),
+            background=self.colours.surface_sunken,
+        )
+        camera = (
+            elevation_camera(self._scene)
+            if self.view.currentText() == "elevation"
+            else presentation_camera(self._scene)
+        )
+        try:
+            svg = render_svg(self._scene, camera, options)
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "Could not render the view")
+            return
+        self.canvas.load(svg.encode("utf-8"))
+
+    def export_scene(self) -> None:
+        from ..viz3d import RenderOptions, render_viewer, render_views, write_gltf
+
+        if self._scene is None:
+            self.report(ProfileOSError("Render the element first"), "Nothing to export")
+            return
+        folder = QFileDialog.getExistingDirectory(self, "Where should the views go?")
+        if not folder:
+            return
+        target = Path(folder)
+        stem = "".join(
+            c if c.isalnum() or c in "-_" else "_" for c in self.element.currentText()
+        ) or "element"
+        written = 0
+        for name, svg in render_views(self._scene, RenderOptions()).items():
+            (target / f"{stem}-{name}.svg").write_text(svg, encoding="utf-8")
+            written += 1
+        (target / f"{stem}.html").write_text(
+            render_viewer(self._scene), encoding="utf-8"
+        )
+        write_gltf(self._scene, target / f"{stem}.gltf")
+        write_gltf(self._scene, target / f"{stem}.glb")
+        self.status(f"Wrote {written + 3} file(s) to {target}")
+
+
+# --------------------------------------------------------------------------- #
+# ERP
+# --------------------------------------------------------------------------- #
+
+class AccountsPage(Page):
+    """Stock, purchasing, the ledger and the shop's capacity."""
+
+    title = "Accounts"
+    subtitle = "Stock, purchasing, the ledger and what the shop can take on"
+
+    def build(self) -> None:
+        audit = QPushButton("Audit")
+        audit.setObjectName("Primary")
+        audit.clicked.connect(self.run_audit)
+        self.header.add_action(audit)
+
+        self.stats = StatRow([
+            ("stock", "Stock"), ("debtors", "Debtors"), ("creditors", "Creditors"),
+            ("result", "Result"), ("entries", "Entries"),
+        ])
+        self.body.addWidget(self.stats)
+
+        tabs = QTabWidget()
+        tabs.addTab(self._stock_tab(), "Stock")
+        tabs.addTab(self._purchasing_tab(), "Purchasing")
+        tabs.addTab(self._ledger_tab(), "Ledger")
+        tabs.addTab(self._planning_tab(), "Capacity")
+        self.body.addWidget(tabs, 1)
+        self.tabs = tabs
+
+    # -- shared company ------------------------------------------------------- #
+    def _company(self):
+        if self.session.company is None:
+            from ..erp import company_for_brand
+
+            self.session.set_company(company_for_brand())
+        return self.session.company
+
+    # -- stock ---------------------------------------------------------------- #
+    def _stock_tab(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, METRICS.space(3), 0, 0)
+        layout.setSpacing(METRICS.space(3))
+
+        self.stock_table = DataTable(
+            ["Item", "Name", "On hand", "Allocated", "On order",
+             "Projected", "Unit cost", "Value", "Reorder"]
+        )
+        layout.addWidget(self.stock_table, 1)
+
+        note = QLabel(
+            "Value follows the physical movement: FIFO consumes the oldest "
+            "delivery first, so what a bar cost depends on which delivery it "
+            "came from. Issuing more than is on the rack is refused — a negative "
+            "balance is a missing goods receipt, not a quantity."
+        )
+        note.setObjectName("Hint")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        return page
+
+    def _refresh_stock(self) -> None:
+        from ..erp import format_money
+
+        company = self._company()
+        colours: dict[tuple[int, int], str] = {}
+        rows = []
+        for index, row in enumerate(company.stock.valuation_report()):
+            rows.append([
+                row["code"], row["name"], f"{row['on_hand']:.1f}",
+                f"{row['allocated']:.1f}", f"{row['on_order']:.1f}",
+                f"{row['projected']:.1f}",
+                format_money(int(row["unit_cost"]), company.currency),
+                format_money(row["value"], company.currency),
+                "yes" if row["below_reorder"] else "",
+            ])
+            if row["below_reorder"]:
+                colours[(index, 8)] = self.colours.warning
+        self.stock_table.set_rows(rows, numeric_columns=(2, 3, 4, 5, 6, 7), colours=colours)
+
+    # -- purchasing ------------------------------------------------------------ #
+    def _purchasing_tab(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, METRICS.space(3), 0, 0)
+        layout.setSpacing(METRICS.space(3))
+
+        plan = QPushButton("Plan purchases for the designed elements")
+        plan.clicked.connect(self.plan_purchases)
+        layout.addWidget(plan)
+
+        self.requirements_table = DataTable(
+            ["Item", "Needed", "Free", "On order", "To buy", "Unit"]
+        )
+        layout.addWidget(self.requirements_table, 1)
+
+        self.orders_table = DataTable(["Order", "Supplier", "Lines", "Net", "Promised"])
+        layout.addWidget(self.orders_table, 1)
+
+        note = QLabel(
+            "Net requirement is what has to be bought: the gross, less what is "
+            "free on the rack, less what is already on order. Orders are grouped "
+            "one per supplier and rounded up to the stock length, because a "
+            "supplier does not sell 11.4 metres of a 6 metre bar."
+        )
+        note.setObjectName("Hint")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        return page
+
+    def plan_purchases(self) -> None:
+        from ..erp import StockItem, money
+
+        if not self.session.builds:
+            self.report(
+                ProfileOSError("No elements have been designed yet"), "Nothing to plan"
+            )
+            return
+
+        company = self._company()
+        demand: dict[str, float] = {}
+        for build in self.session.builds:
+            quantity = build.opening.quantity
+            for cut in build.cuts:
+                demand[cut.profile_id] = demand.get(cut.profile_id, 0.0) + (
+                    cut.total_length * quantity / 1000.0
+                )
+
+        prices: dict[str, float] = {}
+        for code, needed in demand.items():
+            if code not in company.stock.items:
+                company.add_item(
+                    StockItem(code, code, supplier_id="unassigned",
+                              reorder_quantity=6.0, lead_time_days=12)
+                )
+            prices[code] = float(money(42.0))
+
+        try:
+            rows, orders = company.plan_purchases(demand, prices)
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "Could not plan the purchases")
+            return
+
+        self.requirements_table.set_rows(
+            [
+                [r.item, f"{r.gross:.1f}", f"{r.free:.1f}", f"{r.on_order:.1f}",
+                 f"{r.net:.1f}", r.unit]
+                for r in rows
+            ],
+            numeric_columns=(1, 2, 3, 4),
+        )
+        from ..erp import format_money
+
+        self.orders_table.set_rows(
+            [
+                [o.order_id, o.supplier_id, str(len(o.lines)),
+                 format_money(o.net, company.currency),
+                 o.promised.isoformat() if o.promised else ""]
+                for o in orders
+            ],
+            numeric_columns=(2, 3),
+        )
+        self.status(
+            f"{sum(1 for r in rows if r.must_order)} item(s) to buy across "
+            f"{len(orders)} order(s)"
+        )
+        self._refresh_stock()
+
+    # -- ledger ----------------------------------------------------------------- #
+    def _ledger_tab(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, METRICS.space(3), 0, 0)
+        layout.setSpacing(METRICS.space(3))
+
+        self.trial_table = DataTable(["Code", "Account", "Type", "Debit", "Credit"])
+        layout.addWidget(self.trial_table, 1)
+
+        self.position_grid = FieldGrid()
+        layout.addWidget(self.position_grid)
+        self._position_values: dict[str, QLabel] = {}
+        for label in ("Income", "Expense", "Result", "Assets", "Liabilities",
+                      "Equity", "Balance sheet difference"):
+            value = QLabel("—")
+            value.setObjectName("FieldValue")
+            value.setAlignment(
+                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignAbsolute
+                | Qt.AlignmentFlag.AlignVCenter
+            )
+            self._position_values[label] = self.position_grid.add(label, value)
+
+        note = QLabel(
+            "Double entry, in minor currency units. An entry that does not sum "
+            "to zero is refused at the point it is written, so the trial balance "
+            "cannot fail to balance — and Audit proves that rather than assuming "
+            "it, and checks the stock accounts against the stock book."
+        )
+        note.setObjectName("Hint")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        return page
+
+    def _refresh_ledger(self) -> None:
+        from ..erp import format_money
+
+        company = self._company()
+        self.trial_table.set_rows(
+            [
+                [row.account.code, row.account.name, str(row.account.type),
+                 format_money(row.debits, company.currency) if row.debits else "",
+                 format_money(row.credits, company.currency) if row.credits else ""]
+                for row in company.ledger.trial_balance()
+            ],
+            numeric_columns=(3, 4),
+        )
+        profit = company.ledger.profit_and_loss()
+        sheet = company.ledger.balance_sheet()
+        for label, value in [
+            ("Income", profit["income"]), ("Expense", profit["expense"]),
+            ("Result", profit["result"]), ("Assets", sheet["assets"]),
+            ("Liabilities", sheet["liabilities"]), ("Equity", sheet["equity"]),
+            ("Balance sheet difference", sheet["difference"]),
+        ]:
+            self._position_values[label].setText(format_money(value, company.currency))
+
+    # -- capacity ---------------------------------------------------------------- #
+    def _planning_tab(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, METRICS.space(3), 0, 0)
+        layout.setSpacing(METRICS.space(3))
+
+        run = QPushButton("Schedule the designed elements")
+        run.clicked.connect(self.run_schedule)
+        layout.addWidget(run)
+
+        self.schedule_table = DataTable(
+            ["Operation", "Work centre", "Start", "Finish", "Hours"]
+        )
+        layout.addWidget(self.schedule_table, 1)
+        self.load_table = DataTable(
+            ["Code", "Work centre", "Hours", "Available", "Utilisation"]
+        )
+        layout.addWidget(self.load_table, 1)
+
+        note = QLabel(
+            "Finite capacity: a saw already committed to three jobs pushes the "
+            "fourth out, which is what happens on the floor whether or not the "
+            "plan says so. The week runs Sunday to Thursday with Friday a half "
+            "day, and the glass lead time runs beside the shop work rather than "
+            "after it."
+        )
+        note.setObjectName("Hint")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        return page
+
+    def run_schedule(self) -> None:
+        from ..erp import DEFAULT_WORK_CENTRES, Scheduler, demand_from_builds
+
+        if not self.session.builds:
+            self.report(
+                ProfileOSError("No elements have been designed yet"), "Nothing to schedule"
+            )
+            return
+        demand = demand_from_builds(self.session.builds, "JOB")
+        plan = Scheduler().schedule([demand])
+        self.schedule_table.set_rows(
+            [
+                [str(op.operation), op.work_centre, op.start.isoformat(),
+                 op.finish.isoformat(), f"{op.hours:.2f}" if op.hours else "—"]
+                for op in sorted(plan.operations, key=lambda o: (o.start, o.operation))
+            ],
+            numeric_columns=(4,),
+        )
+        colours: dict[tuple[int, int], str] = {}
+        rows = plan.utilisation(DEFAULT_WORK_CENTRES)
+        for index, row in enumerate(rows):
+            colours[(index, 4)] = (
+                self.colours.danger if row["utilisation_pct"] > 90
+                else self.colours.warning if row["utilisation_pct"] > 70
+                else self.colours.success
+            )
+        self.load_table.set_rows(
+            [
+                [r["code"], r["name"], f"{r['hours']:.1f}",
+                 f"{r['available']:.1f}", f"{r['utilisation_pct']:.0f}%"]
+                for r in rows
+            ],
+            numeric_columns=(2, 3, 4), colours=colours,
+        )
+        finish = plan.completion[demand.job_id]
+        bottleneck = plan.bottleneck(DEFAULT_WORK_CENTRES)
+        self.status(
+            f"Complete {finish.isoformat()} ({finish.strftime('%A')})"
+            + (f" · bottleneck {bottleneck['name']}" if bottleneck else "")
+        )
+
+    # -- audit -------------------------------------------------------------------- #
+    def run_audit(self) -> None:
+        from ..erp import format_money
+
+        company = self._company()
+        try:
+            report = company.audit()
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "The books and the racks disagree")
+            return
+
+        summary = company.summary()
+        self.stats.update_many({
+            "stock": (format_money(summary["stock_value"], company.currency), ""),
+            "debtors": (format_money(summary["debtors"], company.currency), "owed to us"),
+            "creditors": (format_money(summary["creditors"], company.currency), "we owe"),
+            "result": (format_money(summary["result"], company.currency), "this period"),
+            "entries": (str(report["entries"]), f"{report['movements']} movements"),
+        })
+        self._refresh_stock()
+        self._refresh_ledger()
+        self.status(
+            "Ledger balanced, stock reconciled against its movement history, "
+            "stock accounts agree with the stock book."
+        )
+
+    def refresh(self) -> None:
+        self._refresh_stock()
+        self._refresh_ledger()
+
+
 PAGES: list[type[Page]] = [
-    ProfilePage, ElementPage, NestingPage, GlassPage, MachiningPage,
-    QuotePage, ShopFloorPage, CataloguePage, SystemPage,
+    ProfilePage, ElementPage, ViewPage, NestingPage, GlassPage, MachiningPage,
+    QuotePage, AccountsPage, ShopFloorPage, CataloguePage, SystemPage,
 ]
 
 __all__ = [
-    "Page", "ProfilePage", "ElementPage", "NestingPage", "GlassPage",
-    "MachiningPage", "QuotePage", "ShopFloorPage", "CataloguePage",
-    "SystemPage", "PAGES",
+    "Page", "ProfilePage", "ElementPage", "ViewPage", "NestingPage",
+    "GlassPage", "MachiningPage", "QuotePage", "AccountsPage",
+    "ShopFloorPage", "CataloguePage", "SystemPage", "PAGES",
 ]

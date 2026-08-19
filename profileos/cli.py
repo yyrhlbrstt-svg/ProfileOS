@@ -44,6 +44,9 @@ element_app = typer.Typer(help="Windows, doors and curtain walls.")
 pipe_app = typer.Typer(help="Pipework sizing and network analysis.")
 glass_app = typer.Typer(help="Glass and panel sheet nesting.")
 catalogue_app = typer.Typer(help="Build an owned profile library from supplier catalogues.")
+erp_app = typer.Typer(help="Stock, purchasing, sales, ledger and capacity planning.")
+access_app = typer.Typer(help="Who may open this installation at all.")
+view_app = typer.Typer(help="3D presentation and technical views.")
 plugin_app = typer.Typer(help="Plugin registries and hot reload.")
 update_app = typer.Typer(help="Signed content updates.")
 licence_app = typer.Typer(help="Hardware authentication and licensing.")
@@ -55,6 +58,9 @@ app.add_typer(element_app, name="element")
 app.add_typer(pipe_app, name="pipe")
 app.add_typer(glass_app, name="glass")
 app.add_typer(catalogue_app, name="catalogue")
+app.add_typer(erp_app, name="erp")
+app.add_typer(access_app, name="access")
+app.add_typer(view_app, name="view")
 app.add_typer(plugin_app, name="plugin")
 app.add_typer(update_app, name="update")
 app.add_typer(licence_app, name="licence")
@@ -1496,6 +1502,445 @@ def compare_command(
             encoding="utf-8",
         )
         console.print(f"[green]Wrote[/] {json_out}")
+
+
+# --------------------------------------------------------------------------- #
+# 3D views
+# --------------------------------------------------------------------------- #
+@view_app.command("render")
+def view_render(
+    elevations: Path = typer.Argument(..., help="Elevation-set JSON with the openings."),
+    element: Optional[str] = typer.Option(
+        None, "--element", "-e", help="One element id; omitted, the whole elevation."
+    ),
+    out: Path = typer.Option(Path("views"), "--out", "-o", help="Output directory."),
+    finish: str = typer.Option(
+        "natural", "--finish", help="natural | bronze — the anodised look."
+    ),
+    no_glass: bool = typer.Option(False, "--no-glass", help="Frames only."),
+    gltf: bool = typer.Option(False, "--gltf", help="Also export glTF and GLB."),
+    viewer: bool = typer.Option(True, "--viewer/--no-viewer", help="Interactive HTML."),
+) -> None:
+    """Render elements in 3D: printable SVG, glTF, and an interactive viewer."""
+    from .elements import ElevationSet, build_elements
+    from .viz3d import (
+        BRONZE_MATERIALS,
+        DEFAULT_MATERIALS,
+        RenderOptions,
+        ViewStyle,
+        build_element_scene,
+        build_elevation_scene,
+        render_viewer,
+        render_views,
+        write_gltf,
+    )
+
+    if not elevations.is_file():
+        _fail(f"Elevation set not found: {elevations}")
+    try:
+        parsed = ElevationSet.model_validate_json(elevations.read_text(encoding="utf-8"))
+    except Exception as exc:  # noqa: BLE001 - user-supplied file
+        _fail("Could not parse the elevation set", exc)
+
+    openings = parsed.openings
+    if element:
+        openings = [o for o in openings if o.element_id == element]
+        if not openings:
+            _fail(
+                f"No element {element!r}. Known: "
+                + ", ".join(o.element_id for o in parsed.openings)
+            )
+
+    style = ViewStyle(show_glass=not no_glass)
+    options = RenderOptions(
+        materials=dict(BRONZE_MATERIALS if finish == "bronze" else DEFAULT_MATERIALS),
+        background=None,
+    )
+    builds = build_elements(openings)
+    out.mkdir(parents=True, exist_ok=True)
+    written: list[Path] = []
+
+    def emit(scene, stem: str) -> None:
+        for name, svg in render_views(scene, options).items():
+            path = out / f"{stem}-{name}.svg"
+            path.write_text(svg, encoding="utf-8")
+            written.append(path)
+        if viewer:
+            path = out / f"{stem}.html"
+            path.write_text(render_viewer(scene), encoding="utf-8")
+            written.append(path)
+        if gltf:
+            written.append(write_gltf(scene, out / f"{stem}.gltf"))
+            written.append(write_gltf(scene, out / f"{stem}.glb"))
+
+    table = Table(title=f"3D views - {parsed.name}", header_style="dim")
+    table.add_column("Element", style="cyan")
+    table.add_column("Size", justify="right")
+    table.add_column("Parts", justify="right")
+    table.add_column("Triangles", justify="right")
+    table.add_column("Metal", justify="right")
+
+    for build in builds:
+        scene = build_element_scene(build, style=style)
+        stem = "".join(
+            c if c.isalnum() or c in "-_" else "_" for c in build.opening.element_id
+        )
+        emit(scene, stem)
+        size = scene.size
+        table.add_row(
+            build.opening.element_id,
+            f"{size[0]:.0f} x {size[1]:.0f}",
+            str(len(scene.meshes)),
+            f"{scene.triangle_count:,}",
+            f"{scene.aluminium_volume() * 2.70e-6:.1f} kg",
+        )
+
+    if len(builds) > 1 and not element:
+        emit(build_elevation_scene(builds, style=style), "elevation")
+
+    console.print(table)
+    console.print(f"[green]Wrote[/] {len(written)} file(s) to {out}")
+
+
+# --------------------------------------------------------------------------- #
+# ERP
+# --------------------------------------------------------------------------- #
+@erp_app.command("plan")
+def erp_plan(
+    elevations: Path = typer.Argument(..., help="Elevation-set JSON with the openings."),
+    start: Optional[str] = typer.Option(None, "--start", help="Release date, YYYY-MM-DD."),
+    due: Optional[str] = typer.Option(None, "--due", help="Promised date, YYYY-MM-DD."),
+) -> None:
+    """Schedule a job against the shop's finite capacity and say when it lands."""
+    from datetime import date as _date
+
+    from .elements import ElevationSet, build_elements
+    from .erp import DEFAULT_WORK_CENTRES, Scheduler, demand_from_builds
+
+    if not elevations.is_file():
+        _fail(f"Elevation set not found: {elevations}")
+    try:
+        parsed = ElevationSet.model_validate_json(elevations.read_text(encoding="utf-8"))
+    except Exception as exc:  # noqa: BLE001
+        _fail("Could not parse the elevation set", exc)
+
+    def parse(value: Optional[str]) -> Optional[_date]:
+        if not value:
+            return None
+        try:
+            return _date.fromisoformat(value)
+        except ValueError:
+            _fail(f"Not a date: {value!r}; use YYYY-MM-DD")
+
+    builds = build_elements(parsed.openings)
+    demand = demand_from_builds(
+        builds, parsed.project_id, due=parse(due), name=parsed.name
+    )
+    scheduler = Scheduler()
+    plan = scheduler.schedule([demand], start=parse(start))
+
+    console.print(
+        _kv_table(
+            "Work content",
+            [
+                ("Elements", str(demand.elements)),
+                ("Cuts", str(demand.cuts)),
+                ("Machining operations", str(demand.machining_operations)),
+                ("Panes", str(demand.panes)),
+            ],
+        )
+    )
+
+    steps = Table(title="Schedule", header_style="dim")
+    for column in ("Operation", "Work centre", "Start", "Finish", "Hours"):
+        steps.add_column(column, justify="right" if column == "Hours" else "left")
+    for operation in sorted(plan.operations, key=lambda o: (o.start, o.operation)):
+        steps.add_row(
+            str(operation.operation), operation.work_centre,
+            operation.start.isoformat(), operation.finish.isoformat(),
+            f"{operation.hours:.2f}" if operation.hours else "-",
+        )
+    console.print(steps)
+
+    load = Table(title="Work-centre load", header_style="dim")
+    for column in ("Code", "Name", "Hours", "Available", "Utilisation"):
+        load.add_column(column, justify="right" if column != "Name" else "left")
+    for row in plan.utilisation(DEFAULT_WORK_CENTRES):
+        style = "red" if row["utilisation_pct"] > 90 else "yellow" if row["utilisation_pct"] > 70 else "green"
+        load.add_row(
+            row["code"], row["name"], f"{row['hours']:.1f}",
+            f"{row['available']:.1f}", f"[{style}]{row['utilisation_pct']:.0f}%[/]",
+        )
+    console.print(load)
+
+    finish = plan.completion[demand.job_id]
+    console.print(f"\n[bold]Complete:[/] {finish.isoformat()} ({finish.strftime('%A')})")
+    bottleneck = plan.bottleneck(DEFAULT_WORK_CENTRES)
+    if bottleneck:
+        console.print(
+            f"[dim]Bottleneck:[/] {bottleneck['name']} at "
+            f"{bottleneck['utilisation_pct']:.0f}% of its capacity"
+        )
+    for warning in plan.warnings:
+        console.print(f"  [yellow]{warning}[/]")
+
+
+@erp_app.command("accounts")
+def erp_accounts(
+    ledger_file: Optional[Path] = typer.Option(
+        None, "--ledger", help="Ledger JSON; omitted, a worked example is shown."
+    ),
+) -> None:
+    """Show the trial balance, profit and loss, and balance sheet."""
+    from datetime import date as _date
+
+    from .erp import Company, StockItem, format_money, money
+    from .erp.sales import SalesInvoice, SalesLine
+
+    shop = Company(name="Example")
+    if ledger_file is not None and ledger_file.is_file():
+        _fail("Loading a saved ledger is not implemented; run without --ledger")
+
+    # A worked example, so the command shows the shape of the report.
+    shop.add_item(StockItem("4301", "Outer frame", supplier_id="extal"))
+    shop.receive_stock("4301", 300.0, 4150.0, on=_date(2026, 1, 5))
+    shop.issue_to_job("4301", 180.0, "P-1", on=_date(2026, 2, 1))
+    shop.invoice(
+        SalesInvoice("INV-1", "Ariel Bros", _date(2026, 2, 10),
+                     [SalesLine("Aluminium windows", 1, money(48_000))])
+    )
+    shop.collect("Ariel Bros", money(56_640), _date(2026, 3, 1))
+
+    trial = Table(title="Trial balance", header_style="dim")
+    for column in ("Code", "Account", "Debit", "Credit"):
+        trial.add_column(column, justify="right" if column in ("Debit", "Credit") else "left")
+    for row in shop.ledger.trial_balance():
+        trial.add_row(
+            row.account.code, row.account.name,
+            format_money(row.debits) if row.debits else "",
+            format_money(row.credits) if row.credits else "",
+        )
+    console.print(trial)
+
+    profit = shop.ledger.profit_and_loss()
+    sheet = shop.ledger.balance_sheet()
+    console.print(
+        _kv_table(
+            "Position",
+            [
+                ("Income", format_money(profit["income"])),
+                ("Expense", format_money(profit["expense"])),
+                ("Result", format_money(profit["result"])),
+                ("Assets", format_money(sheet["assets"])),
+                ("Liabilities", format_money(sheet["liabilities"])),
+                ("Equity", format_money(sheet["equity"])),
+                ("Balance sheet difference", format_money(sheet["difference"])),
+            ],
+        )
+    )
+    report = shop.audit()
+    console.print(
+        f"[green]Audit:[/] ledger balanced, stock reconciled against "
+        f"{report['movements']} movement(s), stock accounts agree."
+    )
+
+
+@erp_app.command("vat")
+def erp_vat(
+    on: str = typer.Argument(..., help="Date to look the rate up for, YYYY-MM-DD."),
+) -> None:
+    """Show the statutory VAT rate in force on a date."""
+    from datetime import date as _date
+
+    from .erp import ISRAELI_VAT_HISTORY, vat_rate
+
+    try:
+        when = _date.fromisoformat(on)
+    except ValueError:
+        _fail(f"Not a date: {on!r}; use YYYY-MM-DD")
+
+    console.print(f"[bold]{vat_rate(when):.0%}[/] on {when.isoformat()}")
+    table = Table(title="Rate history", header_style="dim", box=None)
+    table.add_column("From", style="cyan")
+    table.add_column("Rate", justify="right")
+    for effective, rate in ISRAELI_VAT_HISTORY:
+        table.add_row(effective.isoformat(), f"{rate:.0%}")
+    console.print(table)
+
+
+# --------------------------------------------------------------------------- #
+# Access
+# --------------------------------------------------------------------------- #
+@access_app.command("status")
+def access_status() -> None:
+    """Say whether this installation is locked, and whether a key is present."""
+    from .security.gate import Gate
+
+    gate = Gate()
+    state = gate.status()
+    console.print(
+        _kv_table(
+            "Access",
+            [
+                ("Enrolled", "yes" if state["enrolled"] else "no"),
+                ("Credential store", state["store"]),
+                ("This machine", state["machine"]),
+                (
+                    "Key files found",
+                    "\n".join(state["key_files_found"]) or "none — insert the USB key",
+                ),
+            ],
+        )
+    )
+    if not state["enrolled"]:
+        console.print(
+            "[yellow]This installation has no operator yet.[/] Run "
+            "[cyan]profileos access enrol[/] on the machine that will use it."
+        )
+
+
+@access_app.command("enrol")
+def access_enrol(
+    key_target: Path = typer.Argument(
+        ..., help="The USB drive (or folder) the key file is written to."
+    ),
+    username: str = typer.Option(..., "--username", "-u", prompt=True),
+) -> None:
+    """Create the one operator and write the USB key that opens it.
+
+    Asks for the password twice and for two security questions. Nothing typed
+    here is stored in the clear: the password and each answer are hashed under
+    their own salt, and the store is then sealed to this machine and to the
+    key file together.
+    """
+    from .security.gate import AccessDenied, Gate, password_problems
+
+    gate = Gate()
+    if gate.is_enrolled:
+        _fail(
+            "This installation already has its operator. Use "
+            "`profileos access rotate` and prove the current password."
+        )
+
+    password = typer.prompt("Password", hide_input=True, confirmation_prompt=True)
+    problems = password_problems(password)
+    if problems:
+        _fail("; ".join(problems))
+
+    console.print(
+        "\n[dim]Two security questions. Choose things nobody outside the firm "
+        "could answer, and that you will still answer the same way in five "
+        "years. Spelling, spacing and punctuation are ignored.[/]\n"
+    )
+    questions: list[tuple[str, str]] = []
+    for index in (1, 2):
+        prompt = typer.prompt(f"Question {index}")
+        answer = typer.prompt(f"Answer {index}", hide_input=True, confirmation_prompt=True)
+        questions.append((prompt, answer))
+
+    try:
+        path = gate.enrol(username, password, questions, key_target=key_target)
+    except AccessDenied as exc:
+        _fail(str(exc))
+
+    console.print(f"\n[green]Enrolled.[/] Key file written to [cyan]{path}[/]")
+    console.print(
+        "[red]Keep that file on the USB key and nowhere else.[/] Without it "
+        "the software will not start, and it cannot be reissued from here."
+    )
+
+
+@access_app.command("login")
+def access_login(
+    key: Optional[Path] = typer.Option(None, "--key", help="Path to the key file."),
+) -> None:
+    """Check the three factors and report whether they open the gate."""
+    from .security.gate import AccessDenied, Gate, NotEnrolled
+
+    gate = Gate()
+    try:
+        prompts = gate.prompts(key_path=key)
+    except (AccessDenied, NotEnrolled) as exc:
+        _fail(str(exc))
+
+    username = typer.prompt("Username")
+    password = typer.prompt("Password", hide_input=True)
+    answers = [typer.prompt(prompt, hide_input=True) for prompt in prompts]
+
+    try:
+        session = gate.authenticate(username, password, answers, key_path=key)
+    except AccessDenied as exc:
+        _fail(str(exc))
+    console.print(f"[green]Access granted[/] to {session.describe()}")
+
+
+@access_app.command("authorise-machine")
+def access_authorise_machine(
+    fingerprint: str = typer.Argument(..., help="The other machine's fingerprint."),
+    key: Optional[Path] = typer.Option(None, "--key", help="Path to the key file."),
+) -> None:
+    """Let the operator use another computer.
+
+    Run this on a machine that already works, holding the key — which is what
+    stops somebody who copies the key file adding their own laptop.
+    """
+    from .security.gate import AccessDenied, Gate
+
+    gate = Gate()
+    try:
+        prompts = gate.prompts(key_path=key)
+        username = typer.prompt("Username")
+        password = typer.prompt("Password", hide_input=True)
+        answers = [typer.prompt(prompt, hide_input=True) for prompt in prompts]
+        gate.authorise_machine(
+            username, password, answers, fingerprint=fingerprint, key_path=key
+        )
+    except AccessDenied as exc:
+        _fail(str(exc))
+    console.print("[green]Authorised.[/] That machine may now open the installation.")
+
+
+@access_app.command("rotate")
+def access_rotate(
+    key: Optional[Path] = typer.Option(None, "--key", help="Path to the key file."),
+    questions: bool = typer.Option(
+        False, "--questions", help="Also replace the two security questions."
+    ),
+) -> None:
+    """Change the password, having proved the current one."""
+    from .security.gate import AccessDenied, Gate
+
+    gate = Gate()
+    try:
+        prompts = gate.prompts(key_path=key)
+    except AccessDenied as exc:
+        _fail(str(exc))
+
+    username = typer.prompt("Username")
+    password = typer.prompt("Current password", hide_input=True)
+    answers = [typer.prompt(prompt, hide_input=True) for prompt in prompts]
+    new_password = typer.prompt(
+        "New password", hide_input=True, confirmation_prompt=True
+    )
+
+    replacements: list[tuple[str, str]] | None = None
+    if questions:
+        replacements = []
+        for index in (1, 2):
+            prompt = typer.prompt(f"New question {index}")
+            answer = typer.prompt(
+                f"New answer {index}", hide_input=True, confirmation_prompt=True
+            )
+            replacements.append((prompt, answer))
+
+    try:
+        gate.rotate(
+            username, password, answers,
+            new_password=new_password, new_questions=replacements, key_path=key,
+        )
+    except AccessDenied as exc:
+        _fail(str(exc))
+    console.print("[green]Changed.[/]")
 
 
 def main() -> None:

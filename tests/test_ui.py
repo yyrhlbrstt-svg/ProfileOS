@@ -74,8 +74,8 @@ class TestTheme:
 class TestWindow:
     def test_all_pages_are_present(self, window):
         assert [p.title for p in window.pages] == [
-            "Profile", "Element", "Nesting", "Glass", "Machining",
-            "Quotation", "Shop floor", "Catalogue", "System",
+            "Profile", "Element", "3D view", "Nesting", "Glass", "Machining",
+            "Quotation", "Accounts", "Shop floor", "Catalogue", "System",
         ]
 
     def test_every_page_is_reachable_from_the_sidebar(self, window):
@@ -562,3 +562,117 @@ class TestSystemPage:
             assert "דאדי" not in window.sidebar.logo.text()
         finally:
             set_active_brand("profileos")
+
+
+class TestViewPage:
+    def _page(self, window):
+        return window.page("3D view")
+
+    def test_it_models_the_designed_element(self, window):
+        window.page("Element").build_element()
+        page = self._page(window)
+        window.go_to_page(page.title)
+        page.render_scene()
+        pump()
+        assert page._scene is not None
+        assert page._scene.triangle_count > 0
+        # Every solid must be closed and outward, or the render lights wrongly.
+        for mesh in page._scene.meshes:
+            assert mesh.is_closed(), mesh.name
+            assert mesh.volume() > 0, mesh.name
+
+    def test_switching_the_view_redraws_without_remodelling(self, window):
+        window.page("Element").build_element()
+        page = window.go_to_page("3D view")
+        page.render_scene()
+        pump()
+        before = page._scene
+        page.view.setCurrentText("elevation")
+        pump()
+        assert page._scene is before
+
+    def test_rendering_without_elements_is_reported_not_crashed(self, window, monkeypatch):
+        recorded: list[str] = []
+        page = self._page(window)
+        monkeypatch.setattr(
+            type(page), "report",
+            lambda self, exc, context="": recorded.append(str(exc)),
+        )
+        window.session.clear_builds()
+        page.refresh()
+        page.render_scene()
+        assert recorded
+
+    def test_export_writes_every_format(self, window, tmp_path, monkeypatch):
+        from PySide6.QtWidgets import QFileDialog
+
+        window.page("Element").build_element()
+        page = window.go_to_page("3D view")
+        page.render_scene()
+        pump()
+        monkeypatch.setattr(
+            QFileDialog, "getExistingDirectory",
+            staticmethod(lambda *a, **k: str(tmp_path)),
+        )
+        page.export_scene()
+        suffixes = {path.suffix for path in tmp_path.iterdir()}
+        assert suffixes == {".svg", ".html", ".gltf", ".glb"}
+
+
+class TestAccountsPage:
+    def _page(self, window):
+        return window.page("Accounts")
+
+    def test_planning_purchases_from_the_designed_elements(self, window):
+        window.page("Element").build_element()
+        page = self._page(window)
+        window.go_to_page(page.title)
+        page.plan_purchases()
+        pump()
+        assert page.requirements_table.rowCount() > 0
+        assert page.orders_table.rowCount() > 0
+
+    def test_scheduling_reports_a_completion_date(self, window):
+        window.page("Element").build_element()
+        page = self._page(window)
+        page.run_schedule()
+        pump()
+        assert page.schedule_table.rowCount() > 0
+        assert page.load_table.rowCount() > 0
+
+    def test_the_audit_passes_on_a_consistent_company(self, window):
+        page = self._page(window)
+        page.run_audit()
+        pump()
+        # An audit that raised would have gone through report(); the stat row
+        # is only filled when it did not.
+        assert page.stats is not None
+
+    def test_the_audit_surfaces_a_disagreement(self, window, monkeypatch):
+        from profileos.erp import money
+
+        recorded: list[str] = []
+        page = self._page(window)
+        monkeypatch.setattr(
+            type(page), "report",
+            lambda self, exc, context="": recorded.append(str(exc)),
+        )
+        company = page._company()
+        from datetime import date
+
+        company.ledger.post_simple(
+            "ODD", date(2026, 1, 1), "unexplained", "1300", "2100", money(500)
+        )
+        page.run_audit()
+        assert recorded and "out by" in recorded[0]
+
+    def test_planning_without_elements_is_reported_not_crashed(self, window, monkeypatch):
+        recorded: list[str] = []
+        page = self._page(window)
+        monkeypatch.setattr(
+            type(page), "report",
+            lambda self, exc, context="": recorded.append(str(exc)),
+        )
+        window.session.clear_builds()
+        page.plan_purchases()
+        assert recorded

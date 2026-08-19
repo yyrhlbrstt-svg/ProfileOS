@@ -179,8 +179,19 @@ CAPABILITIES: tuple[Capability, ...] = (
     Capability(
         "3d_view", Area.ELEMENTS,
         "3D presentation views", "תצוגת תלת-ממד",
-        "Photo-realistic 3D of the finished elevation for the customer.",
-        probe="",  # ProfileOS draws elevations and sections in 2D only.
+        "The element modelled in three dimensions from the same sections and "
+        "the same rules that cut it, shown as a printable vector drawing, as "
+        "glTF for any 3D tool, and as an interactive viewer that needs nothing "
+        "installed.",
+        probe="profileos.viz3d.scene:build_element_scene",
+    ),
+    Capability(
+        "gltf_export", Area.ELEMENTS,
+        "glTF export of the model", "ייצוא glTF של המודל",
+        "The model itself, not a picture of it — so it drops into a visualiser, "
+        "a BIM scene or an architect's own tool.",
+        probe="profileos.viz3d.gltf:to_glb",
+        differentiator=True,
     ),
     # -- glass --------------------------------------------------------------- #
     Capability(
@@ -422,15 +433,36 @@ CAPABILITIES: tuple[Capability, ...] = (
     ),
     Capability(
         "erp", Area.ADJACENT,
-        "Full ERP: stock, purchasing, accounts", "ERP מלא: מלאי, רכש, הנהח״ש",
-        "Purchase orders, stock movements, invoicing and ledger integration.",
-        probe="",  # ProfileOS quotes and orders; it does not keep the books.
+        "Stock, purchasing and the ledger", "מלאי, רכש והנהלת חשבונות",
+        "Purchase orders, goods receipts, stock movements valued FIFO or "
+        "weighted average, sales invoicing with statutory VAT, and a "
+        "double-entry general ledger every document posts to.",
+        probe="profileos.erp.company:Company",
+    ),
+    Capability(
+        "three_way_match", Area.ADJACENT,
+        "Three-way invoice matching", "התאמה משולשת של חשבוניות",
+        "A supplier invoice is set against the order and the goods actually "
+        "received before it can be posted, and the leg that failed is named.",
+        probe="profileos.erp.purchasing:three_way_match",
+        differentiator=True,
+    ),
+    Capability(
+        "books_audit", Area.ADJACENT,
+        "Books reconciled to the racks", "התאמת ספרים למלאי בפועל",
+        "The stock value is re-derived from the movement history, the trial "
+        "balance from the postings, and the stock accounts checked against the "
+        "stock book — three records of the same facts, cross-checked.",
+        probe="profileos.erp.company:Company.audit",
+        differentiator=True,
     ),
     Capability(
         "capacity_planning", Area.ADJACENT,
         "Capacity and delivery planning", "תכנון קיבולת ומועדי אספקה",
-        "Schedule the shop's workload against promised delivery dates.",
-        probe="",
+        "Finite-capacity scheduling across work centres on the shop's own "
+        "working week, so a promised date is arithmetic rather than optimism, "
+        "and a job that will be late says so.",
+        probe="profileos.erp.scheduling:Scheduler",
     ),
 )
 
@@ -441,6 +473,7 @@ CAPABILITY_BY_ID = {capability.id: capability for capability in CAPABILITIES}
 # The other packages
 # --------------------------------------------------------------------------- #
 F, P, N = Support.FULL, Support.PARTIAL, Support.NOT_DOCUMENTED
+U = Support.UNKNOWN
 
 PACKAGES: tuple[Package, ...] = (
     Package(
@@ -463,6 +496,7 @@ PACKAGES: tuple[Package, ...] = (
             "job_cards": F, "barcodes": F, "cutting_maps": F,
             "bom": F, "quotations": F, "supplier_rfq": F, "price_lists": F,
             "catalogue_library": F, "erp": P, "capacity_planning": P,
+            "three_way_match": U, "books_audit": N, "gltf_export": U,
             "rest_api": P, "catalogue_ingestion": N, "self_update": F,
             "hebrew_rtl": N, "source_available": N, "plumbing": N,
         },
@@ -483,6 +517,7 @@ PACKAGES: tuple[Package, ...] = (
             "job_cards": F, "barcodes": F, "bom": F, "quotations": F,
             "supplier_rfq": F, "price_lists": F, "catalogue_library": F,
             "erp": F, "capacity_planning": F, "mes_tracking": F,
+            "three_way_match": U, "books_audit": N, "gltf_export": U,
             "catalogue_ingestion": N, "hebrew_rtl": N, "source_available": N,
             "plumbing": N,
         },
@@ -501,6 +536,7 @@ PACKAGES: tuple[Package, ...] = (
             "machine_drivers": F, "job_cards": F, "barcodes": F,
             "mes_tracking": F, "bom": F, "quotations": F, "erp": F,
             "capacity_planning": F, "catalogue_library": F,
+            "three_way_match": U, "books_audit": N, "gltf_export": U,
             "catalogue_ingestion": N, "hebrew_rtl": N, "source_available": N,
             "plumbing": N,
         },
@@ -604,9 +640,14 @@ STANDING_LIMITATIONS: tuple[str, ...] = (
     "The proprietary CNC formats — Elumatec NCX/ECX/NCW/DGX, Schüco MCO, "
     "Kaban KBN — have never been cut on a physical machine from this "
     "software. Prove them on scrap before production.",
-    "There is no ERP here: no purchase orders, no stock movements, no "
-    "ledger. Quotations and supplier enquiries stop at the document.",
-    "There is no 3D presentation view, and no capacity or delivery planning.",
+    "The ledger is bookkeeping, not certified bookkeeping. Israeli law sets "
+    "requirements for computerised accounting records and for issuing tax "
+    "invoices, and nothing here has been submitted for approval against them. "
+    "Treat it as the shop's own management accounts and keep issuing "
+    "statutory documents from whatever is already approved, until it is.",
+    "The standard times the scheduler works from are starting values, not "
+    "measurements of your shop. A promised date is only as good as the "
+    "minutes-per-cut behind it, so time a few real jobs and set them.",
     "Nothing in this comparison has been tested against a competitor's "
     "installation. Competitor rows record public documentation only, and "
     "\"not documented\" never means \"absent\".",
@@ -617,12 +658,17 @@ STANDING_LIMITATIONS: tuple[str, ...] = (
 # Verification and reporting
 # --------------------------------------------------------------------------- #
 def resolve_probe(probe: str) -> object:
-    """Import the symbol a capability claims to be implemented by."""
+    """Import the symbol a capability claims to be implemented by.
+
+    The attribute half may be dotted — ``module:Class.method`` — because a
+    capability is often one method rather than a whole class, and pinning the
+    claim to the method is what makes deleting it break the claim.
+    """
     module_path, _, attribute = probe.partition(":")
-    module = importlib.import_module(module_path)
-    if not attribute:
-        return module
-    return getattr(module, attribute)
+    resolved: object = importlib.import_module(module_path)
+    for part in attribute.split(".") if attribute else []:
+        resolved = getattr(resolved, part)
+    return resolved
 
 
 def verify_claims(

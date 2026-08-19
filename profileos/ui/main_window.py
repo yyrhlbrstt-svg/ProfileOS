@@ -28,11 +28,11 @@ _log = get_logger("ui.window")
 
 #: Sidebar grouping. Navigation follows the order work moves through the shop.
 NAV_SECTIONS: list[tuple[str, list[int]]] = [
-    ("Design", [0, 1]),
-    ("Production", [2, 3, 4]),
-    ("Commercial", [5]),
-    ("Factory", [6]),
-    ("Library", [7, 8]),
+    ("Design", [0, 1, 2]),
+    ("Production", [3, 4, 5]),
+    ("Commercial", [6, 7]),
+    ("Factory", [8]),
+    ("Library", [9, 10]),
 ]
 
 
@@ -143,6 +143,12 @@ class MainWindow(QMainWindow):
     def refresh_brand(self) -> None:
         """Called when the System page changes which fabricator this is."""
         self.sidebar.refresh_brand()
+
+    def set_session_owner(self, session: Any) -> None:
+        """Record who signed in, and show it in the title and the status bar."""
+        self.access_session = session
+        self.setWindowTitle(f"{self.windowTitle()} — {session.username}")
+        self.statusBar().showMessage(f"Signed in as {session.describe()}", 8000)
 
     def go_to(self, index: int) -> None:
         if not (0 <= index < len(self.pages)):

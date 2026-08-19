@@ -41,7 +41,20 @@ def run(argv: Sequence[str] | None = None, *, theme: str = "dark") -> int:
     palette = LIGHT if theme == "light" else DARK
     application.setStyleSheet(stylesheet(palette))
 
+    # The gate comes before the window. Building the window first and asking
+    # afterwards would put the shop's data on screen behind the login box.
+    from .login import require_login
+
+    session = require_login(palette)
+    from ..security.gate import Gate
+
+    if Gate().is_enrolled and session is None:
+        _log.warning("Sign-in cancelled; not starting")
+        return 1
+
     window = MainWindow(palette)
+    if session is not None:
+        window.set_session_owner(session)
     window.show()
     _log.info("Desktop application started")
     return application.exec()

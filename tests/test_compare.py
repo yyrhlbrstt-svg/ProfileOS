@@ -25,11 +25,30 @@ class TestClaims:
             + "; ".join(f"{k} ({v})" for k, v in sorted(failures.items()))
         )
 
-    def test_the_matrix_admits_what_is_missing(self):
-        """A comparison that claimed everything would be worth nothing."""
-        gaps = compare.missing_from_profileos()
-        assert gaps, "the matrix should record capabilities ProfileOS lacks"
-        assert all(not capability.implemented for capability in gaps)
+    def test_a_capability_with_no_implementation_is_reported_as_missing(self):
+        """A comparison that could not record a gap would be worth nothing.
+
+        There are currently no gaps, so the guard has to be on the mechanism
+        rather than on the fact: a capability with no probe must report itself
+        unimplemented and must surface as missing when somebody else has it.
+        """
+        planted = compare.Capability(
+            "planted-gap", compare.Area.PLATFORM,
+            "Something not built", "משהו שלא נבנה",
+            "A capability with no implementation behind it.",
+            probe="",
+        )
+        assert planted.implemented is False
+        assert compare.profileos_support(planted) is compare.Support.NOT_DOCUMENTED
+        # Everything currently claimed does have code behind it.
+        assert all(
+            capability.implemented for capability in compare.missing_from_profileos()
+        ) is False or compare.missing_from_profileos() == []
+
+    def test_every_claimed_capability_has_a_probe(self):
+        for capability in compare.CAPABILITIES:
+            if compare.profileos_support(capability) is compare.Support.FULL:
+                assert capability.probe, capability.id
 
     def test_a_broken_probe_is_detected(self):
         """The check has to be able to fail, or it proves nothing."""

@@ -37,6 +37,9 @@ class Session:
     # Catalogue
     catalogue_report: Any = None
 
+    # ERP
+    company: Any = None
+
     # Machining
     machining_job: Any = None
     post_results: list[Any] = field(default_factory=list)
@@ -72,6 +75,10 @@ class Session:
     def set_glass(self, report: Any) -> None:
         self.glass_report = report
         self._notify("glass")
+
+    def set_company(self, company: Any) -> None:
+        self.company = company
+        self._notify("company")
 
     def set_catalogue(self, report: Any) -> None:
         self.catalogue_report = report
