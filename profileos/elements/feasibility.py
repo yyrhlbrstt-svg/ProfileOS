@@ -53,13 +53,14 @@ class Severity(IntEnum):
     WARNING = 2
     NOTE = 1
 
+    def label(self, language: Any = None) -> str:
+        from ..i18n import translate
+
+        return translate(f"severity.{self.name.lower()}", language)
+
     @property
     def hebrew(self) -> str:
-        return {
-            Severity.BLOCKER: "לא ניתן לייצור",
-            Severity.WARNING: "אזהרה",
-            Severity.NOTE: "לתשומת לב",
-        }[self]
+        return self.label("he")
 
 
 class LimitKind(StrEnum):

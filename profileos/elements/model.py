@@ -39,6 +39,12 @@ class OpeningType(StrEnum):
     def is_operable(self) -> bool:
         return self is not OpeningType.FIXED
 
+    def label(self, language: Any = None) -> str:
+        """What this kind of leaf is called, in the reader's language."""
+        from ..i18n import translate
+
+        return translate(f"opening.{self.value}", language)
+
     @property
     def hardware_group(self) -> str:
         """The key used to look up hardware rules for this opening type."""

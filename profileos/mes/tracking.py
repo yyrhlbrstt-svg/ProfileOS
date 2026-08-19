@@ -51,6 +51,12 @@ class Stage(StrEnum):
     def is_terminal(self) -> bool:
         return self in (Stage.SHIPPED, Stage.SCRAPPED)
 
+    def label(self, language: Any = None) -> str:
+        """What this stage is called, in the operator's language."""
+        from ..i18n import translate
+
+        return translate(f"stage.{self.value}", language)
+
     @property
     def order(self) -> int:
         """Position in the normal flow; rework and scrap sit outside it."""

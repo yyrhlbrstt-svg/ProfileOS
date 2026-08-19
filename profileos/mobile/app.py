@@ -30,17 +30,11 @@ _log = get_logger("mobile.app")
 #: with money attached, and they are made at a desk.
 FLOOR_STAGES = ("cut", "machined", "assembled", "glazed", "inspected", "rework")
 
-_STAGE_LABELS = {
-    "cut": "נחתך",
-    "machined": "עובד",
-    "assembled": "הורכב",
-    "glazed": "זוגג",
-    "inspected": "נבדק",
-    "rework": "לתיקון",
-    "planned": "מתוכנן",
-    "shipped": "נשלח",
-    "scrapped": "פסול",
-}
+def _stage_label(stage: str, language: str | None = None) -> str:
+    """A stage name in the operator's language, from the shared vocabulary."""
+    from ..i18n import translate
+
+    return translate(f"stage.{stage}", language)
 
 #: Flow order, so the counts read the way work moves rather than alphabetically.
 _STAGE_ORDER = {
@@ -104,6 +98,11 @@ def build_router(state: MobileState | None = None) -> Any:
 
     router = APIRouter(prefix="/m", tags=["mobile"])
 
+    def _t(key: str, language: str | None = None) -> str:
+        from ..i18n import translate
+
+        return translate(key, language)
+
     def current() -> MobileState:
         # Looked up per request rather than captured, so `configure()` during a
         # test or a reload in the office is picked up without a restart.
@@ -111,31 +110,50 @@ def build_router(state: MobileState | None = None) -> Any:
 
         return state if state is not None else state_module.STATE
 
-    def device_for(device_id: str | None, token: str | None, scope: str) -> Device:
+    def device_for(
+        device_id: str | None,
+        token: str | None,
+        scope: str,
+        language: str | None = None,
+    ) -> Device:
+        from ..i18n import translate
+
         if not device_id or not token:
-            raise HTTPException(status_code=401, detail="המכשיר אינו מחובר")
+            raise HTTPException(status_code=401, detail=translate("mobile.not_paired", language))
         found = current().registry.authenticate(device_id, token)
         if found is None:
-            raise HTTPException(status_code=401, detail="המכשיר אינו מחובר")
+            raise HTTPException(status_code=401, detail=translate("mobile.not_paired", language))
         if not found.may(scope):
             raise HTTPException(
-                status_code=403,
-                detail=f"למכשיר הזה אין הרשאה ל-{scope}",
+                status_code=403, detail=translate("mobile.no_permission", language)
             )
         return found
 
     # -- the page ----------------------------------------------------------- #
     @router.get("", response_class=HTMLResponse, include_in_schema=False)
     @router.get("/", response_class=HTMLResponse, include_in_schema=False)
-    def page(request: Request) -> str:
+    def page(
+        request: Request,
+        lang: str | None = None,
+        accept_language: str | None = Header(default=None),
+    ) -> str:
+        """The terminal, in the reader's language.
+
+        An explicit ``?lang=`` wins, because somebody who picked a language
+        meant it; otherwise the phone's own setting decides, which is right far
+        more often than the office's default is.
+        """
         from ..branding import active_brand
+        from ..i18n import get_locale, negotiate
 
         brand = active_brand()
+        locale = get_locale(lang) if lang else negotiate(accept_language)
         station = current().station or request.url.hostname or ""
         return render(
             title=getattr(brand, "name", None) or "ProfileOS",
             subtitle=station,
             base=str(request.url_for("mobile_pair")).rsplit("/api/pair", 1)[0],
+            language=locale.language,
         )
 
     # -- pairing ------------------------------------------------------------ #
@@ -171,12 +189,17 @@ def build_router(state: MobileState | None = None) -> Any:
     # -- the floor ---------------------------------------------------------- #
     @router.get("/api/jobs")
     def jobs(
+        lang: str | None = None,
         x_device_id: str | None = Header(default=None),
         x_device_token: str | None = Header(default=None),
+        accept_language: str | None = Header(default=None),
     ) -> dict[str, Any]:
-        device_for(x_device_id, x_device_token, "jobs")
+        from ..i18n import get_locale, negotiate
+
+        language = (get_locale(lang) if lang else negotiate(accept_language)).code
+        device_for(x_device_id, x_device_token, "jobs", language)
         order = current().work_order
-        stages = [{"id": s, "label": _STAGE_LABELS[s]} for s in FLOOR_STAGES]
+        stages = [{"id": s, "label": _stage_label(s, language)} for s in FLOOR_STAGES]
         if order is None:
             return {"name": "", "items": [], "total": 0, "done": 0,
                     "progress": 0.0, "stages": stages}
@@ -184,7 +207,7 @@ def build_router(state: MobileState | None = None) -> Any:
             {
                 "ref": item.item_id,
                 "description": item.description,
-                "stage": _STAGE_LABELS.get(item.stage.value, item.stage.value),
+                "stage": _stage_label(item.stage.value, language),
                 "tone": _STAGE_TONE.get(item.stage.value, ""),
             }
             # The floor cares about what is still open, so the finished items
@@ -192,7 +215,7 @@ def build_router(state: MobileState | None = None) -> Any:
             for item in sorted(order, key=lambda i: (i.stage.order, i.item_id))[:60]
         ]
         counts = [
-            {"label": _STAGE_LABELS.get(stage, stage), "n": count}
+            {"label": _stage_label(stage, language), "n": count}
             for stage, count in sorted(
                 order.stage_counts().items(),
                 key=lambda pair: _STAGE_ORDER.get(pair[0], 99),
@@ -211,20 +234,27 @@ def build_router(state: MobileState | None = None) -> Any:
     @router.post("/api/scan")
     def scan(
         request: ScanRequest,
+        lang: str | None = None,
         x_device_id: str | None = Header(default=None),
         x_device_token: str | None = Header(default=None),
+        accept_language: str | None = Header(default=None),
     ) -> dict[str, Any]:
         """Advance one item. The refusal reasons come from the tracker itself."""
+        from ..i18n import get_locale, negotiate
         from ..mes.tracking import Stage
 
-        device = device_for(x_device_id, x_device_token, "jobs")
+        language = (get_locale(lang) if lang else negotiate(accept_language)).code
+        device = device_for(x_device_id, x_device_token, "jobs", language)
         order = current().work_order
         if order is None:
-            raise HTTPException(status_code=409, detail="לא נטענה פקודת עבודה")
+            raise HTTPException(
+                status_code=409,
+                detail=_t("mobile.no_work_order", language),
+            )
         if request.stage not in FLOOR_STAGES:
             raise HTTPException(
                 status_code=403,
-                detail="השלב הזה נקבע במשרד, לא מהטלפון",
+                detail=_t("mobile.office_decision", language),
             )
         # The tracker answers (ok, message) rather than raising: its message
         # names the item and says which transitions were allowed, which is
@@ -240,7 +270,7 @@ def build_router(state: MobileState | None = None) -> Any:
         item = order.by_barcode(request.payload) or order.find(request.payload)
         return {
             "ref": item.item_id if item else request.payload,
-            "stage": _STAGE_LABELS.get(item.stage.value, item.stage.value) if item else "",
+            "stage": _stage_label(item.stage.value, language) if item else "",
         }
 
     # -- site measuring ----------------------------------------------------- #
@@ -256,7 +286,10 @@ def build_router(state: MobileState | None = None) -> Any:
     ) -> dict[str, Any]:
         device = device_for(x_device_id, x_device_token, "measure")
         if not request.reference.strip():
-            raise HTTPException(status_code=422, detail="צריך סימון לפתח")
+            raise HTTPException(
+                status_code=422,
+                detail=_t("mobile.need_reference"),
+            )
         record = SiteMeasurement(
             reference=request.reference.strip().upper(),
             project_id=request.project_id,
@@ -272,7 +305,10 @@ def build_router(state: MobileState | None = None) -> Any:
             device=device.device_id,
         )
         if record.width <= 0 or record.height <= 0:
-            raise HTTPException(status_code=422, detail="צריך רוחב וגובה")
+            raise HTTPException(
+                status_code=422,
+                detail=_t("mobile.need_sizes"),
+            )
         current().measurements.add(record)
         return {
             "reference": record.reference,
@@ -316,7 +352,10 @@ def build_router(state: MobileState | None = None) -> Any:
 
         device_for(x_device_id, x_device_token, "measure")
         if request.width <= 0 or request.height <= 0:
-            raise HTTPException(status_code=422, detail="צריך רוחב וגובה")
+            raise HTTPException(
+                status_code=422,
+                detail=_t("mobile.need_sizes"),
+            )
         try:
             opening_type = OpeningType(request.opening_type)
         except ValueError as exc:

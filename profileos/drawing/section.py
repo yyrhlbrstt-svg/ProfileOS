@@ -43,25 +43,19 @@ class Detail(StrEnum):
     MULLION = "mullion"
     TRANSOM = "transom"
 
+    def label(self, language: Any = None) -> str:
+        """What this detail is called, in the language the sheet is issued in."""
+        from ..i18n import translate
+
+        return translate(f"drawing.{self.value}", language)
+
     @property
     def hebrew(self) -> str:
-        return {
-            Detail.HEAD: "חתך משקוף עליון",
-            Detail.SILL: "חתך סף תחתון",
-            Detail.JAMB: "חתך משקוף צד",
-            Detail.MULLION: "חתך עמוד",
-            Detail.TRANSOM: "חתך קורה",
-        }[self]
+        return self.label("he")
 
     @property
     def english(self) -> str:
-        return {
-            Detail.HEAD: "Head detail",
-            Detail.SILL: "Sill detail",
-            Detail.JAMB: "Jamb detail",
-            Detail.MULLION: "Mullion detail",
-            Detail.TRANSOM: "Transom detail",
-        }[self]
+        return self.label("en").capitalize()
 
     @property
     def is_vertical_cut(self) -> bool:
@@ -188,6 +182,8 @@ class SectionStyle:
     show_annotation: bool = True
     show_dimensions: bool = True
     text_height: float = 2.2
+    #: The language the labels and the title are written in.
+    language: Any = "he"
 
     @property
     def dim_style(self) -> dim.DimensionStyle:
@@ -314,10 +310,7 @@ def wall_section(
                 spacing=1.2,
             )
         )
-        notes.append(
-            "הפרופיל משורטט סכמטית — לא יובא חתך מהיצרן. "
-            "The profile is drawn schematically; no supplier section was imported."
-        )
+        notes.append(_schematic_note(style.language))
 
     # The glass runs out of the frame into the opening.
     glass_centre = frame_inner + depth / 2.0
@@ -346,13 +339,28 @@ def wall_section(
     return SectionResult(drawing=drawing, detail=detail, schematic=schematic, notes=notes)
 
 
+def _detail_title(detail: Detail, language: Any) -> str:
+    local = detail.label(language)
+    english = detail.label("en").capitalize()
+    return local if local == english else f"{local} / {english}"
+
+
+def _schematic_note(language: Any) -> str:
+    """Said in the reader's language and in English, since both read the sheet."""
+    from ..i18n import translate
+
+    local = translate("drawing.schematic_profile", language)
+    english = translate("drawing.schematic_profile", "en")
+    return local if local == english else f"{local}. {english}."
+
+
 def _add_title(drawing: Drawing, detail: Detail, style: SectionStyle, label: str) -> None:
     left, bottom, right, _ = drawing.bounds()
     drawing.add(
         Text(
             layer="TEXT",
             position=((left + right) / 2.0, bottom - 18.0 * style.scale / 5.0),
-            value=label or f"{detail.hebrew} / {detail.english}",
+            value=label or _detail_title(detail, style.language),
             height=style.text_height * 1.6,
             anchor=Anchor.CENTRE,
             bold=True,
@@ -396,10 +404,7 @@ def _profile_junction(
                 spacing=1.2,
             )
         )
-        notes.append(
-            "הפרופיל משורטט סכמטית — לא יובא חתך מהיצרן. "
-            "The profile is drawn schematically; no supplier section was imported."
-        )
+        notes.append(_schematic_note(style.language))
 
     for direction in (1.0, -1.0):
         near = (half_face + 4.0) * direction

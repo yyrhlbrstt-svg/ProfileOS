@@ -23,6 +23,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import date
 from enum import StrEnum
+from typing import Any
 
 from .model import Anchor, Drawing, Layer, Line, Point, Text, rectangle
 
@@ -93,20 +94,37 @@ class TitleBlock:
     #: Free text under the block: standards, assumptions, a not-for-construction
     #: note when the systems data behind the drawing is not confirmed.
     notes: tuple[str, ...] = ()
+    #: The language the block is labelled in, and English alongside it. A
+    #: package crossing a desk in Tel Aviv and a factory in Italy is read by
+    #: both, so both labels are printed rather than one being chosen.
+    language: Any = "he"
+    #: Print the English label next to the local one.
+    bilingual: bool = True
 
     def rows(self) -> list[tuple[str, str]]:
         """Label/value pairs, in the order a drawing office reads them."""
+        from ..i18n import get_locale, translate
+
+        locale = get_locale(self.language)
+
+        def label(key: str) -> str:
+            local = translate(key, locale.language)
+            english = translate(key, "en")
+            if not self.bilingual or local == english:
+                return local
+            return f"{local} / {english}"
+
         return [
-            ("פרויקט / Project", self.project),
-            ("לקוח / Client", self.client),
-            ("תוכן / Title", self.title),
-            ("מס' שרטוט / Dwg", self.number),
-            ("קנ\"מ / Scale", self.scale),
-            ("גיליון / Sheet", self.sheet_size),
-            ("מהדורה / Rev", self.revision),
-            ("תאריך / Date", self.issued.isoformat()),
-            ("שורטט / Drawn", self.drawn_by),
-            ("נבדק / Checked", self.checked_by),
+            (label("drawing.project"), self.project),
+            (label("drawing.client"), self.client),
+            (label("drawing.title"), self.title),
+            (label("drawing.number"), self.number),
+            (label("drawing.scale"), self.scale),
+            (label("drawing.sheet"), self.sheet_size),
+            (label("drawing.revision"), self.revision),
+            (label("drawing.date"), locale.format_date(self.issued)),
+            (label("drawing.drawn"), self.drawn_by),
+            (label("drawing.checked"), self.checked_by),
         ]
 
 
@@ -324,8 +342,16 @@ class Sheet:
         bottom = y + self.block_row_height * len(self.title_block.rows()) + company_band
 
         sheet.add(rectangle(left, bottom, table_width, row_height * (rows + 1), "SHEET"))
+        from ..i18n import translate
+
+        language = self.title_block.language
         columns = (0.0, 12.0, 40.0, table_width - 22.0)
-        headings = ("Rev", "Date", "Description", "By")
+        headings = (
+            translate("drawing.revision", language),
+            translate("drawing.date", language),
+            translate("quote.description", language),
+            translate("drawing.drawn", language),
+        )
         for offset, heading in zip(columns, headings):
             sheet.add(
                 Text(

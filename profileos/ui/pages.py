@@ -252,7 +252,7 @@ class ProfilePage(Page):
         for index, feature in enumerate(report.features):
             pocket = feature.pocket
             rows.append([
-                f"{feature.kind.hebrew} · {feature.kind.value}",
+                f"{feature.kind.label(self.session.language)} · {feature.kind.value}",
                 f"{pocket.mouth:.2f}",
                 f"{pocket.depth:.2f}",
                 f"{pocket.undercut:.2f}" if pocket.undercut > 0.4 else "—",
@@ -475,6 +475,15 @@ class ElementPage(Page):
         )
         self.status(f"Built {opening.name}")
 
+    @staticmethod
+    def _finding_text(finding: Any) -> str:
+        """The Hebrew wording where there is one, the English otherwise.
+
+        Findings carry two prepared strings rather than a key, because most of
+        them quote a measurement that has already been formatted.
+        """
+        return finding.hebrew or finding.english
+
     def show_feasibility(self, build: Any) -> None:
         """Say straight away whether what was just drawn can be made."""
         from ..elements.feasibility import Severity, check_element
@@ -497,9 +506,9 @@ class ElementPage(Page):
         }
         for index, finding in enumerate(report.sorted()):
             rows.append([
-                finding.severity.hebrew,
+                finding.severity.label(self.session.language),
                 finding.subject,
-                finding.hebrew or finding.english,
+                self._finding_text(finding),
                 "" if finding.measured is None else f"{finding.measured:.1f}",
                 "" if finding.limit is None else f"{finding.limit.value:.1f} {finding.limit.unit}",
             ])
@@ -520,7 +529,8 @@ class ElementPage(Page):
         else:
             first = report.blockers[0]
             self.verdict.setText(
-                f"לא ניתן לייצור: {first.hebrew}  —  cannot be made as drawn: {first.english}"
+                f"{Severity.BLOCKER.label(self.session.language)}: "
+                f"{self._finding_text(first)}  —  {first.english}"
             )
             self.verdict.setStyleSheet(f"color: {self.colours.danger};")
 

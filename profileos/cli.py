@@ -933,6 +933,7 @@ def draw_package(
         None, "--profile", help="DXF of the frame section, for real wall details."
     ),
     formats: str = typer.Option("pdf,dxf,svg", "--formats"),
+    language: str = typer.Option("he", "--lang", help="he | en | ar | ru | it | es."),
 ) -> None:
     """Produce the whole shop drawing package for a project.
 
@@ -986,6 +987,7 @@ def draw_package(
         number_prefix=f"{parsed.name[:3].upper()}-A",
         drawn_by=getattr(brand, "name", "") or "",
         size=SheetSize(size.upper()),
+        language=language,
         revisions=[Revision("A", date.today(), "Issued for approval", "")],
     )
     package = build_package(
@@ -1018,6 +1020,7 @@ def draw_detail(
     wall: str = typer.Option("stone", "--wall", help="stone | block."),
     scale: int = typer.Option(5, "--scale"),
     profile_dxf: Optional[Path] = typer.Option(None, "--profile"),
+    language: str = typer.Option("he", "--lang", help="he | en | ar | ru | it | es."),
 ) -> None:
     """Draw one wall section on its own sheet."""
     from .drawing import RENDERED_BLOCK, STONE_CLAD_CONCRETE, SectionStyle, wall_section
@@ -1037,14 +1040,18 @@ def draw_detail(
         profile, _ = profile_from_dxf(str(profile_dxf), profile_dxf.stem, "detail")
 
     result = wall_section(
-        which, build_up=build_up, style=SectionStyle(scale=scale), profile=profile
+        which,
+        build_up=build_up,
+        style=SectionStyle(scale=scale, language=language),
+        profile=profile,
     )
     sheet = Sheet(
         size=SheetSize.A3,
         title_block=TitleBlock(
-            title=f"{which.hebrew} / {which.english}",
+            title=f"{which.label(language)} / {which.label('en').capitalize()}",
             number=which.value.upper(),
             scale=f"1:{scale}",
+            language=language,
             notes=tuple(result.notes),
         ),
     )
@@ -1065,6 +1072,44 @@ def draw_detail(
     for note in result.notes:
         console.print(f"[yellow]{note}[/yellow]")
     console.print(f"[green]Wrote[/green] {output}")
+
+
+@app.command("languages")
+def languages(
+    key: Optional[str] = typer.Option(None, "--key", help="Show one term in every language."),
+) -> None:
+    """The languages the software speaks, and how complete each one is."""
+    from .i18n import MESSAGES, available, catalogue, translate
+
+    if key:
+        if key not in MESSAGES:
+            _fail(f"No term {key!r}.")
+        table = Table(title=key, header_style="dim")
+        table.add_column("Language", style="cyan")
+        table.add_column("Term")
+        for locale in available():
+            table.add_row(f"{locale.native} ({locale.code})", translate(key, locale.language))
+        console.print(table)
+        return
+
+    table = Table(title="Languages", header_style="dim")
+    table.add_column("Code", style="cyan")
+    table.add_column("Language")
+    table.add_column("Direction")
+    table.add_column("Terms", justify="right")
+    table.add_column("Numbers", justify="right")
+    for locale in available():
+        translated = sum(
+            1 for entries in MESSAGES.values() if entries.get(locale.code)
+        )
+        table.add_row(
+            locale.code,
+            f"{locale.native} — {locale.english}",
+            "right to left" if locale.rtl else "left to right",
+            f"{translated}/{len(MESSAGES)}",
+            locale.format_number(1234.5, 2),
+        )
+    console.print(table)
 
 
 @systems_app.command("list")

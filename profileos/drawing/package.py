@@ -40,6 +40,8 @@ class PackageInfo:
     revisions: list[Revision] = field(default_factory=list)
     size: SheetSize = SheetSize.A3
     wall: WallBuildUp = field(default_factory=lambda: STONE_CLAD_CONCRETE)
+    #: The language the sheets are labelled in, alongside English.
+    language: Any = "he"
 
     @property
     def revision(self) -> str:
@@ -77,6 +79,17 @@ class DrawingPackage:
         return written
 
 
+def _bilingual(key: str, language: Any, *, plural: bool = False) -> str:
+    """The word in the sheet's language and in English, since both are read."""
+    from ..i18n import translate
+
+    local = translate(key, language)
+    english = translate(key, "en")
+    if plural:
+        english = english + "s"
+    return local if local == english else f"{local} / {english}"
+
+
 def _title_block(info: PackageInfo, index: int, title: str, scale: str) -> TitleBlock:
     return TitleBlock(
         company=info.company,
@@ -91,6 +104,7 @@ def _title_block(info: PackageInfo, index: int, title: str, scale: str) -> Title
         drawn_by=info.drawn_by,
         checked_by=info.checked_by,
         issued=info.issued,
+        language=info.language,
     )
 
 
@@ -109,7 +123,7 @@ def elevation_sheets(
         index = start + len(sheets)
         sheet = Sheet(
             size=info.size,
-            title_block=_title_block(info, index, "חזיתות / Elevations", f"1:{scale}"),
+            title_block=_title_block(info, index, _bilingual("drawing.elevation", info.language, plural=True), f"1:{scale}"),
             revisions=list(info.revisions),
         )
         frames = grid_frames(_views_area(sheet), columns=len(group), rows=1)
@@ -139,7 +153,7 @@ def detail_sheet(
     details = list(details)
     sheet = Sheet(
         size=info.size,
-        title_block=_title_block(info, index, "חתכי קיר / Wall sections", f"1:{scale}"),
+        title_block=_title_block(info, index, _bilingual("drawing.section", info.language, plural=True), f"1:{scale}"),
         revisions=list(info.revisions),
     )
     columns = min(len(details), 2)
@@ -150,7 +164,7 @@ def detail_sheet(
         result = wall_section(
             detail,
             build_up=info.wall,
-            style=SectionStyle(scale=scale),
+            style=SectionStyle(scale=scale, language=info.language),
             profile=profile,
         )
         notes.extend(result.notes)
@@ -159,7 +173,7 @@ def detail_sheet(
                 drawing=result.drawing,
                 scale=scale,
                 frame=frame,
-                label=f"{detail.hebrew} / {detail.english}",
+                label=f"{detail.label(info.language)} / {detail.label('en').capitalize()}",
             )
         )
     return sheet, sorted(set(notes))
@@ -191,12 +205,7 @@ def build_package(
     stamps = list(notes)
     provisional = [b for b in builds if not b.may_be_cut]
     if provisional:
-        stamps.insert(
-            0,
-            "לא לביצוע — נתוני היצרן לסדרות שבשרטוט לא נטענו. "
-            "NOT FOR CONSTRUCTION — the systems shown have not had their "
-            "supplier figures loaded.",
-        )
+        stamps.insert(0, _bilingual("drawing.not_for_construction", info.language))
 
     # The stamp goes on every sheet. A package where only the first page
     # carries the caveat is a package whose caveat gets detached from it.
@@ -211,7 +220,7 @@ def build_package(
         x, y, _, _ = first.drawing_area()
         first.add(
             Viewport(
-                drawing=legend(scale=float(elevation_scale)),
+                drawing=legend(scale=float(elevation_scale), language=info.language),
                 scale=elevation_scale,
                 frame=(x + 4.0, y + 4.0, 110.0, 30.0),
             )

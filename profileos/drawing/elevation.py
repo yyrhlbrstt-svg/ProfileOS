@@ -344,8 +344,13 @@ def _dimension(drawing: Drawing, opening: Opening, style: ElevationStyle) -> Non
         )
 
 
-def legend(origin: Point = (0.0, 0.0), *, height: float = 3.0, scale: float = 20.0
-           ) -> Drawing:
+def legend(
+    origin: Point = (0.0, 0.0),
+    *,
+    height: float = 3.0,
+    scale: float = 20.0,
+    language: Any = "he",
+) -> Drawing:
     """The key that makes the opening symbols mean something.
 
     A drawing whose symbols rely on the reader sharing an unstated convention is
@@ -354,9 +359,16 @@ def legend(origin: Point = (0.0, 0.0), *, height: float = 3.0, scale: float = 20
     drawing = Drawing(name="legend")
     x, y = origin
     box = height * scale * 4.0
+    from ..i18n import translate
+
+    def bilingual(key: str) -> str:
+        local = translate(key, language)
+        english = translate(key, "en")
+        return local if local == english else f"{local} / {english}"
+
     entries = [
-        ("פתיחה החוצה / opens outward, towards the reader", "OPEN-OUT"),
-        ("פתיחה פנימה / opens into the room", "OPEN-IN"),
+        (bilingual("drawing.opens_outward"), "OPEN-OUT"),
+        (bilingual("drawing.opens_inward"), "OPEN-IN"),
     ]
     for index, (label, layer) in enumerate(entries):
         top = y - index * box * 1.4
@@ -375,7 +387,7 @@ def legend(origin: Point = (0.0, 0.0), *, height: float = 3.0, scale: float = 20
         Text(
             layer="TEXT",
             position=(x, y + box * 0.6),
-            value="מקרא / legend — הקווים נפגשים בצד הצירים",
+            value=f"{bilingual('drawing.legend')} — {translate('drawing.legend_note', language)}",
             height=height,
             bold=True,
         )

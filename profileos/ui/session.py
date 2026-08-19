@@ -41,6 +41,9 @@ class Session:
     section_features: Any = None
     #: Why the last element built can or cannot be made.
     feasibility: Any = None
+    #: The language the domain vocabulary is shown in. Changing it re-labels
+    #: the stages, opening types and findings without restarting.
+    language: str = "he"
 
     # ERP
     company: Any = None
@@ -80,6 +83,10 @@ class Session:
     def set_features(self, report: Any) -> None:
         self.section_features = report
         self._notify("features")
+
+    def set_language(self, language: str) -> None:
+        self.language = language
+        self._notify("language")
 
     def set_feasibility(self, report: Any) -> None:
         self.feasibility = report

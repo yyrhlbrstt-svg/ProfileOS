@@ -25,6 +25,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import StrEnum
+from typing import Any
 
 
 class Provenance(StrEnum):
@@ -43,13 +44,15 @@ class Provenance(StrEnum):
     def may_be_cut_to(self) -> bool:
         return self is Provenance.CONFIRMED
 
+    def label(self, language: Any = None) -> str:
+        """How far these figures can be trusted, in the reader's language."""
+        from ..i18n import translate
+
+        return translate(f"provenance.{self.value}", language)
+
     @property
     def hebrew(self) -> str:
-        return {
-            Provenance.CONFIRMED: "מאושר מקטלוג היצרן",
-            Provenance.TYPICAL: "ערך אופייני — לא מהיצרן",
-            Provenance.UNKNOWN: "חסר — יש לטעון קטלוג",
-        }[self]
+        return self.label("he")
 
 
 class SystemFamily(StrEnum):
@@ -67,21 +70,21 @@ class SystemFamily(StrEnum):
     SHADING = "shading"
     MESH = "mesh"
 
+    def label(self, language: Any = None) -> str:
+        """What this kind of system is called.
+
+        The families that are also ways a leaf opens share the opening
+        vocabulary rather than duplicating it — a casement system and a
+        casement leaf are the same word in every language here.
+        """
+        from ..i18n import has, translate
+
+        key = f"family.{self.value}"
+        return translate(key if has(key) else f"opening.{self.value}", language)
+
     @property
     def hebrew(self) -> str:
-        return {
-            SystemFamily.CASEMENT: "פתיחה",
-            SystemFamily.TILT_TURN: "נטוי-פתוח (דריי-קיפ)",
-            SystemFamily.SLIDING: "הזזה",
-            SystemFamily.LIFT_SLIDE: "הזזה מורמת",
-            SystemFamily.FOLDING: "אקורדיון",
-            SystemFamily.DOOR: "דלת",
-            SystemFamily.PARTITION: "מחיצות משרד",
-            SystemFamily.CURTAIN_WALL: "קיר מסך",
-            SystemFamily.SKYLIGHT: "סקיילייט",
-            SystemFamily.SHADING: "הצללה ורפפות",
-            SystemFamily.MESH: "רשתות",
-        }[self]
+        return self.label("he")
 
     @property
     def has_opening_sash(self) -> bool:

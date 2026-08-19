@@ -12,8 +12,10 @@ so 8 and 3 cannot be confused at arm's length, and Hebrew right to left.
 
 from __future__ import annotations
 
+from typing import Any
+
 PAGE = """<!doctype html>
-<html lang="he" dir="rtl">
+<html lang="__LANG__" dir="__DIR__">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
@@ -107,33 +109,33 @@ svg.dwg{width:100%;height:auto;background:#fff;border-radius:10px}
   <!-- pairing -->
   <section id="s-pair" class="on">
     <div class="card">
-      <h2>חיבור המכשיר</h2>
-      <p class="note">
-        בקש מהמחשב במשרד קוד חיבור: <span class="num">profileos mobile pair</span>.
-        הקוד תקף חמש דקות ולשימוש חד-פעמי.
-      </p>
-      <label for="code">קוד חיבור</label>
+      <h2 data-t="mobile.pair_title"></h2>
+      <p class="note"><span data-t="mobile.pair_help"></span>
+        <span class="num">profileos mobile pair</span></p>
+      <label for="code" data-t="mobile.pair_code"></label>
       <input id="code" class="big num" inputmode="numeric" maxlength="6" autocomplete="one-time-code" placeholder="000000">
-      <label for="devname">שם המכשיר (למי הוא שייך)</label>
-      <input id="devname" placeholder="הטלפון של דאדי">
-      <button onclick="pair()">חבר</button>
+      <label for="devname" data-t="mobile.device_name"></label>
+      <input id="devname" data-tp="mobile.device_example">
+      <button onclick="pair()" data-t="mobile.pair_button"></button>
       <div id="pair-msg" class="msg"></div>
+      <label data-t="mobile.language"></label>
+      <div id="langs" class="stack"></div>
     </div>
   </section>
 
   <!-- jobs -->
   <section id="s-jobs">
     <div class="card">
-      <h2>סריקה</h2>
-      <label for="scan">ברקוד או מספר פריט</label>
+      <h2 data-t="mobile.scan"></h2>
+      <label for="scan" data-t="mobile.scan_field"></label>
       <input id="scan" autocapitalize="characters" autocomplete="off" placeholder="EL-12AB34">
-      <label for="stage">שלב</label>
+      <label for="stage" data-t="mobile.stage"></label>
       <select id="stage"></select>
-      <button onclick="scan()">עדכן שלב</button>
+      <button onclick="scan()" data-t="mobile.set_stage"></button>
       <div id="scan-msg" class="msg"></div>
     </div>
     <div class="card">
-      <h2 id="wo-title">פקודת עבודה</h2>
+      <h2 id="wo-title" data-t="mobile.work_order"></h2>
       <div class="bar"><i id="wo-bar" style="width:0%"></i></div>
       <p class="note" id="wo-note">—</p>
       <div id="wo-items"></div>
@@ -143,58 +145,58 @@ svg.dwg{width:100%;height:auto;background:#fff;border-radius:10px}
   <!-- measuring -->
   <section id="s-measure">
     <div class="card">
-      <h2>מדידה באתר</h2>
-      <p class="note">שלוש מידות לרוחב ושלוש לגובה — פתח אינו מלבן.</p>
-      <label for="mref">סימון הפתח</label>
+      <h2 data-t="mobile.site_measure"></h2>
+      <p class="note" data-t="mobile.measure_help"></p>
+      <label for="mref" data-t="mobile.opening_ref"></label>
       <input id="mref" autocapitalize="characters" placeholder="W-01">
-      <label>רוחב — עליון / אמצע / תחתון</label>
+      <label data-t="mobile.widths"></label>
       <div class="row">
-        <input id="w1" class="num" inputmode="numeric" placeholder="עליון">
-        <input id="w2" class="num" inputmode="numeric" placeholder="אמצע">
-        <input id="w3" class="num" inputmode="numeric" placeholder="תחתון">
+        <input id="w1" class="num" inputmode="numeric" data-tp="mobile.top">
+        <input id="w2" class="num" inputmode="numeric" data-tp="mobile.middle">
+        <input id="w3" class="num" inputmode="numeric" data-tp="mobile.bottom">
       </div>
-      <label>גובה — ימין / אמצע / שמאל</label>
+      <label data-t="mobile.heights"></label>
       <div class="row">
-        <input id="h1" class="num" inputmode="numeric" placeholder="ימין">
-        <input id="h2" class="num" inputmode="numeric" placeholder="אמצע">
-        <input id="h3" class="num" inputmode="numeric" placeholder="שמאל">
+        <input id="h1" class="num" inputmode="numeric" data-tp="mobile.right">
+        <input id="h2" class="num" inputmode="numeric" data-tp="mobile.middle">
+        <input id="h3" class="num" inputmode="numeric" data-tp="mobile.left">
       </div>
-      <label>אלכסונים (לא חובה)</label>
+      <label data-t="mobile.diagonals"></label>
       <div class="row2">
-        <input id="d1" class="num" inputmode="numeric" placeholder="אלכסון 1">
-        <input id="d2" class="num" inputmode="numeric" placeholder="אלכסון 2">
+        <input id="d1" class="num" inputmode="numeric" data-tp="mobile.diagonal">
+        <input id="d2" class="num" inputmode="numeric" data-tp="mobile.diagonal">
       </div>
-      <label for="mnote">הערה</label>
-      <input id="mnote" placeholder="קומה, מיקום, מה שצריך לדעת">
-      <button onclick="sendMeasurement()">שמור ושלח למשרד</button>
+      <label for="mnote" data-t="mobile.note"></label>
+      <input id="mnote" data-tp="mobile.note_example">
+      <button onclick="sendMeasurement()" data-t="mobile.send"></button>
       <div id="m-msg" class="msg"></div>
     </div>
     <div class="card">
-      <h2>מדידות אחרונות</h2>
-      <div id="m-list"><p class="empty">אין עדיין מדידות.</p></div>
+      <h2 data-t="mobile.recent"></h2>
+      <div id="m-list"><p class="empty" data-t="mobile.none_yet"></p></div>
     </div>
   </section>
 
   <!-- check -->
   <section id="s-check">
     <div class="card">
-      <h2>בדיקת ישימות</h2>
-      <p class="note">מידות הפתח נטו, לפני קיזוז ההתקנה.</p>
+      <h2 data-t="mobile.feasibility"></h2>
+      <p class="note" data-t="mobile.check_help"></p>
       <div class="row2">
-        <div><label for="cw">רוחב</label><input id="cw" class="num" inputmode="numeric" value="1200"></div>
-        <div><label for="ch">גובה</label><input id="ch" class="num" inputmode="numeric" value="1400"></div>
+        <div><label for="cw" data-t="mobile.width"></label><input id="cw" class="num" inputmode="numeric" value="1200"></div>
+        <div><label for="ch" data-t="mobile.height"></label><input id="ch" class="num" inputmode="numeric" value="1400"></div>
       </div>
-      <label for="ctype">סוג פתיחה</label>
+      <label for="ctype" data-t="mobile.opening_type"></label>
       <select id="ctype">
-        <option value="fixed">קבוע</option>
-        <option value="casement">פתיחה</option>
-        <option value="tilt_turn" selected>נטוי-פתוח</option>
-        <option value="sliding">הזזה</option>
-        <option value="door">דלת</option>
+        <option value="fixed" data-t="opening.fixed"></option>
+        <option value="casement" data-t="opening.casement"></option>
+        <option value="tilt_turn" selected data-t="opening.tilt_turn"></option>
+        <option value="sliding" data-t="opening.sliding"></option>
+        <option value="door" data-t="opening.door"></option>
       </select>
-      <label for="csill">גובה הסף מהרצפה</label>
+      <label for="csill" data-t="mobile.sill_height"></label>
       <input id="csill" class="num" inputmode="numeric" value="900">
-      <button onclick="check()">בדוק</button>
+      <button onclick="check()" data-t="mobile.check_button"></button>
       <div id="c-msg" class="msg"></div>
       <div id="c-out"></div>
     </div>
@@ -203,8 +205,8 @@ svg.dwg{width:100%;height:auto;background:#fff;border-radius:10px}
   <!-- drawings -->
   <section id="s-draw">
     <div class="card">
-      <h2>שרטוטים</h2>
-      <div id="d-list"><p class="empty">אין אלמנטים טעונים במשרד.</p></div>
+      <h2 data-t="mobile.drawings"></h2>
+      <div id="d-list"><p class="empty" data-t="mobile.no_elements"></p></div>
     </div>
     <div class="card" id="d-view" style="display:none">
       <h2 id="d-title">—</h2>
@@ -214,21 +216,36 @@ svg.dwg{width:100%;height:auto;background:#fff;border-radius:10px}
 </main>
 
 <nav id="tabs"></nav>
+<datalist id="languages"></datalist>
 
 <script>
 const API = "__BASE__";
+const T = __CATALOGUE__;          // the whole vocabulary, in one go
+const LANGS = __LANGUAGES__;      // what a picker can offer
+const LANG = "__LANG__";
+
+function t(key){ return T[key] || key.split(".").pop().replace(/_/g, " "); }
+
+function paint(root){
+  (root || document).querySelectorAll("[data-t]").forEach(node => {
+    node.textContent = t(node.dataset.t);
+  });
+  (root || document).querySelectorAll("[data-tp]").forEach(node => {
+    node.placeholder = t(node.dataset.tp);
+  });
+}
 let TOKEN = localStorage.getItem("pos.token") || "";
 let DEVICE = localStorage.getItem("pos.device") || "";
 let SCOPES = (localStorage.getItem("pos.scopes") || "").split(",").filter(Boolean);
 
 const TABS = [
-  {id:"jobs",   label:"עבודה",   scope:"jobs",
+  {id:"jobs",   key:"mobile.tab_jobs",     scope:"jobs",
    icon:'<path d="M4 7h16M4 12h16M4 17h10"/>'},
-  {id:"measure",label:"מדידה",   scope:"measure",
+  {id:"measure",key:"mobile.tab_measure",  scope:"measure",
    icon:'<path d="M3 9h18v6H3z"/><path d="M7 9v3M11 9v4M15 9v3M19 9v4"/>'},
-  {id:"check",  label:"בדיקה",   scope:"measure",
+  {id:"check",  key:"mobile.tab_check",    scope:"measure",
    icon:'<path d="M4 12l5 5L20 6"/>'},
-  {id:"draw",   label:"שרטוטים", scope:"drawings",
+  {id:"draw",   key:"mobile.tab_drawings", scope:"drawings",
    icon:'<path d="M4 4h16v16H4z"/><path d="M4 9h16M9 9v11"/>'},
 ];
 
@@ -242,10 +259,10 @@ function show(id){
 
 function buildTabs(){
   const nav = document.getElementById("tabs");
-  const usable = TABS.filter(t => SCOPES.includes(t.scope));
-  nav.innerHTML = usable.map(t =>
-    `<button data-tab="${t.id}" onclick="show('${t.id}')">
-       <svg viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round">${t.icon}</svg>${t.label}
+  const usable = TABS.filter(tab => SCOPES.includes(tab.scope));
+  nav.innerHTML = usable.map(tab =>
+    `<button data-tab="${tab.id}" onclick="show('${tab.id}')">
+       <svg viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round">${tab.icon}</svg>${t(tab.key)}
      </button>`).join("");
   nav.style.display = TOKEN ? "grid" : "none";
   if(TOKEN && usable.length) show(usable[0].id);
@@ -263,7 +280,7 @@ async function api(path, options){
   opts.headers["Content-Type"] = "application/json";
   if(TOKEN){ opts.headers["X-Device-Id"] = DEVICE; opts.headers["X-Device-Token"] = TOKEN; }
   const response = await fetch(API + path, opts);
-  if(response.status === 401){ signOut(); throw new Error("החיבור פג. יש לחבר את המכשיר מחדש."); }
+  if(response.status === 401){ signOut(); throw new Error(t("mobile.session_expired")); }
   const data = await response.json().catch(() => ({}));
   if(!response.ok) throw new Error(data.detail || "שגיאה");
   return data;
@@ -296,14 +313,14 @@ async function pair(){
 async function loadJobs(){
   try{
     const data = await api("/api/jobs");
-    document.getElementById("wo-title").textContent = data.name || "אין פקודת עבודה";
+    document.getElementById("wo-title").textContent = data.name || t("mobile.work_order");
     document.getElementById("wo-bar").style.width = (data.progress || 0) + "%";
     // Counts by stage rather than one percentage: the floor's question is
     // "what is waiting for me", not "how far along is the job".
     document.getElementById("wo-note").textContent =
       data.total ? `${data.total} פריטים · ` +
                    (data.counts || []).map(c => `${c.label} ${c.n}`).join(" · ")
-                 : "לא נטענה פקודת עבודה במשרד.";
+                 : t("mobile.no_work_order");
     const select = document.getElementById("stage");
     if(!select.options.length && data.stages){
       select.innerHTML = data.stages.map(s => `<option value="${s.id}">${s.label}</option>`).join("");
@@ -312,7 +329,7 @@ async function loadJobs(){
       <div class="item">
         <div class="grow"><b>${i.ref}</b><small>${i.description}</small></div>
         <span class="pill ${i.tone}">${i.stage}</span>
-      </div>`).join("") || '<p class="empty">אין פריטים.</p>';
+      </div>`).join("") || `<p class="empty">${t("mobile.none_yet")}</p>`;
   }catch(err){ document.getElementById("wo-note").textContent = err.message; }
 }
 
@@ -341,8 +358,8 @@ async function sendMeasurement(){
     const data = await api("/api/measurements", {method:"POST", body:JSON.stringify(body)});
     const problems = data.problems || [];
     say("m-msg",
-        problems.length ? "נשמר. " + problems.join(" · ")
-                        : `נשמר: ${data.width} × ${data.height} מ"מ`,
+        problems.length ? problems.join(" · ")
+                        : `${data.width} × ${data.height} ${t("unit.mm")}`,
         problems.length === 0);
     ["w1","w2","w3","h1","h2","h3","d1","d2","mnote"].forEach(id => document.getElementById(id).value = "");
     loadMeasurements();
@@ -356,7 +373,7 @@ async function loadMeasurements(){
       <div class="item">
         <div class="grow"><b>${r.reference}</b><small class="num">${r.width} × ${r.height} · ${r.when}</small></div>
         <span class="pill ${r.problems.length ? "warn" : "ok"}">${r.problems.length ? "לבדוק" : "תקין"}</span>
-      </div>`).join("") || '<p class="empty">אין עדיין מדידות.</p>';
+      </div>`).join("") || `<p class="empty">${t("mobile.none_yet")}</p>`;
   }catch(err){ /* offline: keep what is on screen */ }
 }
 
@@ -374,7 +391,7 @@ async function check(){
         <div class="grow"><b>${f.what}</b><small>${f.where}</small></div>
         <span class="pill ${f.tone}">${f.severity}</span>
       </div>`).join("") + (data.glass ? `
-      <div class="item"><div class="grow"><b>זכוכית</b>
+      <div class="item"><div class="grow"><b>${t("member.glass")}</b>
         <small class="num">${data.glass}</small></div></div>` : "");
   }catch(err){ say("c-msg", err.message, false); }
 }
@@ -385,8 +402,8 @@ async function loadDrawings(){
     document.getElementById("d-list").innerHTML = (data.elements || []).map(e => `
       <div class="item" onclick="openDrawing('${e.ref}')">
         <div class="grow"><b>${e.ref}</b><small class="num">${e.size}</small></div>
-        <span class="pill">פתח</span>
-      </div>`).join("") || '<p class="empty">אין אלמנטים טעונים במשרד.</p>';
+        <span class="pill">${t("drawing.elevation")}</span>
+      </div>`).join("") || `<p class="empty">${t("mobile.no_elements")}</p>`;
   }catch(err){ /* leave the list as it was */ }
 }
 
@@ -408,6 +425,16 @@ document.getElementById("scan").addEventListener("keydown", event => {
   if(event.key === "Enter"){ event.preventDefault(); scan(); }
 });
 
+function buildLanguages(){
+  // A language switch reloads the page rather than re-rendering: the direction
+  // of the whole document changes with it, and the browser does that properly.
+  document.getElementById("langs").innerHTML = LANGS.map(l =>
+    `<button class="ghost" ${l.code === LANG ? 'style="border-color:var(--accent)"' : ""}
+       onclick="location.search='?lang=${l.code}'">${l.native}</button>`).join("");
+}
+
+paint();
+buildLanguages();
 if(TOKEN){ document.getElementById("s-pair").classList.remove("on"); buildTabs(); }
 else { document.getElementById("tabs").style.display = "none"; }
 </script>
@@ -416,12 +443,32 @@ else { document.getElementById("tabs").style.display = "none"; }
 """
 
 
-def render(*, title: str, subtitle: str, base: str) -> str:
-    """The page, with the few things the server knows filled in."""
+def render(*, title: str, subtitle: str, base: str, language: Any = None) -> str:
+    """The page, in one language, with the whole vocabulary inlined.
+
+    The catalogue is embedded rather than fetched: the phone is on a shop-floor
+    network that drops, and a screen whose labels arrive in a second request is
+    a screen that sometimes has no labels.
+    """
+    import json
+
+    from ..i18n import available, catalogue, get_locale
+
+    locale = get_locale(language)
     return (
         PAGE.replace("__TITLE__", title)
         .replace("__SUB__", subtitle)
         .replace("__BASE__", base)
+        .replace("__LANG__", locale.code)
+        .replace("__DIR__", "rtl" if locale.rtl else "ltr")
+        .replace("__CATALOGUE__", json.dumps(catalogue(locale.language), ensure_ascii=False))
+        .replace(
+            "__LANGUAGES__",
+            json.dumps(
+                [{"code": item.code, "native": item.native} for item in available()],
+                ensure_ascii=False,
+            ),
+        )
     )
 
 

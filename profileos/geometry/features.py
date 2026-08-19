@@ -388,17 +388,15 @@ class FeatureKind(StrEnum):
     BEAD_CLIP = "bead_clip"
     POCKET = "pocket"
 
+    def label(self, language: Any = None) -> str:
+        """What this feature is called, in the reader's language."""
+        from ..i18n import translate
+
+        return translate(f"feature.{self.value}", language)
+
     @property
     def hebrew(self) -> str:
-        return {
-            FeatureKind.EURO_GROOVE: "חריץ אירו",
-            FeatureKind.GLAZING_REBATE: "שקע זיגוג",
-            FeatureKind.GASKET_GROOVE: "חריץ אטם",
-            FeatureKind.SCREW_PORT: "תעלת בורג",
-            FeatureKind.THERMAL_BREAK_CHANNEL: "ערוץ פוליאמיד",
-            FeatureKind.BEAD_CLIP: "נעילת סרגל",
-            FeatureKind.POCKET: "חריץ",
-        }[self]
+        return self.label("he")
 
 
 @dataclass(frozen=True)
