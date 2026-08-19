@@ -815,103 +815,264 @@ class MachiningPage(Page):
 # --------------------------------------------------------------------------- #
 
 class QuotePage(Page):
-    """Cost the project and produce a quotation."""
+    """Price the project, then negotiate the quotation without losing either.
+
+    The page edits a :class:`~profileos.quoting.editor.QuoteDraft`: change the
+    system, the glass, the finish or the margin and everything reprices; edit a
+    line's unit price in the table and the pin survives every reprice, flagged
+    when the arithmetic has moved under it. The two documents — the customer
+    copy and the internal cost sheet — are written from the same draft.
+    """
 
     title = "Quotation"
-    subtitle = "Price the bill of materials and produce a customer quotation"
+    subtitle = "Price the elements, negotiate the lines, issue the document"
 
     def build(self) -> None:
-        run = QPushButton("Calculate")
+        from PySide6.QtWidgets import QTableWidgetItem
+
+        self._item_type = QTableWidgetItem
+
+        run = QPushButton("Price the project")
         run.setObjectName("Primary")
-        run.clicked.connect(self.run)
+        run.clicked.connect(self.start_draft)
         self.header.add_action(run)
 
+        save = QPushButton("Write documents...")
+        save.clicked.connect(self.save_documents)
+        self.header.add_action(save)
+
         self.stats = StatRow([
-            ("material", "Materials"), ("labour", "Labour"), ("cost", "Total cost"),
-            ("price", "Net price"), ("rate", "Per m²"),
+            ("net", "Net"), ("vat", "VAT"), ("gross", "Total due"),
+            ("margin", "Margin after edits"), ("kg", "Aluminium"),
         ])
         self.body.addWidget(self.stats)
 
-        controls = Card("Commercial parameters")
+        controls = Card("Specification and terms — every change reprices everything")
         row = QHBoxLayout(); row.setSpacing(METRICS.space(4))
-        self.margin = QDoubleSpinBox(); self.margin.setRange(0, 90); self.margin.setValue(26); self.margin.setSuffix(" %")
-        self.overhead = QDoubleSpinBox(); self.overhead.setRange(0, 90); self.overhead.setValue(12); self.overhead.setSuffix(" %")
-        self.tax = QDoubleSpinBox(); self.tax.setRange(0, 50); self.tax.setValue(17); self.tax.setSuffix(" %")
-        self.rate = QDoubleSpinBox(); self.rate.setRange(1, 500); self.rate.setValue(52); self.rate.setSuffix(" /h")
-        for label, widget in [("Margin", self.margin), ("Overhead", self.overhead),
-                              ("Tax", self.tax), ("Labour rate", self.rate)]:
+        self.system = QComboBox()
+        from ..systems import DIRECTORY
+
+        self.system.addItem("generic", "generic")
+        for entry in sorted(DIRECTORY, key=lambda e: e.id):
+            self.system.addItem(entry.display, entry.id)
+        self.glass = QComboBox()
+        from ..glazing.glass import STANDARD_BUILDUPS
+
+        for build_up in STANDARD_BUILDUPS.values():
+            self.glass.addItem(build_up.describe(), build_up.id)
+        self.glass.setCurrentIndex(1)
+        self.finish = QComboBox()
+        from ..quoting.editor import FINISHES
+
+        for finish in FINISHES.values():
+            self.finish.addItem(f"{finish.hebrew} · {finish.name}", finish.id)
+        self.finish.setCurrentIndex(1)
+        self.margin = QDoubleSpinBox(); self.margin.setRange(0, 90); self.margin.setValue(25); self.margin.setSuffix(" %")
+        for label, widget in [("System", self.system), ("Glass", self.glass),
+                              ("Finish", self.finish), ("Margin", self.margin)]:
             caption = QLabel(label); caption.setObjectName("FieldLabel")
             row.addWidget(caption); row.addWidget(widget)
         row.addStretch(1)
         controls.add_layout(row)
         self.body.addWidget(controls)
 
-        splitter = QSplitter(Qt.Orientation.Horizontal)
-        bom_card = Card("Bill of materials")
-        self.bom = DataTable(["Category", "Code", "Description", "Qty", "Unit", "Total"])
-        bom_card.add(self.bom, 1)
-        splitter.addWidget(bom_card)
+        for widget in (self.system, self.glass, self.finish):
+            widget.currentIndexChanged.connect(self.apply_spec)
+        self.margin.valueChanged.connect(self.apply_spec)
 
-        quote_card = Card("Cost to price")
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+
+        lines_card = Card("Customer lines — double-click a unit price to pin it")
+        self.lines = DataTable(["Item", "Description", "Qty", "Unit price", "Total", ""])
+        self.lines.setEditTriggers(
+            self.lines.EditTrigger.DoubleClicked | self.lines.EditTrigger.EditKeyPressed
+        )
+        self.lines.itemChanged.connect(self._line_edited)
+        lines_card.add(self.lines, 1)
+        undo = QPushButton("Undo last edit")
+        undo.clicked.connect(self.undo_edit)
+        lines_card.add(undo)
+        splitter.addWidget(lines_card)
+
+        side = QWidget()
+        side_layout = QVBoxLayout(side)
+        side_layout.setContentsMargins(0, 0, 0, 0)
+        side_layout.setSpacing(METRICS.space(3))
+
+        options_card = Card("Options")
+        self.options = DataTable(["Option", "Specification", "Net", "±"])
+        options_card.add(self.options, 1)
+        add_option = QPushButton("Add thermal option")
+        add_option.clicked.connect(self.add_option)
+        options_card.add(add_option)
+        side_layout.addWidget(options_card, 1)
+
+        internal_card = Card("Internal — never printed on the customer copy")
         self.waterfall = DataTable(["Item", "Amount"])
-        quote_card.add(self.waterfall, 1)
-        self.notes = QPlainTextEdit(); self.notes.setReadOnly(True); self.notes.setMaximumHeight(120)
-        quote_card.add(self.notes)
-        splitter.addWidget(quote_card)
+        internal_card.add(self.waterfall, 1)
+        self.notes = QPlainTextEdit(); self.notes.setReadOnly(True); self.notes.setMaximumHeight(100)
+        internal_card.add(self.notes)
+        side_layout.addWidget(internal_card, 1)
+
+        splitter.addWidget(side)
         splitter.setStretchFactor(0, 3)
         splitter.setStretchFactor(1, 2)
         self.body.addWidget(splitter, 1)
 
-    def run(self) -> None:
-        from ..quoting import LabourRates, PricingPolicy, build_bom, build_quotation
+        self.draft: Any = None
+        self._loading = False
+
+    # -- the draft ----------------------------------------------------------- #
+    def start_draft(self) -> None:
+        from ..quoting.editor import QuoteDraft
 
         if not self.session.builds:
             self.report(ProfileOSError("No elements have been designed yet"), "Nothing to price")
             return
-
         try:
-            bom = build_bom(
-                self.session.builds, project_name="Project",
-                nesting=self.session.nesting_report, currency="EUR",
+            self.draft = QuoteDraft.start(
+                [build.opening for build in self.session.builds],
+                project_name="Project",
+                system_id=self.system.currentData() or "generic",
+                glass_id=self.glass.currentData(),
+                finish_id=self.finish.currentData(),
+                fallback_rates={
+                    "profile": 5.5, "glass_m2": 60.0, "hardware": 12.0, "gasket_m": 1.1,
+                },
             )
-            quote = build_quotation(
-                self.session.builds, bom, project_name="Project",
-                policy=PricingPolicy(
-                    margin_pct=self.margin.value(), overhead_pct=self.overhead.value(),
-                    tax_pct=self.tax.value(), currency="EUR",
-                ),
-                labour=LabourRates(hourly_rate=self.rate.value(), currency="EUR"),
-            )
+            self.draft.set_margin(self.margin.value())
         except Exception as exc:  # noqa: BLE001
             self.report(exc, "Costing failed")
             return
+        self.session.set_quote(self.draft.variant().bom, self.draft.quotation)
+        self.refresh_draft()
+        self.status(f"Priced {self.draft.quotation.quote_id}")
 
-        self.session.set_quote(bom, quote)
+    def apply_spec(self, *_args: Any) -> None:
+        if self.draft is None or self._loading:
+            return
+        try:
+            variant = self.draft.variant()
+            if self.system.currentData() != variant.system_id:
+                self.draft.set_system(self.system.currentData())
+            if self.glass.currentData() != variant.glass_id:
+                self.draft.set_glass(self.glass.currentData())
+            if self.finish.currentData() != variant.finish_id:
+                self.draft.set_finish(self.finish.currentData())
+            if abs(self.margin.value() - variant.policy.margin_pct) > 1e-9:
+                self.draft.set_margin(self.margin.value())
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "Could not reprice")
+            return
+        self.refresh_draft()
 
-        self.bom.set_rows(
-            [[line.category.value, line.code, line.description,
-              f"{line.quantity:,.3f}", line.unit.value,
-              f"{line.total_price:,.2f}" if line.total_price is not None else "—"]
-             for line in bom.sorted_lines()],
-            numeric_columns=(3, 5),
+    def add_option(self) -> None:
+        if self.draft is None:
+            return
+        self.draft.add_variant("מפרט תרמי", glass_id="dgu-6-16-6", finish_id="anodized")
+        self.refresh_draft()
+
+    def undo_edit(self) -> None:
+        if self.draft is None:
+            return
+        entry = self.draft.undo()
+        self.status(f"Undid {entry.what}" if entry else "Nothing to undo")
+        self.refresh_draft()
+
+    # -- line edits ----------------------------------------------------------- #
+    def _line_edited(self, item: Any) -> None:
+        if self.draft is None or self._loading or item.column() != 3:
+            return
+        code = self.lines.item(item.row(), 0)
+        if code is None:
+            return
+        try:
+            value = float(str(item.text()).replace(",", ""))
+            self.draft.set_line_price(code.text(), value, by="desktop")
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "Could not set the price")
+        self.refresh_draft()
+
+    # -- rendering -------------------------------------------------------------- #
+    def refresh_draft(self) -> None:
+        if self.draft is None:
+            return
+        self._loading = True
+        try:
+            draft = self.draft
+            totals = draft.totals()
+            sheet = draft.internal_sheet()
+            variant = draft.variant()
+
+            rows = []
+            colours: dict[tuple[int, int], str] = {}
+            for index, line in enumerate(draft.customer_lines()):
+                rows.append([
+                    line["code"], line["description"], f"{line['quantity']:g}",
+                    f"{line['unit_price']:,.2f}", f"{line['total']:,.2f}",
+                    "edited" if line["edited"] else "",
+                ])
+                if line["edited"]:
+                    colours[(index, 5)] = self.colours.warning
+            self.lines.set_rows(rows, numeric_columns=(2, 3, 4), colours=colours)
+            # Re-enable editing: set_rows makes items, so flags come from the
+            # table's triggers rather than per item.
+
+            option_rows = []
+            for row in draft.compare():
+                option_rows.append([
+                    row["name"], f"{row['glass']} · {row['finish']}",
+                    f"{row['net']:,.0f}",
+                    "—" if abs(row["difference"]) < 0.005 else f"{row['difference']:+,.0f}",
+                ])
+            self.options.set_rows(option_rows, numeric_columns=(2, 3))
+
+            self.waterfall.set_rows(
+                [[label, f"{value:,.2f}"] for label, value in sheet["breakdown"]],
+                numeric_columns=(1,),
+            )
+            warnings = list(sheet["warnings"])
+            for override in sheet["overrides"]:
+                if override["stale"]:
+                    warnings.append(
+                        f"{override['element']}: the computed price has moved since "
+                        "this line was pinned — look at it again."
+                    )
+            self.notes.setPlainText("\n".join(f"• {w}" for w in warnings) or "No warnings.")
+
+            self.stats.update_many({
+                "net": (f"{totals['net']:,.0f}", variant.policy.currency),
+                "vat": (f"{totals['vat']:,.0f}", f"{variant.policy.tax_pct:g}%"),
+                "gross": (f"{totals['gross']:,.0f}", ""),
+                "margin": (f"{sheet['margin_after_edits']:,.0f}", "after hand edits"),
+                "kg": (f"{variant.aluminium_kg:,.0f}", variant.finish.name),
+            })
+            self.header.set_subtitle(
+                f"{draft.quotation.quote_id} — valid until "
+                f"{draft.quotation.valid_until.isoformat()}"
+            )
+        finally:
+            self._loading = False
+
+    def save_documents(self) -> None:
+        if self.draft is None:
+            self.report(ProfileOSError("Price the project first"), "Nothing to write")
+            return
+        from ..quoting.document import render_quotation
+
+        directory = QFileDialog.getExistingDirectory(self, "Write the quotation documents")
+        if not directory:
+            return
+        base = Path(directory) / self.draft.quotation.quote_id
+        customer = base.with_suffix(".customer.html")
+        internal = base.with_suffix(".internal.html")
+        customer.write_text(render_quotation(self.draft, language=self.session.language),
+                            encoding="utf-8")
+        internal.write_text(
+            render_quotation(self.draft, language=self.session.language, internal=True),
+            encoding="utf-8",
         )
-        self.waterfall.set_rows(
-            [[label, f"{value:,.2f}"] for label, value in quote.breakdown()],
-            numeric_columns=(1,),
-        )
-        area = quote.metadata.get("total_area_m2") or 0.0
-        self.stats.update_many({
-            "material": (f"{quote.material_cost:,.0f}", "EUR"),
-            "labour": (f"{quote.labour_cost:,.0f}", f"{sum(quote.labour_hours.values()):.1f} h"),
-            "cost": (f"{quote.total_cost:,.0f}", "EUR"),
-            "price": (f"{quote.net_price:,.0f}", f"gross {quote.gross_price:,.0f}"),
-            "rate": (f"{quote.metadata.get('price_per_m2') or 0:,.0f}", f"{area:.1f} m²"),
-        })
-        self.notes.setPlainText("\n".join(f"• {w}" for w in quote.warnings) or "No warnings.")
-        self.header.set_subtitle(
-            f"{quote.quote_id} — valid until {quote.valid_until.isoformat()}"
-        )
-        self.status(f"Quoted {quote.net_price:,.2f} EUR net")
+        self.status(f"Wrote {customer.name} and {internal.name}")
 
 
 # --------------------------------------------------------------------------- #

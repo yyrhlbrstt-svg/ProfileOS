@@ -54,6 +54,7 @@ schema_app = typer.Typer(help="JSON Schemas for every document the suite reads."
 systems_app = typer.Typer(help="Which profile systems exist, and how far each is trusted.")
 draw_app = typer.Typer(help="Shop drawings: elevations, wall sections and sheets.")
 mobile_app = typer.Typer(help="Phones and tablets paired to this machine.")
+quote_app = typer.Typer(help="Quotations: price, negotiate, issue.")
 
 app.add_typer(geometry_app, name="section")
 app.add_typer(nest_app, name="nest")
@@ -72,6 +73,7 @@ app.add_typer(schema_app, name="schema")
 app.add_typer(systems_app, name="systems")
 app.add_typer(draw_app, name="draw")
 app.add_typer(mobile_app, name="mobile")
+app.add_typer(quote_app, name="quote")
 
 
 # --------------------------------------------------------------------------- #
@@ -741,6 +743,106 @@ def pipe_catalogues() -> None:
     console.print(table)
 
 
+def _load_schedule(path: Path) -> "Any":
+    """Read an element schedule file, with a pointed message for the wrong kind.
+
+    A cutting Project and an element schedule look alike from a shell prompt,
+    and handing the saw's file to the drawing engine deserves a better answer
+    than a validation traceback.
+    """
+    from .elements import ElementSchedule
+
+    if not path.is_file():
+        _fail(f"Schedule not found: {path}")
+    text = path.read_text(encoding="utf-8")
+    try:
+        return ElementSchedule.model_validate_json(text)
+    except Exception as exc:  # noqa: BLE001 - inspected below
+        if '"items"' in text and '"openings"' not in text:
+            _fail(
+                f"{path} looks like a cutting project (profile demand for the "
+                "saw), not an element schedule. Drawings and quotations are "
+                "produced from a schedule of openings."
+            )
+        _fail("Could not parse the schedule file", exc)
+
+
+@quote_app.command("build")
+def quote_build(
+    project: Path = typer.Argument(..., help="Element schedule JSON."),
+    output: Path = typer.Option(Path("quotation"), "--output", "-o", help="Output stem."),
+    system: str = typer.Option("", "--system", help="Overrides the schedule's system."),
+    glass: str = typer.Option("dgu-6-16-4", "--glass"),
+    finish: str = typer.Option("ral", "--finish"),
+    margin: float = typer.Option(25.0, "--margin", help="Gross margin, % of selling price."),
+    thermal_option: bool = typer.Option(
+        True, "--thermal-option/--no-thermal-option",
+        help="Add a thermal alternative alongside the base specification.",
+    ),
+    language: str = typer.Option("he", "--lang", help="he | en | ar | ru | it | es."),
+    terms: str = typer.Option("", "--terms", help="Payment terms printed on the document."),
+) -> None:
+    """Price a project and write both quotation documents.
+
+    Two files come out: the customer copy, which never carries cost or margin,
+    and the internal sheet, which carries all of it. Prices with no supplier
+    list behind them use declared estimating rates and the document says so.
+    """
+    from .quoting.document import render_quotation
+    from .quoting.editor import QuoteDraft, QuoteEditError
+
+    parsed = _load_schedule(project)
+    openings = parsed.openings
+    if not openings:
+        _fail("The schedule has no elements to quote.")
+
+    try:
+        draft = QuoteDraft.start(
+            openings,
+            project_name=parsed.name,
+            customer=parsed.client,
+            system_id=system or parsed.system_id,
+            glass_id=glass,
+            finish_id=finish,
+            fallback_rates={"profile": 42.0, "glass_m2": 260.0, "hardware": 60.0,
+                            "gasket_m": 4.0},
+        )
+        draft.set_margin(margin)
+        if thermal_option:
+            draft.add_variant("Thermal", glass_id="dgu-6-16-6", finish_id="anodized")
+    except QuoteEditError as exc:
+        _fail(str(exc))
+    if terms:
+        draft.display.payment_terms = terms
+
+    customer_path = output.with_suffix(".customer.html")
+    internal_path = output.with_suffix(".internal.html")
+    customer_path.parent.mkdir(parents=True, exist_ok=True)
+    customer_path.write_text(render_quotation(draft, language=language), encoding="utf-8")
+    internal_path.write_text(
+        render_quotation(draft, language=language, internal=True), encoding="utf-8"
+    )
+
+    totals = draft.totals()
+    variant = draft.variant()
+    console.print(
+        _kv_table(
+            f"Quotation {draft.quotation.quote_id}",
+            [
+                ("Elements", len(openings)),
+                ("Net", f"{totals['net']:,.2f} {variant.policy.currency}"),
+                (f"VAT ({variant.policy.tax_pct:g}%)", f"{totals['vat']:,.2f}"),
+                ("Total due", f"{totals['gross']:,.2f}"),
+                ("Aluminium", f"{variant.aluminium_kg:,.1f} kg, {variant.finish.name}"),
+                ("Options", ", ".join(v.name for v in draft.variants)),
+            ],
+        )
+    )
+    for warning in variant.warnings:
+        console.print(f"  [yellow]-[/] {warning}")
+    console.print(f"[green]Wrote[/green] {customer_path} and {internal_path}")
+
+
 def _lan_addresses() -> list[str]:
     """The addresses a phone on the shop's own network can actually reach.
 
@@ -923,9 +1025,9 @@ def mobile_measurements(
 
 @draw_app.command("package")
 def draw_package(
-    project: Path = typer.Argument(..., help="Project JSON with the elements."),
+    project: Path = typer.Argument(..., help="Element schedule JSON."),
     output: Path = typer.Option(Path("drawings"), "--output", "-o", help="Where to write."),
-    system: str = typer.Option("generic", "--system", help="Profile system id."),
+    system: str = typer.Option("", "--system", help="Overrides the schedule's system."),
     size: str = typer.Option("A3", "--size", help="A0 | A1 | A2 | A3 | A4."),
     elevation_scale: int = typer.Option(20, "--elevation-scale"),
     detail_scale: int = typer.Option(5, "--detail-scale"),
@@ -946,29 +1048,20 @@ def draw_package(
     from .branding import active_brand
     from .drawing import PackageInfo, Revision, SheetSize, build_package
     from .elements import ElementBuilder
-    from .models.orders import Project
     from .systems import DIRECTORY
 
-    if not project.is_file():
-        _fail(f"Project not found: {project}")
-    try:
-        parsed = Project.model_validate_json(project.read_text(encoding="utf-8"))
-    except Exception as exc:  # noqa: BLE001 - user-supplied file
-        _fail("Could not parse the project file", exc)
-
-    openings = getattr(parsed, "openings", None) or []
+    parsed = _load_schedule(project)
+    openings = parsed.openings
     if not openings:
-        _fail(
-            "The project has no elements to draw. Add openings to it, or build "
-            "one with `profileos element build`."
-        )
+        _fail("The schedule has no elements to draw.")
 
+    chosen = system or parsed.system_id
     builder = (
-        ElementBuilder.for_system(system)
-        if DIRECTORY.get(system) is not None
+        ElementBuilder.for_system(chosen)
+        if DIRECTORY.get(chosen) is not None
         else ElementBuilder()
     )
-    builds = [builder.build(opening) for opening in openings]
+    builds = [builder.build(opening, sill_height=parsed.sill_height) for opening in openings]
 
     profile = None
     if profile_dxf:
@@ -981,7 +1074,7 @@ def draw_package(
     brand = active_brand()
     info = PackageInfo(
         project=parsed.name,
-        client=getattr(parsed, "client", "") or "",
+        client=parsed.client,
         company=getattr(brand, "name", "") or "",
         company_line=getattr(brand, "tagline", "") or "",
         number_prefix=f"{parsed.name[:3].upper()}-A",

@@ -47,7 +47,7 @@ SCHEMA_DIALECT = "https://json-schema.org/draft/2020-12/schema"
 
 def _core_models() -> dict[str, type[BaseModel]]:
     """The models that describe what the software stores, not what it loads."""
-    from .elements.model import Opening
+    from .elements.model import ElementSchedule, Opening
     from .models.machines import MachineDefinition, ToolLibrary
     from .models.materials import Material
     from .models.orders import CutItem, Project
@@ -59,6 +59,7 @@ def _core_models() -> dict[str, type[BaseModel]]:
         "project": Project,
         "cut_item": CutItem,
         "opening": Opening,
+        "element_schedule": ElementSchedule,
         "material": Material,
         "machine": MachineDefinition,
         "tool_library": ToolLibrary,

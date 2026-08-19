@@ -849,6 +849,154 @@ def erp_vat(on: str) -> dict[str, Any]:
 __all__ = ["app"]
 
 # --------------------------------------------------------------------------- #
+# Quotation drafts
+# --------------------------------------------------------------------------- #
+# Held in memory, keyed by quote id: a draft is a negotiation in progress, and
+# the negotiation lives exactly as long as the service does. Issuing writes the
+# documents; anything worth keeping longer is in them.
+_DRAFTS: dict[str, Any] = {}
+
+
+class DraftRequest(BaseModel):
+    """A project to start a quotation draft from."""
+
+    project_name: str = "Project"
+    customer: str = ""
+    system_id: str = "generic"
+    glass_id: str = "dgu-6-16-4"
+    finish_id: str = "ral"
+    elements: list[ElementRequest] = Field(default_factory=list)
+    fallback_rates: dict[str, float] = Field(
+        default_factory=lambda: {"profile": 5.5, "glass_m2": 60.0, "hardware": 12.0,
+                                 "gasket_m": 1.1}
+    )
+
+
+class DraftEdit(BaseModel):
+    """One edit to a draft. ``action`` picks which fields matter."""
+
+    action: str
+    element_id: str | None = None
+    value: float | None = None
+    text: str | None = None
+    by: str = ""
+    reason: str = ""
+    variant_id: str | None = None
+    system_id: str | None = None
+    glass_id: str | None = None
+    finish_id: str | None = None
+    width: float | None = None
+    height: float | None = None
+    quantity: int | None = None
+    name: str | None = None
+
+
+def _draft_state(draft: Any) -> dict[str, Any]:
+    return {
+        "quote_id": draft.quotation.quote_id,
+        "lines": draft.customer_lines(),
+        "totals": draft.totals(),
+        "options": draft.compare(),
+        "internal": draft.internal_sheet(),
+        "journal": [entry.describe() for entry in draft.journal[-20:]],
+    }
+
+
+@app.post("/quote/draft", tags=["quoting"])
+def create_draft(request: DraftRequest) -> dict[str, Any]:
+    """Start a negotiable quotation from a set of elements."""
+    from ..quoting.editor import QuoteDraft
+
+    if not request.elements:
+        raise HTTPException(status_code=422, detail="A quotation needs elements")
+    try:
+        openings = [_to_opening(element) for element in request.elements]
+        draft = QuoteDraft.start(
+            openings,
+            project_name=request.project_name,
+            customer=request.customer,
+            system_id=request.system_id,
+            glass_id=request.glass_id,
+            finish_id=request.finish_id,
+            fallback_rates=request.fallback_rates,
+        )
+    except ProfileOSError as exc:
+        raise _handle(exc) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    _DRAFTS[draft.quotation.quote_id] = draft
+    return _draft_state(draft)
+
+
+def _get_draft(quote_id: str) -> Any:
+    draft = _DRAFTS.get(quote_id)
+    if draft is None:
+        raise HTTPException(status_code=404, detail=f"No draft {quote_id!r}")
+    return draft
+
+
+@app.get("/quote/draft/{quote_id}", tags=["quoting"])
+def read_draft(quote_id: str) -> dict[str, Any]:
+    return _draft_state(_get_draft(quote_id))
+
+
+@app.post("/quote/draft/{quote_id}/edit", tags=["quoting"])
+def edit_draft(quote_id: str, edit: DraftEdit) -> dict[str, Any]:
+    """Apply one edit and return the repriced state.
+
+    One endpoint rather than one per action, because the client is an editor
+    making many small edits and each one wants the same answer back: the new
+    lines, the new totals, the new comparison.
+    """
+    from ..quoting.editor import OverrideKind, QuoteEditError
+
+    draft = _get_draft(quote_id)
+    try:
+        if edit.action == "set_margin":
+            draft.set_margin(float(edit.value or 0.0), variant_id=edit.variant_id, by=edit.by)
+        elif edit.action == "set_system":
+            draft.set_system(edit.system_id or "", variant_id=edit.variant_id, by=edit.by)
+        elif edit.action == "set_glass":
+            draft.set_glass(edit.glass_id or "", variant_id=edit.variant_id, by=edit.by)
+        elif edit.action == "set_finish":
+            draft.set_finish(edit.finish_id or "", variant_id=edit.variant_id, by=edit.by)
+        elif edit.action == "set_line_price":
+            draft.set_line_price(edit.element_id or "", float(edit.value or 0.0),
+                                 by=edit.by, reason=edit.reason)
+        elif edit.action == "set_line_discount":
+            draft.set_line_discount(edit.element_id or "", float(edit.value or 0.0),
+                                    by=edit.by, reason=edit.reason)
+        elif edit.action == "set_line_description":
+            draft.set_line_description(edit.element_id or "", edit.text or "", by=edit.by)
+        elif edit.action == "clear_override":
+            draft.clear_override(edit.element_id or "", OverrideKind(edit.text or "unit_price"),
+                                 by=edit.by)
+        elif edit.action == "resize_opening":
+            draft.resize_opening(edit.element_id or "", width=edit.width, height=edit.height,
+                                 quantity=edit.quantity, by=edit.by)
+        elif edit.action == "add_variant":
+            draft.add_variant(edit.name or "", system_id=edit.system_id,
+                              glass_id=edit.glass_id, finish_id=edit.finish_id, by=edit.by)
+        elif edit.action == "undo":
+            draft.undo()
+        else:
+            raise HTTPException(status_code=422, detail=f"Unknown action {edit.action!r}")
+    except QuoteEditError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except ProfileOSError as exc:
+        raise _handle(exc) from exc
+    return _draft_state(draft)
+
+
+@app.get("/quote/draft/{quote_id}/document", response_class=HTMLResponse, tags=["quoting"])
+def draft_document(quote_id: str, lang: str = "he", internal: bool = False) -> str:
+    """The quotation as the printable page — customer copy, or the internal sheet."""
+    from ..quoting.document import render_quotation
+
+    return render_quotation(_get_draft(quote_id), language=lang, internal=internal)
+
+
+# --------------------------------------------------------------------------- #
 # The phone
 # --------------------------------------------------------------------------- #
 # Mounted on the same service the office already runs, so there is one process,

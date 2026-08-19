@@ -181,11 +181,29 @@ class TestWorkflow:
     def test_quote_page_prices(self, window):
         window.page("Element").build_element()
         window.go_to_page("Quotation")
-        window.page("Quotation").run()
+        page = window.page("Quotation")
+        page.start_draft()
         pump()
         quote = window.session.quote
         assert quote is not None and quote.net_price > quote.total_cost
-        assert window.page("Quotation").waterfall.rowCount() > 5
+        assert page.waterfall.rowCount() > 5
+        assert page.lines.rowCount() >= 1
+
+    def test_quote_page_edits_survive_a_reprice(self, window):
+        """The point of the editor: a pinned line outlives a what-if swap."""
+        window.page("Element").build_element()
+        window.go_to_page("Quotation")
+        page = window.page("Quotation")
+        page.start_draft()
+        pump()
+        code = page.lines.item(0, 0).text()
+        page.draft.set_line_price(code, 9999.0, by="test")
+        page.refresh_draft()
+        page.margin.setValue(30.0)  # triggers apply_spec -> recompute
+        pump()
+        prices = [page.lines.item(0, 3).text()]
+        assert "9,999.00" in prices[0]
+        assert page.draft.totals()["net"] >= 9999.0
 
     def test_shop_floor_releases_and_scans(self, window):
         window.page("Element").build_element()

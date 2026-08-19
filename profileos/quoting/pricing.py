@@ -235,6 +235,41 @@ class Quotation:
         }
 
 
+#: Category-level fallback keys: the rate applies per line unit — per metre of
+#: profile or gasket, per m² of glass, per piece of hardware.
+_CATEGORY_RATE_KEYS = {
+    "profile": "profile",
+    "glass": "glass_m2",
+    "hardware": "hardware",
+    "gasket": "gasket_m",
+    "consumable": "consumable",
+}
+
+#: The glass a flat per-m² rate is quoted for: a common 6/16/4 double unit
+#: weighs about this much. Heavier build-ups scale up from it.
+_REFERENCE_GLASS_KG_M2 = 25.0
+
+
+def _category_fallback(line: BomLine, rates: dict[str, float]) -> float | None:
+    """A whole-category estimating rate, when no list prices the code.
+
+    Glass is the one category where a flat rate would misprice the very swap a
+    quotation compares — a triple unit against a double — so the per-m² rate is
+    scaled by the build-up's own mass. Mass is what the BOM already records,
+    it grows with panes and thickness, and scaling by it keeps the comparison
+    honest without pretending to know any supplier's list.
+    """
+    key = _CATEGORY_RATE_KEYS.get(line.category.value)
+    if key is None or key not in rates:
+        return None
+    rate = rates[key]
+    if line.category.value == "glass" and line.quantity:
+        mass = line.metadata.get("mass_kg")
+        if isinstance(mass, (int, float)) and mass > 0:
+            rate *= max(mass / line.quantity, 1e-9) / _REFERENCE_GLASS_KG_M2
+    return rate * line.quantity
+
+
 def price_bom(
     bom: BillOfMaterials,
     *,
@@ -275,6 +310,11 @@ def price_bom(
         if supplier_price is None and line.code in fallback_rates:
             supplier_price = fallback_rates[line.code] * line.quantity
             supplier_id = "fallback"
+
+        if supplier_price is None:
+            supplier_price = _category_fallback(line, fallback_rates)
+            if supplier_price is not None:
+                supplier_id = "fallback"
 
         if supplier_price is None:
             unpriced.append(line.code)

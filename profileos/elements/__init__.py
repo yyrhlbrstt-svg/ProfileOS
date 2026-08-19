@@ -21,6 +21,7 @@ from .model import (
     ElementKind,
     ElevationSet,
     HingeSide,
+    ElementSchedule,
     Opening,
     OpeningType,
     Sash,
@@ -40,6 +41,7 @@ from .rules import (
 
 __all__ = [
     "ElevationSet",
+    "ElementSchedule",
     "Opening", "Cell", "Sash", "OpeningType", "HingeSide", "ElementKind",
     "SystemRules", "FrameRules", "SashRules", "GlassRules", "GasketRules",
     "MullionRules", "DEFAULT_SYSTEM_RULES", "get_system_rules",

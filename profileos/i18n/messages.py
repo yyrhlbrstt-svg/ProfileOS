@@ -605,6 +605,28 @@ MESSAGES: dict[str, dict[str, str]] = {
         "it": "Lingua", "es": "Idioma",
     },
 
+    # -- kinds of element ---------------------------------------------------- #
+    "element.window": {
+        "en": "window", "he": "חלון", "ar": "نافذة", "ru": "окно",
+        "it": "finestra", "es": "ventana",
+    },
+    "element.door": {
+        "en": "door", "he": "דלת", "ar": "باب", "ru": "дверь",
+        "it": "porta", "es": "puerta",
+    },
+    "element.curtain_wall": {
+        "en": "curtain wall", "he": "קיר מסך", "ar": "حائط ستائري",
+        "ru": "навесной фасад", "it": "facciata continua", "es": "muro cortina",
+    },
+    "element.shopfront": {
+        "en": "shopfront", "he": "חזית מסחרית", "ar": "واجهة تجارية",
+        "ru": "витрина", "it": "vetrina", "es": "escaparate",
+    },
+    "element.skylight": {
+        "en": "skylight", "he": "סקיילייט", "ar": "منور سقفي",
+        "ru": "зенитный фонарь", "it": "lucernario", "es": "lucernario",
+    },
+
     # -- quantities --------------------------------------------------------- #
     "unit.mm": {"en": "mm", "he": "מ\"מ", "ar": "مم", "ru": "мм", "it": "mm", "es": "mm"},
     "unit.m": {"en": "m", "he": "מ'", "ar": "م", "ru": "м", "it": "m", "es": "m"},

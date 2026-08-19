@@ -288,7 +288,41 @@ class ElevationSet(BaseModel):
         )
 
 
+class ElementSchedule(RoundTrips):
+    """The openings of one job, as a file.
+
+    This is the document the drawing package and the quotation are produced
+    from — a *schedule of elements*, distinct from the cutting
+    :class:`~profileos.models.orders.Project`, which lists profile demand for
+    the saw. The two meet when the schedule is built into elements and their
+    cuts become the project's items; conflating them in one file is how a
+    change to an opening fails to reach the cut list.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    client: str = ""
+    reference: str = ""
+    system_id: str = "generic"
+    #: Default sill height above the finished floor [mm], per the schedule.
+    sill_height: float = 0.0
+    openings: list[Opening] = Field(default_factory=list)
+    notes: str = ""
+
+    @model_validator(mode="after")
+    def _unique_ids(self) -> "ElementSchedule":
+        ids = [opening.element_id for opening in self.openings]
+        if len(ids) != len(set(ids)):
+            raise ValueError("duplicate element_id values in the schedule")
+        return self
+
+    def opening(self, element_id: str) -> Opening | None:
+        return next((o for o in self.openings if o.element_id == element_id), None)
+
+
 __all__ = [
+    "ElementSchedule",
     "OpeningType",
     "HingeSide",
     "ElementKind",
