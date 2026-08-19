@@ -43,6 +43,7 @@ cnc_app = typer.Typer(help="Machine code generation.")
 element_app = typer.Typer(help="Windows, doors and curtain walls.")
 pipe_app = typer.Typer(help="Pipework sizing and network analysis.")
 glass_app = typer.Typer(help="Glass and panel sheet nesting.")
+catalogue_app = typer.Typer(help="Build an owned profile library from supplier catalogues.")
 plugin_app = typer.Typer(help="Plugin registries and hot reload.")
 update_app = typer.Typer(help="Signed content updates.")
 licence_app = typer.Typer(help="Hardware authentication and licensing.")
@@ -53,6 +54,7 @@ app.add_typer(cnc_app, name="cnc")
 app.add_typer(element_app, name="element")
 app.add_typer(pipe_app, name="pipe")
 app.add_typer(glass_app, name="glass")
+app.add_typer(catalogue_app, name="catalogue")
 app.add_typer(plugin_app, name="plugin")
 app.add_typer(update_app, name="update")
 app.add_typer(licence_app, name="licence")
@@ -1176,6 +1178,185 @@ def glass_stock() -> None:
             f"{sheet.area / 1e6:.2f} m²",
         )
     console.print(table)
+
+
+# --------------------------------------------------------------------------- #
+# Catalogue ingestion
+# --------------------------------------------------------------------------- #
+@catalogue_app.command("ingest")
+def catalogue_ingest(
+    drawings: Optional[Path] = typer.Option(
+        None, "--drawings", "-d", help="Folder of supplier DXF drawings."
+    ),
+    table: Optional[Path] = typer.Option(
+        None, "--table", "-t", help="Supplier catalogue: PDF, CSV or TSV."
+    ),
+    series: str = typer.Option("unknown", "--series", help="Profile system family."),
+    material: Optional[str] = typer.Option(None, "--material", help="Alloy id."),
+    limit: Optional[int] = typer.Option(None, "--limit", help="Stop after N drawings."),
+    no_torsion: bool = typer.Option(False, "--no-torsion", help="Skip the warping FEA."),
+    plugin_out: Optional[Path] = typer.Option(
+        None, "--plugin", help="Write the ingested profiles as a data plugin."
+    ),
+    include_conflicts: bool = typer.Option(
+        False,
+        "--include-conflicts",
+        help="Ship profiles whose published and measured figures disagree.",
+    ),
+    json_out: Optional[Path] = typer.Option(None, "--json"),
+) -> None:
+    """Read a supplier catalogue and drawing pack into an owned profile library.
+
+    Every drawing is measured by the geometry and structural engines and set
+    against the supplier's published table. Agreement is evidence; disagreement
+    is reported rather than resolved.
+    """
+    from .catalogue import CatalogueError, ingest, to_plugin
+
+    if drawings is None and table is None:
+        _fail("Give at least one of --drawings or --table")
+
+    try:
+        report = ingest(
+            table=table,
+            drawings=drawings,
+            system_series=series,
+            material_id=material,
+            torsion=not no_torsion,
+            limit=limit,
+        )
+    except (CatalogueError, ProfileOSError) as exc:
+        _fail(str(exc))
+
+    table_view = Table(title="Catalogue ingestion", header_style="dim")
+    table_view.add_column("Article", style="cyan")
+    table_view.add_column("Name")
+    table_view.add_column("Status")
+    table_view.add_column("Checked", justify="right")
+    table_view.add_column("Conflicts", justify="right")
+    styles = {
+        "verified": "green",
+        "conflict": "red",
+        "unverified": "yellow",
+        "table only": "dim",
+    }
+    for entry in report.entries:
+        summary = entry.summary()
+        style = styles.get(entry.status, "")
+        table_view.add_row(
+            entry.profile_id,
+            (entry.name or "")[:38],
+            f"[{style}]{entry.status}[/]" if style else entry.status,
+            str(summary["checked"]),
+            str(summary["conflicts"]) if summary["conflicts"] else "-",
+        )
+    console.print(table_view)
+
+    for entry in report.conflicts:
+        console.print(f"\n[red]Conflict[/] on [cyan]{entry.profile_id}[/]:")
+        for check in entry.disagreements:
+            console.print(f"  {check.describe()}")
+        console.print(
+            "  [dim]The library stores the measured value; the published one is "
+            "kept beside it.[/]"
+        )
+
+    stats = report.summary()
+    console.print(
+        f"\n[bold]{stats['entries']}[/] articles, "
+        f"{stats['with_geometry']} with geometry, "
+        f"[green]{stats['verified']} verified[/], "
+        f"[red]{stats['conflicts']} in conflict[/]"
+    )
+    if report.unmatched_drawings:
+        console.print(
+            f"  [yellow]{len(report.unmatched_drawings)} drawing(s) matched no "
+            f"catalogue row[/]"
+        )
+    if report.unmatched_rows:
+        console.print(
+            f"  [yellow]{len(report.unmatched_rows)} catalogue row(s) had no drawing[/]"
+        )
+    for message in report.errors:
+        console.print(f"  [red]{message}[/]")
+
+    if plugin_out:
+        payload = to_plugin(
+            report,
+            plugin_id=plugin_out.stem,
+            name=f"{series} profile library",
+            include_conflicts=include_conflicts,
+        )
+        plugin_out.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        console.print(
+            f"[green]Wrote[/] {plugin_out} "
+            f"({len(payload['profiles'])} profiles, "
+            f"{len(payload['excluded_for_conflict'])} excluded)"
+        )
+
+    if json_out:
+        json_out.write_text(
+            json.dumps(
+                {
+                    "summary": report.summary(),
+                    "entries": [entry.summary() for entry in report.entries],
+                    "conflicts": {
+                        entry.profile_id: [c.describe() for c in entry.disagreements]
+                        for entry in report.conflicts
+                    },
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        console.print(f"[green]Wrote[/] {json_out}")
+
+
+@catalogue_app.command("table")
+def catalogue_table(
+    source: Path = typer.Argument(..., help="Supplier catalogue: PDF, CSV or TSV."),
+    limit: int = typer.Option(30, "--limit", "-n", help="Rows to show."),
+) -> None:
+    """Show what the parser reads out of a supplier table, before any matching.
+
+    Run this first on a new supplier. If the columns come out in the wrong
+    places here, nothing downstream can put them right.
+    """
+    from .catalogue import CatalogueError, read_table
+
+    try:
+        rows = read_table(source)
+    except (CatalogueError, ProfileOSError) as exc:
+        _fail(str(exc))
+
+    if not rows:
+        console.print("[yellow]No data rows recognised in this file.[/]")
+        return
+
+    properties: list[str] = []
+    for row in rows:
+        for name in row.values:
+            if name not in properties:
+                properties.append(name)
+
+    view = Table(title=f"{source.name} - {len(rows)} rows", header_style="dim")
+    view.add_column("Code", style="cyan")
+    view.add_column("Description")
+    for name in properties:
+        view.add_column(name, justify="right")
+    for row in rows[:limit]:
+        cells = [f"{row.values[n]:,.4g}" if n in row.values else "-" for n in properties]
+        code = f"[yellow]{row.code}[/]" if row.partial else row.code
+        view.add_row(code, (row.description or "")[:32], *cells)
+    console.print(view)
+    if len(rows) > limit:
+        console.print(f"[dim]... {len(rows) - limit} more rows[/]")
+    partial = sum(1 for row in rows if row.partial)
+    if partial:
+        console.print(
+            f"[yellow]{partial} row(s) were short of columns[/] and may have "
+            "figures attributed to the wrong property."
+        )
 
 
 def main() -> None:

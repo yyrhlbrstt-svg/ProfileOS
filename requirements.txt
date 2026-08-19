@@ -32,3 +32,4 @@ segno>=1.5
 
 # Hardware authentication (WebAuthn/FIDO2 CBOR)
 cbor2>=5.6
+pypdf>=4.0
