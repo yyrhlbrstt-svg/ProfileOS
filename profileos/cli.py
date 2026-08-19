@@ -43,6 +43,8 @@ cnc_app = typer.Typer(help="Machine code generation.")
 element_app = typer.Typer(help="Windows, doors and curtain walls.")
 pipe_app = typer.Typer(help="Pipework sizing and network analysis.")
 plugin_app = typer.Typer(help="Plugin registries and hot reload.")
+update_app = typer.Typer(help="Signed content updates.")
+licence_app = typer.Typer(help="Hardware authentication and licensing.")
 
 app.add_typer(geometry_app, name="section")
 app.add_typer(nest_app, name="nest")
@@ -50,6 +52,8 @@ app.add_typer(cnc_app, name="cnc")
 app.add_typer(element_app, name="element")
 app.add_typer(pipe_app, name="pipe")
 app.add_typer(plugin_app, name="plugin")
+app.add_typer(update_app, name="update")
+app.add_typer(licence_app, name="licence")
 
 
 # --------------------------------------------------------------------------- #
@@ -693,6 +697,345 @@ def demo(
     if profiling:
         console.print("\n[bold]Performance[/]")
         console.print(PROFILER.report())
+
+
+# --------------------------------------------------------------------------- #
+# Updates
+# --------------------------------------------------------------------------- #
+
+def _update_engine(source_url: str, key_path: Path, channel: str):
+    """Build an engine from a source that may be a URL or a directory."""
+    from .core.hotreload import PluginLoader
+    from .security.keys import VerifyKey
+    from .updates import DirectorySource, HttpSource, UpdateChannel, UpdateEngine
+
+    if not key_path.is_file():
+        _fail(
+            f"Issuer public key not found: {key_path}\n"
+            "Updates are only accepted from a signed source, so the publisher's "
+            "key is required. Generate a pair with 'profileos update keygen'."
+        )
+    verify_key = VerifyKey.from_pem(key_path.read_bytes())
+
+    if source_url.startswith(("http://", "https://")):
+        source = HttpSource(source_url, allow_insecure=source_url.startswith("http://"))
+    else:
+        source = DirectorySource(source_url)
+
+    settings = get_settings()
+    settings.ensure_directories()
+    return UpdateEngine(
+        source, verify_key, settings,
+        channel=UpdateChannel(channel), loader=PluginLoader(settings, strict=False),
+    )
+
+
+@update_app.command("check")
+def update_check(
+    source: str = typer.Argument(..., help="Update URL or directory."),
+    key: Path = typer.Option(..., "--key", "-k", help="Issuer public key (PEM)."),
+    channel: str = typer.Option("stable", "--channel", "-c", help="stable | beta | canary"),
+) -> None:
+    """Check for updates without installing anything."""
+    engine = _update_engine(source, key, channel)
+    try:
+        plan = engine.check()
+    except ProfileOSError as exc:
+        _fail(str(exc))
+
+    console.print(Panel(plan.describe(), title="Available updates", border_style="cyan"))
+    if plan.skipped:
+        table = Table(title="Skipped", box=None, header_style="dim")
+        table.add_column("Package", style="cyan")
+        table.add_column("Reason", style="dim")
+        for package_id, reason in plan.skipped:
+            table.add_row(package_id, reason)
+        console.print(table)
+
+
+@update_app.command("apply")
+def update_apply(
+    source: str = typer.Argument(..., help="Update URL or directory."),
+    key: Path = typer.Option(..., "--key", "-k", help="Issuer public key (PEM)."),
+    channel: str = typer.Option("stable", "--channel", "-c"),
+    no_reload: bool = typer.Option(False, "--no-reload", help="Install without hot reloading."),
+) -> None:
+    """Download, verify and install updates."""
+    engine = _update_engine(source, key, channel)
+    try:
+        plan = engine.check()
+        if not plan.has_updates:
+            console.print("[green]Already up to date.[/]")
+            return
+        console.print(plan.describe())
+        result = engine.apply(plan, reload=not no_reload)
+    except ProfileOSError as exc:
+        _fail(str(exc))
+
+    if result.ok:
+        console.print(
+            f"\n[green]Applied {len(result.applied)} update(s)[/] "
+            f"in {result.duration_s:.2f} s, {result.reloaded} reloaded live."
+        )
+    else:
+        console.print(f"\n[red]Update failed.[/] Rolled back: {result.rolled_back}")
+        for package_id, reason in result.failed:
+            console.print(f"  [red]{package_id}:[/] {reason}")
+    for warning in result.warnings:
+        console.print(f"  [yellow]-[/] {warning}")
+
+
+@update_app.command("status")
+def update_status(
+    source: str = typer.Argument("", help="Optional update source to probe."),
+    key: Optional[Path] = typer.Option(None, "--key", "-k"),
+) -> None:
+    """Show installed packages and update history."""
+    from .core.hotreload import PluginLoader
+    from .security.keys import SigningKey, VerifyKey
+    from .updates import DirectorySource, UpdateEngine
+
+    settings = get_settings()
+    settings.ensure_directories()
+    verify_key = (
+        VerifyKey.from_pem(key.read_bytes())
+        if key and key.is_file()
+        else SigningKey.generate().public_key()
+    )
+    engine = UpdateEngine(
+        DirectorySource(source or settings.data_dir), verify_key, settings,
+        loader=PluginLoader(settings, strict=False),
+    )
+
+    installed = engine.installed()
+    if installed:
+        table = Table(title="Installed content", header_style="dim")
+        for column in ("Package", "Version", "Kind", "Installed"):
+            table.add_column(column, style="cyan" if column == "Package" else None)
+        for package in installed:
+            table.add_row(
+                package.package_id, package.version, package.kind, package.installed_at[:19]
+            )
+        console.print(table)
+    else:
+        console.print("[dim]No content packages installed.[/]")
+
+    history = engine.history(10)
+    if history:
+        table = Table(title="Recent updates", box=None, header_style="dim")
+        table.add_column("When", style="dim")
+        table.add_column("Applied", justify="right")
+        table.add_column("Failed", justify="right")
+        for entry in history:
+            table.add_row(
+                entry["at"][:19], str(len(entry.get("applied", []))),
+                str(len(entry.get("failed", []))),
+            )
+        console.print(table)
+
+
+@update_app.command("keygen")
+def update_keygen(
+    out: Path = typer.Option(Path("update-key"), "--out", "-o", help="Output basename."),
+    algorithm: str = typer.Option("eddsa", "--algorithm", help="eddsa | es256"),
+) -> None:
+    """Generate an update signing key pair.
+
+    Keep the private key offline. Anyone holding it can publish content that
+    every installation carrying the matching public key will accept.
+    """
+    from .security.keys import CoseAlgorithm, SigningKey
+
+    algorithms = {"eddsa": CoseAlgorithm.EDDSA, "es256": CoseAlgorithm.ES256}
+    if algorithm.lower() not in algorithms:
+        _fail(f"Unknown algorithm: {algorithm}")
+
+    key = SigningKey.generate(algorithm=algorithms[algorithm.lower()])
+    private = key.save(out.with_suffix(".key"))
+    public = out.with_suffix(".pub")
+    public.write_bytes(key.public_key().to_pem())
+
+    console.print(f"[green]Private key[/] {private}  [red](keep offline)[/]")
+    console.print(f"[green]Public key [/] {public}")
+    console.print(f"[dim]key id {key.key_id}[/]")
+
+
+@update_app.command("publish")
+def update_publish(
+    directory: Path = typer.Argument(..., help="Directory of content files to publish."),
+    key: Path = typer.Option(..., "--key", "-k", help="Private signing key (PEM)."),
+    out: Path = typer.Option(Path("feed"), "--out", "-o", help="Output feed directory."),
+    channel: str = typer.Option("stable", "--channel", "-c"),
+    version: str = typer.Option("1.0.0", "--version"),
+) -> None:
+    """Sign a directory of content files into a publishable update feed."""
+    from .core.hotreload import DATA_SCHEMAS, load_data_document, register_builtin_schemas
+    from .security.keys import SigningKey
+    from .updates import PackageKind, build_manifest, build_package, publish_directory
+
+    if not directory.is_dir():
+        _fail(f"Not a directory: {directory}")
+    if not key.is_file():
+        _fail(f"Signing key not found: {key}")
+
+    register_builtin_schemas()
+    signing_key = SigningKey.from_pem(key.read_bytes())
+
+    kind_for_document = {
+        "system_rules": PackageKind.SYSTEM_RULES,
+        "price_list": PackageKind.PRICE_LIST,
+        "pipe_catalogue": PackageKind.PIPE_CATALOGUE,
+        "brand": PackageKind.SYSTEM_RULES,
+    }
+
+    packages = []
+    contents: dict[str, bytes] = {}
+    for path in sorted(directory.iterdir()):
+        if path.suffix.lower() not in (".json", ".xml", ".py") or not path.is_file():
+            continue
+        data = path.read_bytes()
+
+        if path.suffix.lower() == ".py":
+            kind = PackageKind.MACRO_LIBRARY
+        else:
+            try:
+                document = load_data_document(path)
+            except ProfileOSError as exc:
+                console.print(f"  [yellow]skipped[/] {path.name}: {exc}")
+                continue
+            declared = str(document.get("kind") or "")
+            kind = kind_for_document.get(declared)
+            if kind is None:
+                console.print(f"  [yellow]skipped[/] {path.name}: unknown kind {declared!r}")
+                continue
+
+        packages.append(
+            build_package(
+                path.stem.replace("_", "."), kind, data, path.name, signing_key,
+                version=version, channel=channel, description=path.stem.replace("_", " "),
+            )
+        )
+        contents[path.name] = data
+
+    if not packages:
+        _fail("Nothing publishable found in that directory.")
+
+    manifest = build_manifest(packages, signing_key)
+    target = publish_directory(contents, manifest, out)
+    console.print(f"[green]Published[/] {len(packages)} package(s) to {target}")
+    for package in packages:
+        console.print(f"  {package.package_id} {package.version} [{package.kind.value}]")
+
+
+# --------------------------------------------------------------------------- #
+# Licensing
+# --------------------------------------------------------------------------- #
+
+@licence_app.command("fingerprint")
+def licence_fingerprint() -> None:
+    """Show this machine's hardware fingerprint."""
+    from .security.hwid import current_fingerprint
+
+    fingerprint = current_fingerprint()
+    console.print(
+        _kv_table(
+            "Hardware fingerprint",
+            [("Fingerprint", fingerprint.short), ("Traits", len(fingerprint.traits))],
+        )
+    )
+    table = Table(box=None, header_style="dim")
+    table.add_column("Trait", style="cyan")
+    table.add_column("Weight", justify="right")
+    table.add_column("Digest", style="dim")
+    for trait in fingerprint.traits:
+        table.add_row(trait.name, f"{trait.weight:g}", trait.digest)
+    console.print(table)
+
+
+@licence_app.command("issue")
+def licence_issue(
+    licensee: str = typer.Argument(..., help="Who the licence is for."),
+    key: Path = typer.Option(..., "--key", "-k", help="Issuer private key (PEM)."),
+    out: Path = typer.Option(Path("licence.p7"), "--out", "-o"),
+    days: int = typer.Option(365, "--days", help="Validity in days."),
+    seats: Optional[int] = typer.Option(None, "--seats"),
+    features: str = typer.Option("", "--features", help="Comma-separated feature keys."),
+) -> None:
+    """Issue a licence sealed to this machine."""
+    from datetime import date, timedelta
+
+    from .security.hwid import current_fingerprint
+    from .security.keys import SigningKey
+    from .security.license import LicenseTerms, issue_license, save_license
+
+    if not key.is_file():
+        _fail(f"Signing key not found: {key}")
+
+    terms = LicenseTerms(
+        licensee=licensee,
+        expires_on=date.today() + timedelta(days=days),
+        features={f.strip() for f in features.split(",") if f.strip()},
+        seats=seats,
+    )
+    blob = issue_license(terms, SigningKey.from_pem(key.read_bytes()), current_fingerprint())
+    path = save_license(blob, out)
+    console.print(f"[green]Issued[/] {terms.licence_id} for {licensee} -> {path}")
+    console.print(f"[dim]Valid until {terms.expires_on}, sealed to this machine.[/]")
+
+
+@licence_app.command("check")
+def licence_check(
+    licence: Path = typer.Argument(..., help="Licence file."),
+    key: Path = typer.Option(..., "--key", "-k", help="Issuer public key (PEM)."),
+) -> None:
+    """Validate a licence on this machine."""
+    from .security.keys import VerifyKey
+    from .security.license import load_license_file
+
+    if not key.is_file():
+        _fail(f"Public key not found: {key}")
+    try:
+        status = load_license_file(licence, VerifyKey.from_pem(key.read_bytes()))
+    except ProfileOSError as exc:
+        _fail(str(exc))
+
+    if status.valid:
+        colour = "yellow" if status.read_only else "green"
+        console.print(f"[{colour}]Licence is valid.[/]")
+    else:
+        console.print("[red]Licence rejected.[/]")
+    if status.reason:
+        console.print(f"  {status.reason}")
+    if status.terms:
+        console.print(
+            _kv_table(
+                "Terms",
+                [
+                    ("Licence", status.terms.licence_id),
+                    ("Licensee", status.terms.licensee),
+                    ("Expires", status.terms.expires_on or "never"),
+                    ("Days left", status.terms.days_remaining() if status.terms.expires_on else "-"),
+                    ("Seats", status.terms.seats or "unlimited"),
+                    ("Features", ", ".join(sorted(status.terms.features)) or "all"),
+                    ("Hardware match", f"{status.hardware_score * 100:.0f}%"),
+                ],
+            )
+        )
+
+
+@app.command()
+def brand(
+    select: Optional[str] = typer.Option(None, "--set", help="Activate a brand by id."),
+) -> None:
+    """Show or select the operator branding."""
+    from .branding import BUILTIN_BRANDS, active_brand, set_active_brand
+
+    if select:
+        set_active_brand(select)
+    current = active_brand()
+    console.print(Panel("\n".join(current.letterhead()), title=f"Brand: {current.id}",
+                        border_style="cyan"))
+    console.print(f"[dim]Available: {', '.join(sorted(BUILTIN_BRANDS))}[/]")
 
 
 def main() -> None:

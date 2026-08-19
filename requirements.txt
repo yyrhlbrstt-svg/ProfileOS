@@ -29,3 +29,6 @@ pytest>=8.0
 
 # Shop-floor QR labels
 segno>=1.5
+
+# Hardware authentication (WebAuthn/FIDO2 CBOR)
+cbor2>=5.6

@@ -345,6 +345,11 @@ def build_quotation(
                 )
             )
 
+    from ..branding import active_brand
+
+    brand = active_brand()
+    quote.metadata["letterhead"] = brand.letterhead()
+    quote.metadata["issued_by"] = brand.document_name
     quote.metadata["total_area_m2"] = round(total_area, 3)
     quote.metadata["price_per_m2"] = (
         round(quote.price_per_m2(total_area) or 0.0, 2) if total_area else None

@@ -289,11 +289,12 @@ def register_builtin_schemas() -> None:
     if _BUILTIN_SCHEMAS_REGISTERED:
         return
 
+    from ..branding import BRAND_SCHEMA
     from ..elements.rules import SYSTEM_RULES_SCHEMA
     from ..plumbing.pipes import PIPE_CATALOGUE_SCHEMA
     from ..quoting.suppliers import PRICE_LIST_SCHEMA
 
-    for schema in (SYSTEM_RULES_SCHEMA, PRICE_LIST_SCHEMA, PIPE_CATALOGUE_SCHEMA):
+    for schema in (SYSTEM_RULES_SCHEMA, PRICE_LIST_SCHEMA, PIPE_CATALOGUE_SCHEMA, BRAND_SCHEMA):
         DATA_SCHEMAS.register(schema)
     _BUILTIN_SCHEMAS_REGISTERED = True
 

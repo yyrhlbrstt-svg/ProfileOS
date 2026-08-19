@@ -218,9 +218,16 @@ class BasePostProcessor(ABC):
         return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     def header_comment_lines(self, job: MachiningJob) -> list[str]:
-        """Provenance lines most controls accept as comments."""
+        """Provenance lines most controls accept as comments.
+
+        The operator's own identity leads, so a program found on a machine can
+        be traced back to who produced it.
+        """
+        from ...branding import active_brand
+
         return [
-            f"ProfileOS {self.display_name or self.key} post-processor v{self.format_version}",
+            active_brand().nc_header(),
+            f"{self.display_name or self.key} post-processor v{self.format_version}",
             f"Job {job.job_id} - {job.name}",
             f"Machine {job.machine.vendor} {job.machine.model}",
             f"Generated {self.timestamp()}",

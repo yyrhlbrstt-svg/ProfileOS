@@ -48,9 +48,13 @@ class Sidebar(QWidget):
         layout.setContentsMargins(0, 0, 0, METRICS.space(3))
         layout.setSpacing(0)
 
-        logo = QLabel("ProfileOS")
+        from ..branding import active_brand
+
+        brand = active_brand()
+        logo = QLabel(brand.display_name)
         logo.setObjectName("SidebarLogo")
-        version = QLabel(f"v{__version__}")
+        logo.setWordWrap(True)
+        version = QLabel(brand.tagline or f"v{__version__}")
         version.setObjectName("SidebarVersion")
         layout.addWidget(logo)
         layout.addWidget(version)
@@ -87,7 +91,9 @@ class MainWindow(QMainWindow):
         self.colours = palette
         self.session = Session()
 
-        self.setWindowTitle("ProfileOS")
+        from ..branding import active_brand
+
+        self.setWindowTitle(active_brand().window_title())
         self.resize(1560, 980)
         self.setMinimumSize(1120, 720)
 

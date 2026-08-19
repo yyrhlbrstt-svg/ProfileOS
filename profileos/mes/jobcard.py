@@ -45,6 +45,10 @@ h1 { font-size: 28px; margin: 0 0 4px; letter-spacing: -0.02em; }
 h2 { font-size: 20px; margin: 28px 0 10px; padding-bottom: 6px;
      border-bottom: 2px solid var(--line); }
 .sub { color: var(--muted); font-size: 15px; }
+.letterhead { font-size: 12px; line-height: 1.45; color: var(--muted);
+              margin-bottom: 8px; padding-bottom: 8px;
+              border-bottom: 1px solid var(--line); }
+.letterhead:first-line { font-weight: 700; color: var(--ink); font-size: 14px; }
 .meta { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
         gap: 10px; margin-bottom: 18px; }
 .meta div { background: var(--panel); border-radius: var(--radius); padding: 10px 12px; }
@@ -113,7 +117,10 @@ class JobCardOptions:
     include_assembly_steps: bool = True
     include_machining: bool = True
     title: str = "Job card"
-    company: str = "ProfileOS"
+    #: Defaults to the active brand's name when left as None.
+    company: str | None = None
+    #: Print the full letterhead (address and contact) rather than just a name.
+    include_letterhead: bool = True
 
 
 def _stage_pill(stage: Stage) -> str:
@@ -127,8 +134,12 @@ def render_job_card(
     options: JobCardOptions | None = None,
 ) -> str:
     """Render a complete job card as a self-contained HTML document."""
+    from ..branding import active_brand
+
     options = options or JobCardOptions()
     builds = builds or []
+    brand = active_brand()
+    company = options.company or brand.display_name
 
     pieces = order.by_kind(ItemKind.PROFILE_PIECE)
     panes = order.by_kind(ItemKind.GLASS_PANE)
@@ -150,12 +161,21 @@ def render_job_card(
         payload = f"WO|{order.project_id}|{order.work_order_id}"
         qr_block = f'<div class="qr">{qr_svg(payload, scale=3, border=1)}</div>'
 
+    letterhead = ""
+    if options.include_letterhead and brand.letterhead():
+        letterhead = (
+            '<div class="letterhead">'
+            + "<br>".join(_esc(line) for line in brand.letterhead())
+            + "</div>"
+        )
+
     parts.append(
         "<header><div>"
+        f"{letterhead}"
         f"<h1>{_esc(order.name or 'Work order')}</h1>"
         f'<div class="sub">{_esc(order.work_order_id)}'
         f" &middot; project {_esc(order.project_id or 'n/a')}"
-        f" &middot; {_esc(options.company)}</div>"
+        f" &middot; {_esc(company)}</div>"
         f"</div>{qr_block}</header>"
     )
 
@@ -303,7 +323,7 @@ def render_job_card(
 
     generated = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     parts.append(
-        f"<footer>Generated {generated} by {_esc(options.company)}. "
+        f"<footer>Generated {generated} by {_esc(company)}. "
         "Scan any code to record progress.</footer>"
     )
     parts.append("</div></body></html>")
