@@ -847,3 +847,18 @@ def erp_vat(on: str) -> dict[str, Any]:
 
 
 __all__ = ["app"]
+
+# --------------------------------------------------------------------------- #
+# The phone
+# --------------------------------------------------------------------------- #
+# Mounted on the same service the office already runs, so there is one process,
+# one set of data and one thing to shut down. Nothing under /m works without a
+# device token issued by a machine that was unlocked at the time.
+try:
+    from ..mobile.app import build_router as _build_mobile_router
+
+    app.include_router(_build_mobile_router())
+except Exception as _exc:  # pragma: no cover - the office API still has to run
+    from ..core.logging_setup import get_logger
+
+    get_logger("api").warning("Mobile routes unavailable: %s", _exc)

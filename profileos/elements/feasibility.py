@@ -388,6 +388,27 @@ def _default_mass_lookup(profile_id: str) -> float | None:
     return None
 
 
+def _hebrew_reason(reason: str | None) -> str:
+    """The safety-glass reason in Hebrew.
+
+    The builder states its reasons in English because that is where the
+    regulation text it follows is written down. On a phone held by a fitter the
+    Hebrew line has to be Hebrew all the way through, so the handful of reasons
+    the rule can give are translated here rather than interpolated raw.
+    """
+    if not reason:
+        return ""
+    if "door leaf" in reason:
+        return "זיגוג בכנף דלת"
+    if "overhead" in reason:
+        return "זיגוג עילי"
+    if "critical height" in reason:
+        return "השוליים התחתונים נמוכים מגובה הסיכון"
+    if "pane area" in reason:
+        return "שטח השמשה גדול מהמותר ללא זכוכית בטיחותית"
+    return reason
+
+
 def check_glass(
     panel: GlassPanel, limits: FabricationLimits, subject: str
 ) -> list[Finding]:
@@ -472,7 +493,10 @@ def check_glass(
             Finding(
                 severity=Severity.BLOCKER,
                 code="glass.safety_required",
-                hebrew=f"נדרשת זכוכית בטיחותית ({panel.safety_reason}) והמפרט אינו כזה.",
+                hebrew=(
+                    f"נדרשת זכוכית בטיחותית — {_hebrew_reason(panel.safety_reason)} — "
+                    "והמפרט אינו כזה."
+                ),
                 english=(
                     f"safety glass is required here ({panel.safety_reason}) and the "
                     "specified build-up is not safety glass"

@@ -53,6 +53,7 @@ licence_app = typer.Typer(help="Hardware authentication and licensing.")
 schema_app = typer.Typer(help="JSON Schemas for every document the suite reads.")
 systems_app = typer.Typer(help="Which profile systems exist, and how far each is trusted.")
 draw_app = typer.Typer(help="Shop drawings: elevations, wall sections and sheets.")
+mobile_app = typer.Typer(help="Phones and tablets paired to this machine.")
 
 app.add_typer(geometry_app, name="section")
 app.add_typer(nest_app, name="nest")
@@ -70,6 +71,7 @@ app.add_typer(licence_app, name="licence")
 app.add_typer(schema_app, name="schema")
 app.add_typer(systems_app, name="systems")
 app.add_typer(draw_app, name="draw")
+app.add_typer(mobile_app, name="mobile")
 
 
 # --------------------------------------------------------------------------- #
@@ -739,6 +741,186 @@ def pipe_catalogues() -> None:
     console.print(table)
 
 
+def _lan_addresses() -> list[str]:
+    """The addresses a phone on the shop's own network can actually reach.
+
+    ``localhost`` is useless to a phone, and the hostname often is too, so the
+    address is worked out rather than guessed — by asking the routing table
+    which interface would be used to reach the outside, without sending
+    anything.
+    """
+    import socket
+
+    found: list[str] = []
+    probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        probe.connect(("192.0.2.1", 9))  # a documentation address; nothing is sent
+        address = probe.getsockname()[0]
+        # A container that routes the probe address to itself hands back an
+        # address from the documentation block, which no phone can reach.
+        if not address.startswith(("127.", "192.0.2.")):
+            found.append(address)
+    except OSError:
+        pass
+    finally:
+        probe.close()
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            address = info[4][0]
+            if not address.startswith(("127.", "192.0.2.")) and address not in found:
+                found.append(address)
+    except OSError:
+        pass
+    return found
+
+
+@mobile_app.command("pair")
+def mobile_pair(
+    name: str = typer.Argument(..., help="Whose device this is, e.g. 'הטלפון של דאדי'."),
+    scopes: str = typer.Option(
+        "jobs,measure,drawings", "--scopes",
+        help="What the device may do: jobs | measure | drawings.",
+    ),
+    port: int = typer.Option(8000, "--port", help="Port the service is served on."),
+) -> None:
+    """Issue a one-time pairing code for a phone or tablet.
+
+    Run this at the computer that already has the USB key in it. The code lasts
+    five minutes and works once, so a phone can only be paired by somebody
+    standing at an unlocked machine.
+    """
+    from .mes.barcode import qr_available, qr_svg
+    from .mobile import DeviceRegistry, PairingError, default_registry_path
+
+    registry = DeviceRegistry.load(default_registry_path())
+    try:
+        code = registry.issue_code(name, scopes=[s.strip() for s in scopes.split(",") if s.strip()])
+    except PairingError as exc:
+        _fail(str(exc))
+
+    addresses = _lan_addresses()
+    url = f"http://{addresses[0]}:{port}/m" if addresses else f"http://<this-computer>:{port}/m"
+
+    console.print(
+        Panel(
+            f"[bold]{code.code}[/bold]",
+            title=f"קוד חיבור עבור {name}",
+            subtitle=f"תקף {(code.seconds_left + 59) // 60} דקות · חד-פעמי",
+            border_style="cyan",
+        )
+    )
+    console.print(f"On the phone, open: [bold]{url}[/bold]")
+    for extra in addresses[1:]:
+        console.print(f"  [dim]or http://{extra}:{port}/m[/dim]")
+    console.print(
+        "[dim]The phone must be on the same network as this computer, or "
+        "reach it through your own VPN. Nothing is published to the internet.[/dim]"
+    )
+    if qr_available():
+        console.print("[dim]QR for the address is written to mobile-pair.svg[/dim]")
+        Path("mobile-pair.svg").write_text(qr_svg(url), encoding="utf-8")
+
+
+@mobile_app.command("devices")
+def mobile_devices(
+    all_devices: bool = typer.Option(False, "--all", help="Include revoked and expired."),
+) -> None:
+    """List the phones and tablets paired to this machine."""
+    from .mobile import DeviceRegistry, default_registry_path
+
+    registry = DeviceRegistry.load(default_registry_path())
+    devices = list(registry.devices.values()) if all_devices else registry.active_devices()
+    if not devices:
+        console.print("[dim]No devices are paired.[/dim]")
+        return
+
+    table = Table(title="Paired devices", header_style="dim")
+    table.add_column("Id", style="cyan")
+    table.add_column("Name")
+    table.add_column("Allowed")
+    table.add_column("Paired")
+    table.add_column("Last seen")
+    table.add_column("State")
+    for device in sorted(devices, key=lambda d: d.last_seen, reverse=True):
+        state = (
+            "[red]revoked[/]" if device.revoked
+            else "[yellow]expired[/]" if device.expired
+            else "[green]active[/]"
+        )
+        table.add_row(
+            device.device_id,
+            device.name,
+            ", ".join(device.scopes),
+            device.paired_at.strftime("%Y-%m-%d"),
+            device.last_seen.strftime("%Y-%m-%d %H:%M"),
+            state,
+        )
+    console.print(table)
+
+
+@mobile_app.command("revoke")
+def mobile_revoke(
+    device_id: Optional[str] = typer.Argument(None, help="Device id, or omit with --all."),
+    revoke_all: bool = typer.Option(False, "--all", help="Revoke every device."),
+) -> None:
+    """Cut a lost phone off. Takes effect on its next request."""
+    from .mobile import DeviceRegistry, PairingError, default_registry_path
+
+    registry = DeviceRegistry.load(default_registry_path())
+    if revoke_all:
+        count = registry.revoke_all()
+        console.print(f"[green]Revoked[/green] {count} device(s).")
+        return
+    if not device_id:
+        _fail("Name a device id, or pass --all.")
+    try:
+        device = registry.revoke(device_id)
+    except PairingError as exc:
+        _fail(str(exc))
+    console.print(f"[green]Revoked[/green] {device.name} ({device.device_id}).")
+
+
+@mobile_app.command("measurements")
+def mobile_measurements(
+    reference: Optional[str] = typer.Option(None, "--ref", help="One opening's history."),
+) -> None:
+    """Show what has been measured on site."""
+    from .mobile import MeasurementStore, default_store_path
+
+    store = MeasurementStore.load(default_store_path())
+    records = store.history(reference) if reference else store.records
+    if not records:
+        console.print("[dim]No measurements have been taken.[/dim]")
+        return
+
+    table = Table(title="Site measurements", header_style="dim")
+    table.add_column("Opening", style="cyan")
+    table.add_column("Width", justify="right")
+    table.add_column("Height", justify="right")
+    table.add_column("Out of square", justify="right")
+    table.add_column("By")
+    table.add_column("When", style="dim")
+    for record in records[:60]:
+        problems = record.problems()
+        out = max(record.width_range, record.height_range, record.diagonal_difference or 0.0)
+        table.add_row(
+            record.reference,
+            f"{record.width:.0f}",
+            f"{record.height:.0f}",
+            f"[yellow]{out:.0f}[/]" if problems else f"{out:.0f}",
+            record.measured_by or "—",
+            record.measured_at.strftime("%d/%m %H:%M"),
+        )
+    console.print(table)
+
+    changed = store.changed()
+    for opening, width_change, height_change in changed:
+        console.print(
+            f"  [yellow]{opening}[/yellow] was re-measured: "
+            f"{width_change:+.0f} × {height_change:+.0f} mm against the previous figure"
+        )
+
+
 @draw_app.command("package")
 def draw_package(
     project: Path = typer.Argument(..., help="Project JSON with the elements."),
@@ -1191,7 +1373,7 @@ def serve(
     port: int = typer.Option(8000, "--port"),
     reload: bool = typer.Option(False, "--reload"),
 ) -> None:
-    """Start the HTTP service API."""
+    """Start the HTTP service API, including the phone terminal at /m."""
     try:
         import uvicorn
     except ImportError:
