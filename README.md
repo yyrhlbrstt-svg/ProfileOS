@@ -16,6 +16,9 @@ DXF  →  section properties  →  element design  →  cut list  →  nesting
 Everything runs from one library, one CLI, one HTTP API and one desktop
 application.
 
+Configured for **דאדי בע"מ**, Beit El. Overview and capability comparison:
+<https://profileos-git-claude-aluminum-8e2c8c-yyrhlbrstt-7372s-projects.vercel.app>
+
 ---
 
 ## Quick start
@@ -102,6 +105,34 @@ reference** (centreline / outer / inner), because where a nominal length is
 measured genuinely differs between shops. Remnants are tracked in a persistent
 store and offered before fresh stock.
 
+**2D sheet nesting** for glass and infill panels is a different problem, and is
+solved as one. A glass table scores edge to edge and snaps, so every cut splits
+a rectangle into exactly two: a layout that cannot be decomposed into such cuts
+is scrap on the table however good its area utilisation looks. Every sheet the
+engine returns is checked by an independent verifier that searches for a real
+cutting sequence and reports how many stages it needs — it rejects the classic
+pinwheel, which tiles perfectly and cannot be cut. A CP-SAT model solves the
+two-stage problem exactly where the instance is small enough to close, and the
+result reports optimality only as strongly as it was proved, separating a
+global proof from one that holds within the machine's stage limit.
+
+### Catalogue ingestion — `profileos.catalogue`
+A profile library is the thing a fabricator cannot buy their way out of, and
+the established packages sell it as a subscription. This reads the supplier's
+own published table (PDF, CSV or TSV) and drawing pack, measures every drawing
+through the geometry and structural engines, and sets each published figure
+against the one it measured.
+
+That cross-check is the point. Agreement is evidence; a disagreement is
+reported rather than resolved, and the article stays out of the library until
+somebody decides which figure is right. Two parsing problems get real
+solutions: the decimal convention is settled once per document, because
+`1,842` is 1842 in London and 1.842 in Milan and nothing inside the token can
+tell them apart; and data columns are read from the run at the end of a line,
+because a description like "Mullion 70/100" otherwise shifts every figure one
+place left. Units are part of the column definition and never inferred — cm⁴
+to mm⁴ is a factor of ten thousand on a second moment.
+
 ### CNC — `profileos.cnc`
 A machine-neutral intermediate representation drives ten drivers:
 
@@ -161,19 +192,25 @@ See `examples/plugins/` for a macro plugin and a system-rules document.
 |---|---|
 | Library | `import profileos` |
 | CLI | `profileos --help` |
-| HTTP API | `profileos serve` → `/docs` (14 endpoints) |
+| HTTP API | `profileos serve` → `/docs` (18 endpoints) |
 | Desktop | `profileos ui` |
 
-The desktop application is a six-page workspace following the order work moves
-through a shop: Profile → Element → Nesting → Machining → Quotation → Shop
-floor. Dark and light themes (`Ctrl+T`); `Ctrl+1`…`Ctrl+6` jump between pages.
+The desktop application is a nine-page workspace following the order work moves
+through a shop: Profile → Element → Nesting → Glass → Machining → Quotation →
+Shop floor, with Catalogue and System alongside. Dark and light themes
+(`Ctrl+T`). Nothing in the suite is CLI-only.
+
+`profileos compare` prints the capability matrix and `--verify` checks that
+every claim in it resolves to a symbol in this codebase. The same matrix drives
+the public site, built by `tools/build_site.py`, which refuses to build if a
+claim no longer resolves.
 
 ---
 
 ## Testing
 
 ```bash
-pytest                                  # 343 tests
+pytest                                  # 571 tests
 QT_QPA_PLATFORM=offscreen pytest        # includes the UI suite
 ```
 
@@ -191,7 +228,10 @@ Read this before putting it near a machine.
 **Verified against independent references.** Section properties (closed-form),
 glazing U-values (published figures), friction factors (Moody chart and the
 Colebrook residual), nesting optimality (LP lower bound), DXF bulge arcs
-(checked against ezdxf), Code 128 module counts (the spec formula).
+(checked against ezdxf), Code 128 module counts (the spec formula), guillotine
+cuttability (the pinwheel counter-example and seven hand-derived stage counts),
+and catalogue ingestion (a supplier figure deliberately falsified by 27 %,
+which the cross-check finds without being told where to look).
 
 **Not yet validated against physical machines.** The proprietary CNC formats —
 NCX, ECX, NCW, DGX, MCO, KBN, CamPro, FOM — are written from documented and
@@ -211,9 +251,14 @@ and EN 673 as documented, with stated simplifications (shear area taken as 50 %
 of the gross area; composite sections assume full shear transfer). A qualified
 engineer must review any structural result before it is relied upon.
 
-**Licensing.** The WebAuthn/FIDO2 hardware licensing described in the original
-specification is not implemented in this revision. The security module's
-exception types exist; the engine does not.
+**No ERP, no 3D, no capacity planning.** There are no purchase orders, no stock
+movements and no ledger; quotations and supplier enquiries stop at the
+document. Elements are drawn in elevation and section only, and the shop's
+schedule is not managed here. These gaps are recorded by name in
+`profileos.compare` and shown on the site rather than left to be discovered.
+
+**The comparison is public documentation only.** Nothing in it has been tested
+against a competitor's installation, and "not documented" never means "absent".
 
 ---
 
@@ -227,14 +272,19 @@ profileos/
   structural/  Green's theorem, plastic moduli, torsion, design checks
   elements/    openings, system rules, cut lists, glass, hardware
   glazing/     build-ups, U-values, safety compliance
-  nesting/     kerf/mitre, heuristics, column generation, inventory
+  nesting/     kerf/mitre, column generation, inventory, 2D sheet nesting
   cnc/         IR, macros, clamps, toolpaths, ten machine drivers
   plumbing/    hydraulics, pipe catalogues, network analysis
+  catalogue/   supplier table parsing, drawing ingestion, cross-verification
   quoting/     bill of materials, suppliers, pricing
   mes/         barcodes, production tracking, job cards
   api/         FastAPI service
   ui/          PySide6 desktop application
-tools/         sample DXF generator
-examples/      plugin examples
-tests/         343 tests
+  updates/     signed manifests, atomic install, rollback
+  security/    hardware fingerprint, offline licences, WebAuthn/FIDO2
+  compare.py   the capability matrix, bound to real symbols
+tools/         sample DXF generator, site build
+site/          the public comparison page
+examples/      plugin examples and a sample elevation set
+tests/         571 tests
 ```
