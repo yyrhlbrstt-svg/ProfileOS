@@ -245,9 +245,16 @@ def _to_opening(request: ElementRequest):
 def build_element(request: ElementRequest) -> dict[str, Any]:
     """Design one element and return its cut list, glass and hardware."""
     from ..elements import ElementBuilder
+    from ..systems import DIRECTORY
 
     try:
-        build = ElementBuilder().build(_to_opening(request), sill_height=request.sill_height)
+        opening = _to_opening(request)
+        builder = (
+            ElementBuilder.for_system(opening.system_id)
+            if opening.system_id and DIRECTORY.get(opening.system_id) is not None
+            else ElementBuilder()
+        )
+        build = builder.build(opening, sill_height=request.sill_height)
     except ProfileOSError as exc:
         raise _handle(exc) from exc
     except ValueError as exc:
@@ -283,6 +290,47 @@ def build_element(request: ElementRequest) -> dict[str, Any]:
             for g in build.gaskets
         ],
         "warnings": build.warnings,
+        "may_be_cut": build.may_be_cut,
+        "production_banner": build.production_banner,
+        "feasibility": _feasibility_payload(build, request.sill_height),
+    }
+
+
+def _feasibility_payload(build: Any, sill_height: float) -> dict[str, Any]:
+    """Whether the element can be made, returned with the design that made it.
+
+    Bundled into the build response rather than given its own endpoint: a
+    caller that has to ask twice will one day ship the answer to the first
+    question without the second.
+    """
+    from ..elements.feasibility import check_element
+
+    report = check_element(build, sill_height=sill_height)
+    return {
+        "can_be_made": report.can_be_made,
+        "summary": report.summary(),
+        "findings": [
+            {
+                "severity": finding.severity.name,
+                "code": finding.code,
+                "subject": finding.subject,
+                "english": finding.english,
+                "hebrew": finding.hebrew,
+                "measured": finding.measured,
+                "limit": (
+                    None
+                    if finding.limit is None
+                    else {
+                        "value": finding.limit.value,
+                        "unit": finding.limit.unit,
+                        "kind": finding.limit.kind.value,
+                        "provenance": finding.limit.provenance.value,
+                        "source": finding.limit.source,
+                    }
+                ),
+            }
+            for finding in report.sorted()
+        ],
     }
 
 

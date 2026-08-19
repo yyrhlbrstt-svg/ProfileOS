@@ -374,16 +374,31 @@ class ElementPage(Page):
         self.view = ElevationView(self.colours)
         inner.addWidget(self.view)
 
+        lower = QWidget()
+        lower_layout = QVBoxLayout(lower)
+        lower_layout.setContentsMargins(0, 0, 0, 0)
+        lower_layout.setSpacing(METRICS.space(2))
+
+        # The verdict sits above the tabs rather than inside one, because a
+        # blocker the operator has to click to find is a blocker they will miss.
+        self.verdict = QLabel("")
+        self.verdict.setObjectName("StatLabel")
+        self.verdict.setWordWrap(True)
+        lower_layout.addWidget(self.verdict)
+
         tabs = QTabWidget()
         self.cuts = DataTable(["Role", "Profile", "Length", "Qty", "Angles"])
         self.panes = DataTable(["Mark", "Size", "Specification", "Area m²", "Mass kg", "U", "Safety"])
         self.hardware = DataTable(["Code", "Item", "Qty", "Unit"])
+        self.feasibility = DataTable(["", "Where", "What", "Measured", "Limit"])
         self.warnings = QPlainTextEdit(); self.warnings.setReadOnly(True)
         tabs.addTab(self.cuts, "Cut list")
         tabs.addTab(self.panes, "Glass")
         tabs.addTab(self.hardware, "Hardware")
+        tabs.addTab(self.feasibility, "Feasibility")
         tabs.addTab(self.warnings, "Warnings")
-        inner.addWidget(tabs)
+        lower_layout.addWidget(tabs, 1)
+        inner.addWidget(lower)
         inner.setStretchFactor(0, 3)
         inner.setStretchFactor(1, 2)
         right_layout.addWidget(inner, 1)
@@ -454,10 +469,60 @@ class ElementPage(Page):
         self.warnings.setPlainText(
             "\n".join(f"• {w}" for w in build.warnings) or "No warnings."
         )
+        self.show_feasibility(build)
         self.header.set_subtitle(
             f"{opening.describe()} — {len(self.session.builds)} element(s) in the project"
         )
         self.status(f"Built {opening.name}")
+
+    def show_feasibility(self, build: Any) -> None:
+        """Say straight away whether what was just drawn can be made."""
+        from ..elements.feasibility import Severity, check_element
+
+        try:
+            report = check_element(build, sill_height=self.sill.value() if hasattr(self, "sill") else 0.0)
+        except Exception as exc:  # noqa: BLE001 - never lose the build over a check
+            _log.warning("Feasibility check failed: %s", exc)
+            self.verdict.setText("")
+            self.feasibility.set_rows([])
+            return
+
+        self.session.set_feasibility(report)
+        rows: list[list[Any]] = []
+        colours: dict[tuple[int, int], str] = {}
+        tone = {
+            Severity.BLOCKER: self.colours.danger,
+            Severity.WARNING: self.colours.warning,
+            Severity.NOTE: self.colours.text_muted,
+        }
+        for index, finding in enumerate(report.sorted()):
+            rows.append([
+                finding.severity.hebrew,
+                finding.subject,
+                finding.hebrew or finding.english,
+                "" if finding.measured is None else f"{finding.measured:.1f}",
+                "" if finding.limit is None else f"{finding.limit.value:.1f} {finding.limit.unit}",
+            ])
+            colours[(index, 0)] = tone[finding.severity]
+        self.feasibility.set_rows(rows, numeric_columns=(3, 4), colours=colours)
+
+        if not report.blockers and not report.warnings:
+            notes = len(report.findings)
+            tail = f" ({notes} note(s))" if notes else ""
+            self.verdict.setText(f"ניתן לייצור — buildable as drawn{tail}.")
+            self.verdict.setStyleSheet(f"color: {self.colours.success};")
+        elif report.can_be_made:
+            self.verdict.setText(
+                f"ניתן לייצור, עם {len(report.warnings)} הערות — buildable, "
+                f"{len(report.warnings)} thing(s) to look at."
+            )
+            self.verdict.setStyleSheet(f"color: {self.colours.warning};")
+        else:
+            first = report.blockers[0]
+            self.verdict.setText(
+                f"לא ניתן לייצור: {first.hebrew}  —  cannot be made as drawn: {first.english}"
+            )
+            self.verdict.setStyleSheet(f"color: {self.colours.danger};")
 
 
 # --------------------------------------------------------------------------- #

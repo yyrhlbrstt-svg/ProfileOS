@@ -39,6 +39,8 @@ class Session:
 
     #: What was read off the section geometry: grooves, rebates, channels.
     section_features: Any = None
+    #: Why the last element built can or cannot be made.
+    feasibility: Any = None
 
     # ERP
     company: Any = None
@@ -78,6 +80,10 @@ class Session:
     def set_features(self, report: Any) -> None:
         self.section_features = report
         self._notify("features")
+
+    def set_feasibility(self, report: Any) -> None:
+        self.feasibility = report
+        self._notify("feasibility")
 
     def set_glass(self, report: Any) -> None:
         self.glass_report = report

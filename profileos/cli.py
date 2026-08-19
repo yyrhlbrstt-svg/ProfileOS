@@ -566,11 +566,21 @@ def element_build(
             opening.set_cell(
                 Cell(column=column, row=row, sash=Sash(opening_type=OpeningType(sash_type)))
             )
-        build = ElementBuilder().build(opening, sill_height=sill)
+        # Building through the directory carries the system's provenance with
+        # it, so the sheet can say whether it may be worked to.
+        from .systems import DIRECTORY
+
+        if DIRECTORY.get(system) is not None:
+            builder = ElementBuilder.for_system(system)
+        else:
+            builder = ElementBuilder()
+        build = builder.build(opening, sill_height=sill)
     except (ProfileOSError, ValueError) as exc:
         _fail(str(exc))
 
     console.print(Panel(opening.describe(), border_style="cyan"))
+    if build.production_banner:
+        console.print(Panel(build.production_banner, border_style="red"))
 
     cuts = Table(title="Cut list", header_style="dim")
     for column, justify in [("Role", "left"), ("Profile", "left"), ("Length", "right"),
@@ -609,8 +619,38 @@ def element_build(
         console.print(hardware)
 
     console.print(_kv_table("Summary", list(build.summary().items())))
-    for warning in build.warnings:
-        console.print(f"  [yellow]-[/] {warning}")
+
+    from .elements.feasibility import Severity, check_element
+
+    report = check_element(build, sill_height=sill)
+    if report.findings:
+        table = Table(title="Feasibility", header_style="dim")
+        table.add_column("", justify="left")
+        table.add_column("Where", style="cyan")
+        table.add_column("What")
+        table.add_column("Measured", justify="right")
+        table.add_column("Limit", justify="right")
+        tone = {Severity.BLOCKER: "red", Severity.WARNING: "yellow", Severity.NOTE: "dim"}
+        for finding in report.sorted():
+            table.add_row(
+                f"[{tone[finding.severity]}]{finding.severity.name}[/]",
+                finding.subject,
+                finding.english,
+                "" if finding.measured is None else f"{finding.measured:.1f}",
+                ""
+                if finding.limit is None
+                else f"{finding.limit.value:.1f} {finding.limit.unit}",
+            )
+        console.print(table)
+
+    if report.can_be_made:
+        console.print("[green]ניתן לייצור — buildable as drawn.[/green]")
+    else:
+        console.print(
+            f"[red]לא ניתן לייצור — cannot be made as drawn: "
+            f"{report.blockers[0].english}[/red]"
+        )
+        raise typer.Exit(code=1)
 
 
 # --------------------------------------------------------------------------- #
