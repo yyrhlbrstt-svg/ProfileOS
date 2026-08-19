@@ -20,6 +20,8 @@ from typing import Any, Iterator, Sequence
 
 from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator, model_validator
 
+from .base import RoundTrips
+
 from .materials import DEFAULT_MATERIAL_ID, Material, get_material
 
 
@@ -210,7 +212,7 @@ class MachiningMacro(BaseModel):
         return bar_length - self.position_x if self.from_right_end else self.position_x
 
 
-class ProfileDefinition(BaseModel):
+class ProfileDefinition(RoundTrips):
     """A complete profile: identity, material, geometry and machining."""
 
     model_config = ConfigDict(extra="forbid")

@@ -16,6 +16,8 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator, model_validator
 
+from .base import RoundTrips
+
 from .profile import MachiningMacro
 
 
@@ -186,7 +188,7 @@ class StockBar(BaseModel):
     lead_time_days: int | None = Field(default=None, ge=0)
 
 
-class Project(BaseModel):
+class Project(RoundTrips):
     """A job: customer, demand lines, and the stock available to satisfy them."""
 
     model_config = ConfigDict(extra="forbid")

@@ -16,7 +16,15 @@ from .builder import (
     collect_cut_items,
     safety_glass_required,
 )
-from .model import Cell, ElementKind, HingeSide, Opening, OpeningType, Sash
+from .model import (
+    Cell,
+    ElementKind,
+    ElevationSet,
+    HingeSide,
+    Opening,
+    OpeningType,
+    Sash,
+)
 from .rules import (
     DEFAULT_SYSTEM_RULES,
     SYSTEM_RULES_SCHEMA,
@@ -31,6 +39,7 @@ from .rules import (
 )
 
 __all__ = [
+    "ElevationSet",
     "Opening", "Cell", "Sash", "OpeningType", "HingeSide", "ElementKind",
     "SystemRules", "FrameRules", "SashRules", "GlassRules", "GasketRules",
     "MullionRules", "DEFAULT_SYSTEM_RULES", "get_system_rules",

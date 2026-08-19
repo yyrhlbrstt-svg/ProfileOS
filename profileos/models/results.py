@@ -21,8 +21,10 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, computed_field
 
+from .base import RoundTrips
 
-class SectionProperties(BaseModel):
+
+class SectionProperties(RoundTrips):
     """Geometric and structural properties of one cross-section."""
 
     model_config = ConfigDict(extra="forbid")

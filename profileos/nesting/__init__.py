@@ -35,6 +35,13 @@ from .kerf import (
     waste_from_angles,
 )
 from .milp import ColumnGenerationStats, ortools_available, solve_column_generation
+from .guillotine import (
+    guillotine_stages,
+    pack_guillotine,
+    pack_strips,
+    verify_all,
+    verify_guillotine,
+)
 from .model import (
     BarLayout,
     DemandKey,
@@ -46,6 +53,30 @@ from .model import (
     StockDefinition,
     aggregate_demand,
 )
+
+from .sheet import (
+    FreeRect,
+    FreeRectRule,
+    Grain,
+    PlacedPart,
+    SheetLayout,
+    SheetNestingProblem,
+    SheetNestingResult,
+    SheetPart,
+    SheetSpec,
+    SheetStock,
+    SplitRule,
+    aggregate_parts,
+)
+from .sheet_engine import (
+    GlassNestingReport,
+    build_sheet_problem,
+    nest_project_glass,
+    nest_sheets,
+    sheet_parts_from_builds,
+)
+from .sheet_exact import EXACT_PIECE_LIMIT, solve_exact_2stage
+from .sheet_render import cutting_list, render_layout_svg, render_result_svg
 
 __all__ = [
     # kerf
@@ -83,4 +114,32 @@ __all__ = [
     "nest",
     "nest_project",
     "MILP_SIZE_LIMIT",
+    # 2D sheet nesting
+    "Grain",
+    "FreeRect",
+    "FreeRectRule",
+    "SplitRule",
+    "SheetPart",
+    "SheetStock",
+    "SheetSpec",
+    "PlacedPart",
+    "SheetLayout",
+    "SheetNestingProblem",
+    "SheetNestingResult",
+    "aggregate_parts",
+    "pack_guillotine",
+    "pack_strips",
+    "guillotine_stages",
+    "verify_guillotine",
+    "verify_all",
+    "solve_exact_2stage",
+    "EXACT_PIECE_LIMIT",
+    "build_sheet_problem",
+    "nest_sheets",
+    "nest_project_glass",
+    "sheet_parts_from_builds",
+    "GlassNestingReport",
+    "render_layout_svg",
+    "render_result_svg",
+    "cutting_list",
 ]

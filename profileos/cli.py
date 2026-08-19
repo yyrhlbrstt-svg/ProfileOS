@@ -42,6 +42,7 @@ nest_app = typer.Typer(help="1D cutting-stock optimisation.")
 cnc_app = typer.Typer(help="Machine code generation.")
 element_app = typer.Typer(help="Windows, doors and curtain walls.")
 pipe_app = typer.Typer(help="Pipework sizing and network analysis.")
+glass_app = typer.Typer(help="Glass and panel sheet nesting.")
 plugin_app = typer.Typer(help="Plugin registries and hot reload.")
 update_app = typer.Typer(help="Signed content updates.")
 licence_app = typer.Typer(help="Hardware authentication and licensing.")
@@ -51,6 +52,7 @@ app.add_typer(nest_app, name="nest")
 app.add_typer(cnc_app, name="cnc")
 app.add_typer(element_app, name="element")
 app.add_typer(pipe_app, name="pipe")
+app.add_typer(glass_app, name="glass")
 app.add_typer(plugin_app, name="plugin")
 app.add_typer(update_app, name="update")
 app.add_typer(licence_app, name="licence")
@@ -1036,6 +1038,144 @@ def brand(
     console.print(Panel("\n".join(current.letterhead()), title=f"Brand: {current.id}",
                         border_style="cyan"))
     console.print(f"[dim]Available: {', '.join(sorted(BUILTIN_BRANDS))}[/]")
+
+
+# --------------------------------------------------------------------------- #
+# Glass and panel nesting
+# --------------------------------------------------------------------------- #
+@glass_app.command("nest")
+def glass_nest(
+    elevations: Path = typer.Argument(..., help="Elevation-set JSON with the openings."),
+    stock: Optional[str] = typer.Option(
+        None,
+        "--stock",
+        help="Sheet sizes as WxH, comma separated, e.g. 3210x2250,6000x3210. "
+        "Omitted, the standard float plate sizes are all offered.",
+    ),
+    kerf: float = typer.Option(0.0, "--kerf", help="Blade kerf [mm]; 0 for a scoring wheel."),
+    trim: float = typer.Option(0.0, "--trim", help="Edge trim taken off all four sides [mm]."),
+    stages: Optional[int] = typer.Option(
+        None, "--stages", help="Cutting stages the table allows: 2, 3, or unlimited."
+    ),
+    exact: Optional[bool] = typer.Option(
+        None, "--exact/--no-exact", help="Force the CP-SAT model on or off."
+    ),
+    svg_dir: Optional[Path] = typer.Option(None, "--svg", help="Write cutting maps here."),
+    json_out: Optional[Path] = typer.Option(None, "--json"),
+) -> None:
+    """Nest a project's glass onto stock sheets and verify every cutting plan."""
+    from .elements import ElevationSet, build_elements
+    from .nesting import (
+        SheetSpec,
+        SheetStock,
+        nest_project_glass,
+        render_layout_svg,
+        sheet_parts_from_builds,
+    )
+    from .nesting.sheet import STANDARD_GLASS_STOCK
+
+    if not elevations.is_file():
+        _fail(f"Elevation set not found: {elevations}")
+    try:
+        parsed = ElevationSet.model_validate_json(elevations.read_text(encoding="utf-8"))
+    except Exception as exc:  # noqa: BLE001 - user-supplied file
+        _fail("Could not parse the elevation set", exc)
+
+    if stock:
+        sheets: list[SheetStock] = []
+        for token in stock.split(","):
+            try:
+                width, height = (float(v) for v in token.lower().split("x", 1))
+            except ValueError:
+                _fail(f"Could not read the sheet size {token!r}; expected WIDTHxHEIGHT")
+            sheets.append(SheetStock(width, height, label=token.strip()))
+    else:
+        sheets = list(STANDARD_GLASS_STOCK)
+
+    spec = SheetSpec(kerf=kerf, edge_trim=trim, stages=stages)
+    builds = build_elements(parsed.openings)
+    parts = sheet_parts_from_builds(builds)
+    if not parts:
+        _fail("This project has no glass to nest")
+
+    try:
+        report = nest_project_glass(parts, stock=sheets, spec=spec, exact=exact)
+    except ProfileOSError as exc:
+        _fail(str(exc))
+
+    table = Table(title=f"Glass nesting - {parsed.name}", header_style="dim")
+    table.add_column("Build-up", style="cyan")
+    table.add_column("Panes", justify="right")
+    table.add_column("Sheets", justify="right")
+    table.add_column("Yield", justify="right")
+    table.add_column("Off-cuts", justify="right")
+    table.add_column("Stages", justify="right")
+    table.add_column("Proof", style="dim")
+    for material, result in sorted(report.results.items()):
+        style = "green" if result.yield_pct >= 80 else "yellow" if result.yield_pct >= 65 else "red"
+        if result.optimal:
+            proof = "optimal"
+        elif result.metadata.get("optimal_within_stage_limit"):
+            proof = f"optimal <= 3 stages (bound {result.lower_bound})"
+        else:
+            proof = f"bound {result.lower_bound}"
+        table.add_row(
+            material,
+            str(result.total_pieces),
+            str(result.sheet_count),
+            f"[{style}]{result.yield_pct:.2f}%[/]",
+            str(len(result.reusable_offcuts())),
+            str(result.stages_used or "-"),
+            proof,
+        )
+    console.print(table)
+    console.print(
+        f"\n[bold]Total:[/] {report.sheet_count} sheets, "
+        f"{report.yield_pct:.2f}% yield, "
+        f"{report.total_stock_area / 1e6:.1f} m² consumed for "
+        f"{report.total_placed_area / 1e6:.1f} m² of glass"
+    )
+    for warning in report.warnings:
+        console.print(f"  [yellow]{warning}[/]")
+
+    if svg_dir:
+        svg_dir.mkdir(parents=True, exist_ok=True)
+        written = 0
+        for material, result in report.results.items():
+            safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in material)
+            for layout in result.layouts:
+                target = svg_dir / f"{safe}-sheet{layout.sheet_index + 1:02d}.svg"
+                target.write_text(render_layout_svg(layout), encoding="utf-8")
+                written += 1
+        console.print(f"[green]Wrote[/] {written} cutting maps to {svg_dir}")
+
+    if json_out:
+        payload = {
+            "summary": report.summary(),
+            "materials": {m: r.summary() for m, r in report.results.items()},
+        }
+        json_out.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        console.print(f"[green]Wrote[/] {json_out}")
+
+
+@glass_app.command("stock")
+def glass_stock() -> None:
+    """List the standard float plate sizes the nester offers by default."""
+    from .nesting.sheet import STANDARD_GLASS_STOCK
+
+    table = Table(title="Standard glass stock", header_style="dim")
+    table.add_column("Label", style="cyan")
+    table.add_column("Width", justify="right")
+    table.add_column("Height", justify="right")
+    table.add_column("Area", justify="right")
+    for sheet in STANDARD_GLASS_STOCK:
+        table.add_row(
+            sheet.label or "-",
+            f"{sheet.width:.0f}",
+            f"{sheet.height:.0f}",
+            f"{sheet.area / 1e6:.2f} m²",
+        )
+    console.print(table)
 
 
 def main() -> None:

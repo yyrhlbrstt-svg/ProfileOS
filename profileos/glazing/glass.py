@@ -38,6 +38,8 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
 
+from ..models.base import RoundTrips
+
 from ..core.errors import ProfileOSError
 
 #: Stefan-Boltzmann constant [W/(m^2 K^4)].
@@ -228,7 +230,7 @@ class Cavity(BaseModel):
         return self.width / 1000.0 * density
 
 
-class GlassBuildUp(BaseModel):
+class GlassBuildUp(RoundTrips):
     """A complete glazing unit: panes separated by cavities."""
 
     model_config = ConfigDict(extra="forbid")

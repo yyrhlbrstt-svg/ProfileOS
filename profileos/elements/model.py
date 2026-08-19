@@ -19,6 +19,8 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
 
+from ..models.base import RoundTrips
+
 
 class OpeningType(StrEnum):
     """How a sash opens, which decides its hardware and its machining."""
@@ -116,7 +118,7 @@ class Cell(BaseModel):
         return (self.column, self.row)
 
 
-class Opening(BaseModel):
+class Opening(RoundTrips):
     """A complete window, door or curtain-wall element.
 
     ``width`` and ``height`` are the **outer frame dimensions**, which is what
@@ -234,6 +236,52 @@ class Opening(BaseModel):
         )
 
 
+class ElevationSet(BaseModel):
+    """A job's openings as they appear on the elevation drawings.
+
+    This is the input the fabricator actually has before anything is
+    calculated: a schedule of openings with sizes, quantities and reference
+    marks. Everything downstream — cut lists, glass sizes, hardware, quotation
+    — is derived from it, so it is the one file worth keeping under the
+    customer's job number.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    project_id: str = Field(default_factory=lambda: f"ELV-{uuid4().hex[:8].upper()}")
+    name: str
+    customer: str | None = None
+    reference: str | None = None
+    site: str | None = None
+    notes: str | None = None
+    openings: list[Opening] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _unique_element_ids(self) -> "ElevationSet":
+        ids = [opening.element_id for opening in self.openings]
+        if len(ids) != len(set(ids)):
+            duplicates = sorted({i for i in ids if ids.count(i) > 1})
+            raise ValueError(f"duplicate element_id values: {', '.join(duplicates)}")
+        return self
+
+    @property
+    def total_units(self) -> int:
+        """Physical elements to be made, quantities included."""
+        return sum(opening.quantity for opening in self.openings)
+
+    @property
+    def total_area(self) -> float:
+        """Total elevation area [m^2]."""
+        return sum(opening.area * opening.quantity for opening in self.openings)
+
+    def describe(self) -> str:
+        return (
+            f"{self.name}: {len(self.openings)} opening types, "
+            f"{self.total_units} units, {self.total_area:.2f} m^2"
+        )
+
+
 __all__ = [
     "OpeningType",
     "HingeSide",
@@ -241,4 +289,5 @@ __all__ = [
     "Sash",
     "Cell",
     "Opening",
+    "ElevationSet",
 ]
