@@ -1359,6 +1359,145 @@ def catalogue_table(
         )
 
 
+# --------------------------------------------------------------------------- #
+# Capability comparison
+# --------------------------------------------------------------------------- #
+@app.command("compare")
+def compare_command(
+    area: Optional[str] = typer.Option(None, "--area", "-a", help="Filter to one area."),
+    package: Optional[str] = typer.Option(
+        None, "--package", "-p", help="Show one package's column only."
+    ),
+    gaps: bool = typer.Option(False, "--gaps", help="Show only what ProfileOS lacks."),
+    verify: bool = typer.Option(
+        False, "--verify", help="Check every ProfileOS claim against the code and exit."
+    ),
+    hebrew: bool = typer.Option(False, "--he", help="Hebrew capability names."),
+    json_out: Optional[Path] = typer.Option(None, "--json"),
+) -> None:
+    """Compare ProfileOS against the established fabrication packages.
+
+    Every ProfileOS claim is bound to a symbol in this codebase and checked
+    before the table is drawn. Competitor columns record public documentation
+    only; "no" in this table means "not documented", never "absent".
+    """
+    from . import compare as cmp
+
+    failures = cmp.verify_claims()
+    if verify:
+        if failures:
+            for capability_id, reason in sorted(failures.items()):
+                console.print(f"[red]{capability_id}[/]: {reason}")
+            _fail(f"{len(failures)} capability claim(s) have no code behind them")
+        console.print(
+            f"[green]All {sum(1 for c in cmp.CAPABILITIES if c.implemented)} "
+            "capability claims resolve to real code.[/]"
+        )
+        return
+    if failures:
+        console.print(
+            f"[red]Warning:[/] {len(failures)} claim(s) do not resolve; "
+            "run `profileos compare --verify`."
+        )
+
+    packages = list(cmp.PACKAGES)
+    if package:
+        packages = [p for p in packages if p.id == package or p.name.lower() == package.lower()]
+        if not packages:
+            _fail(
+                f"Unknown package {package!r}. Known: "
+                + ", ".join(p.id for p in cmp.PACKAGES)
+            )
+
+    capabilities = list(cmp.CAPABILITIES)
+    if area:
+        capabilities = [c for c in capabilities if str(c.area) == area.lower()]
+        if not capabilities:
+            _fail(
+                f"Unknown area {area!r}. Known: "
+                + ", ".join(sorted({str(c.area) for c in cmp.CAPABILITIES}))
+            )
+    if gaps:
+        capabilities = [c for c in capabilities if not c.implemented]
+
+    marks = {
+        cmp.Support.FULL: "[green]yes[/]",
+        cmp.Support.PARTIAL: "[yellow]part[/]",
+        cmp.Support.NOT_DOCUMENTED: "[dim]no[/]",
+        cmp.Support.UNKNOWN: "[dim]?[/]",
+    }
+
+    view = Table(title="Capability comparison", header_style="dim")
+    view.add_column("Capability", style="cyan", no_wrap=True)
+    view.add_column("ProfileOS", justify="center")
+    for entry in packages:
+        view.add_column(entry.heading, justify="center")
+
+    last_area = None
+    for capability in capabilities:
+        if capability.area != last_area:
+            view.add_section()
+            last_area = capability.area
+        name = capability.name_he if hebrew else capability.name_en
+        if capability.differentiator:
+            name = f"{name} *"
+        view.add_row(
+            name,
+            marks[cmp.profileos_support(capability)],
+            *[marks[entry.level(capability.id)] for entry in packages],
+        )
+    console.print(view)
+    console.print(
+        "[dim]* engineering the compared packages do not document.  "
+        "yes = documented, part = partial or a paid module, "
+        "no = not found in public material, ? = not looked into.[/]"
+    )
+
+    stats = cmp.summary()
+    console.print(
+        f"\n[bold]ProfileOS:[/] {stats['profileos_implemented']} of "
+        f"{stats['capabilities']} capabilities, "
+        f"{stats['not_documented_elsewhere']} that no compared package documents, "
+        f"[yellow]{stats['profileos_gaps']} it does not have[/]."
+    )
+    for capability in cmp.missing_from_profileos():
+        console.print(f"  [yellow]missing:[/] {capability.name_en} — {capability.detail}")
+
+    console.print("\n[bold]Standing limitations[/]")
+    for limitation in cmp.STANDING_LIMITATIONS:
+        console.print(f"  [dim]-[/] {limitation}")
+
+    if json_out:
+        json_out.write_text(
+            json.dumps(
+                {
+                    "summary": cmp.summary(),
+                    "capabilities": cmp.matrix(),
+                    "packages": [
+                        {
+                            "id": entry.id,
+                            "name": entry.name,
+                            "vendor": entry.vendor,
+                            "origin": entry.origin,
+                            "note": entry.note,
+                            "source": entry.source,
+                            "coverage": cmp.coverage(entry),
+                        }
+                        for entry in cmp.PACKAGES
+                    ],
+                    "profileos_coverage": cmp.coverage(),
+                    "gaps": [c.id for c in cmp.missing_from_profileos()],
+                    "distinctive": [c.id for c in cmp.not_documented_elsewhere()],
+                    "limitations": list(cmp.STANDING_LIMITATIONS),
+                },
+                indent=2,
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        console.print(f"[green]Wrote[/] {json_out}")
+
+
 def main() -> None:
     """Console-script entry point."""
     try:
