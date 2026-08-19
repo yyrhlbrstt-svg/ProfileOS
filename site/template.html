@@ -707,27 +707,30 @@ profileos compare --verify</pre>
   var AREA_HE = {};
   DATA.areas.forEach(function (a) { AREA_HE[a.id] = a.he; });
 
+  /* Support levels arrive as one letter per column: see tools/build_site.py. */
   var MARK = {
-    full: ['<span class="mark m-full">כן</span>', 2],
-    partial: ['<span class="mark m-part">חלקי</span>', 1],
-    not_documented: ['<span class="mark m-no">לא</span>', 0],
-    unknown: ['<span class="mark m-unk">?</span>', -1]
+    F: '<span class="mark m-full">כן</span>',
+    P: '<span class="mark m-part">חלקי</span>',
+    N: '<span class="mark m-no">לא</span>',
+    U: '<span class="mark m-unk">?</span>'
   };
+  var AREA = 0, HE = 1, EN = 2, STAR = 3, MARKS = 4;
 
   var state = { area: "all", differences: false };
 
   function rows() {
     return DATA.capabilities.filter(function (c) {
-      if (state.area !== "all" && c.area !== state.area) return false;
+      if (state.area !== "all" && c[AREA] !== state.area) return false;
       if (!state.differences) return true;
       // A difference is a capability where this suite and at least one
       // compared package land on opposite sides — not merely one nobody rated.
-      var own = c.profileos === "full";
-      return DATA.packages.some(function (p) {
-        var them = c[p.id];
-        if (them === "unknown") return false;
-        return own !== (them === "full");
-      });
+      var own = c[MARKS][0] === "F";
+      for (var i = 1; i < c[MARKS].length; i++) {
+        var them = c[MARKS][i];
+        if (them === "U") continue;
+        if (own !== (them === "F")) return true;
+      }
+      return false;
     });
   }
 
@@ -741,18 +744,20 @@ profileos compare --verify</pre>
 
     var body = "", lastArea = null;
     list.forEach(function (c) {
-      if (c.area !== lastArea) {
-        lastArea = c.area;
+      if (c[AREA] !== lastArea) {
+        lastArea = c[AREA];
         body += '<tr class="area-head"><th colspan="' + (DATA.packages.length + 2) +
-          '">' + (AREA_HE[c.area] || c.area) + '</th></tr>';
+          '">' + (AREA_HE[c[AREA]] || c[AREA]) + '</th></tr>';
       }
-      body += '<tr><th>' + c.name_he +
-        (c.differentiator ? ' <span class="star">★</span>' : '') +
-        '<span class="detail">' + c.name_en + '</span></th>' +
-        '<td class="own">' + MARK[c.profileos][0] + '</td>' +
-        DATA.packages.map(function (p) {
-          return '<td>' + (MARK[c[p.id]] || MARK.unknown)[0] + '</td>';
-        }).join("") + '</tr>';
+      var cells = "";
+      for (var i = 1; i < c[MARKS].length; i++) {
+        cells += '<td>' + (MARK[c[MARKS][i]] || MARK.U) + '</td>';
+      }
+      body += '<tr><th>' + c[HE] +
+        (c[STAR] ? ' <span class="star">★</span>' : '') +
+        '<span class="detail">' + c[EN] + '</span></th>' +
+        '<td class="own">' + (MARK[c[MARKS][0]] || MARK.U) + '</td>' +
+        cells + '</tr>';
     });
 
     document.getElementById("matrix").innerHTML =

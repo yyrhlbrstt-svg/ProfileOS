@@ -105,18 +105,25 @@ def page_payload(data: dict) -> dict:
     JSON into every visitor's first paint.
     """
     package_ids = [package["id"] for package in data["packages"]]
+    # One letter per support level. Spelling "not_documented" out forty-five
+    # times, once per package, is nine kilobytes of the same four words.
+    letter = {"full": "F", "partial": "P", "not_documented": "N", "unknown": "U"}
     return {
         "summary": data["summary"],
         "areas": data["areas"],
+        # [area, Hebrew name, English name, is-distinctive, support letters]
+        # where the letters run ProfileOS first, then the packages in order.
         "capabilities": [
-            {
-                "area": capability["area"],
-                "name_he": capability["name_he"],
-                "name_en": capability["name_en"],
-                "differentiator": capability["differentiator"],
-                "profileos": capability["profileos"],
-                **{key: capability[key] for key in package_ids},
-            }
+            [
+                capability["area"],
+                capability["name_he"],
+                capability["name_en"],
+                1 if capability["differentiator"] else 0,
+                "".join(
+                    letter[capability[key]]
+                    for key in ["profileos", *package_ids]
+                ),
+            ]
             for capability in data["capabilities"]
         ],
         "packages": [
@@ -130,6 +137,51 @@ def page_payload(data: dict) -> dict:
             for package in data["packages"]
         ],
     }
+
+
+def minify(page: str) -> str:
+    """Shrink the built page without changing what it renders.
+
+    Deliberately conservative. Comments go, indentation goes, and the newlines
+    between tags go — but line breaks inside script bodies stay, because
+    JavaScript ends statements at a newline when nothing else does, and joining
+    two such lines silently changes the program. Anything inside <pre> is left
+    exactly as written: the whitespace there is the content.
+    """
+    import re
+
+    pre_blocks: list[str] = []
+
+    def stash(match: re.Match[str]) -> str:
+        pre_blocks.append(match.group(0))
+        return f"\x00PRE{len(pre_blocks) - 1}\x00"
+
+    page = re.sub(r"<pre[\s\S]*?</pre>", stash, page)
+    page = re.sub(r"<!--[\s\S]*?-->", "", page)
+
+    def squeeze_style(match: re.Match[str]) -> str:
+        body = re.sub(r"/\*[\s\S]*?\*/", "", match.group(1))
+        body = re.sub(r"\s*\n\s*", "", body)
+        body = re.sub(r"\s*([{}:;,>])\s*", r"\1", body)
+        return f"<style>{body.strip()}</style>"
+
+    def squeeze_script(match: re.Match[str]) -> str:
+        body = re.sub(r"/\*[\s\S]*?\*/", "", match.group(1))
+        # Indentation only. Newlines carry meaning here.
+        body = re.sub(r"\n[ \t]+", "\n", body)
+        body = re.sub(r"\n{2,}", "\n", body)
+        return f'<script>{body.strip()}</script>'
+
+    page = re.sub(r"<style>([\s\S]*?)</style>", squeeze_style, page)
+    page = re.sub(
+        r'<script>(?!\s*\{)([\s\S]*?)</script>', squeeze_script, page
+    )
+    page = re.sub(r">\s*\n\s*<", "><", page)
+    page = re.sub(r"[ \t]{2,}", " ", page)
+
+    for index, block in enumerate(pre_blocks):
+        page = page.replace(f"\x00PRE{index}\x00", block)
+    return page
 
 
 def render(data: dict) -> str:
@@ -147,6 +199,10 @@ def main() -> int:
     parser.add_argument(
         "--check", action="store_true",
         help="Exit non-zero if the checked-in page is out of date.",
+    )
+    parser.add_argument(
+        "--minified", type=Path, default=None,
+        help="Also write a minified copy, for deployment.",
     )
     args = parser.parse_args()
 
@@ -166,6 +222,13 @@ def main() -> int:
         return 0
 
     OUTPUT.write_text(page, encoding="utf-8")
+    if args.minified:
+        small = minify(page)
+        args.minified.write_text(small, encoding="utf-8")
+        print(
+            f"Wrote {args.minified} — {len(small):,} bytes "
+            f"({100 - 100 * len(small) // len(page)}% smaller)"
+        )
     summary = data["summary"]
     print(
         f"Wrote {OUTPUT} — {summary['profileos_implemented']} of "
