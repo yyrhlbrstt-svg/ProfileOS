@@ -50,6 +50,7 @@ view_app = typer.Typer(help="3D presentation and technical views.")
 plugin_app = typer.Typer(help="Plugin registries and hot reload.")
 update_app = typer.Typer(help="Signed content updates.")
 licence_app = typer.Typer(help="Hardware authentication and licensing.")
+schema_app = typer.Typer(help="JSON Schemas for every document the suite reads.")
 
 app.add_typer(geometry_app, name="section")
 app.add_typer(nest_app, name="nest")
@@ -64,6 +65,7 @@ app.add_typer(view_app, name="view")
 app.add_typer(plugin_app, name="plugin")
 app.add_typer(update_app, name="update")
 app.add_typer(licence_app, name="licence")
+app.add_typer(schema_app, name="schema")
 
 
 # --------------------------------------------------------------------------- #
@@ -136,6 +138,16 @@ def version() -> None:
     for name, ok in checks:
         table.add_row(name, "[green]available[/]" if ok else "[yellow]not installed[/]")
     console.print(table)
+
+    from .geometry.dwg import converter_status
+
+    dwg = Table(title="DWG converters", box=None, header_style="dim")
+    dwg.add_column("Converter")
+    dwg.add_column("Status")
+    for name, state in converter_status().items():
+        found = not state.startswith("not installed")
+        dwg.add_row(name, f"[green]{state}[/]" if found else f"[yellow]{state}[/]")
+    console.print(dwg)
     console.print(f"\n[dim]{len(available_drivers())} machine drivers registered.[/]")
 
 
@@ -681,6 +693,82 @@ def pipe_catalogues() -> None:
             str(len(catalogue.sizes)), f"{catalogue.effective_roughness:g} mm",
         )
     console.print(table)
+
+
+@schema_app.command("list")
+def schema_list() -> None:
+    """Show every schema that can be generated, and from which model."""
+    from .schemas import document_models, known_schemas
+
+    kinds = set(document_models())
+    table = Table(title="Document schemas", header_style="dim")
+    table.add_column("Name", style="cyan")
+    table.add_column("Model")
+    table.add_column("Loadable as a plugin", justify="center")
+    for name, model in sorted(known_schemas().items()):
+        table.add_row(
+            name,
+            f"{model.__module__}.{model.__name__}",
+            f"kind: {name}" if name in kinds else "—",
+        )
+    console.print(table)
+    console.print(
+        "[dim]Generated from the running models, so they cannot describe a "
+        "version of the software that is not this one.[/dim]"
+    )
+
+
+@schema_app.command("export")
+def schema_export(
+    output: Path = typer.Option(Path("schemas"), "--output", "-o", help="Directory."),
+) -> None:
+    """Write every schema to disk for editors and for suppliers."""
+    from .schemas import export
+
+    written = export(output)
+    console.print(f"[green]Wrote[/green] {len(written)} files to {output}")
+    for path in written:
+        console.print(f"  [dim]{path.name}[/dim]")
+
+
+@schema_app.command("show")
+def schema_show(name: str = typer.Argument(..., help="Schema name, e.g. 'profile'.")) -> None:
+    """Print one schema."""
+    from .schemas import all_schemas
+
+    schemas = all_schemas()
+    if name not in schemas:
+        _fail(f"No schema named {name!r}. Known: {', '.join(sorted(schemas))}")
+    console.print_json(json.dumps(schemas[name], ensure_ascii=False))
+
+
+@schema_app.command("check")
+def schema_check(
+    directory: Path = typer.Argument(..., help="Folder of JSON documents to validate."),
+) -> None:
+    """Validate a folder of documents before they go into the plugin directory.
+
+    A typo is much cheaper to find on a desk than at the saw.
+    """
+    from .schemas import check_directory
+
+    if not directory.is_dir():
+        _fail(f"Not a directory: {directory}")
+    results = check_directory(directory)
+    if not results:
+        console.print("[yellow]No documents with a 'kind' were found.[/yellow]")
+        return
+
+    bad = 0
+    for path, problem in results:
+        if problem is None:
+            console.print(f"[green]ok[/green]   {path}")
+        else:
+            bad += 1
+            console.print(f"[red]bad[/red]  {path}\n      [dim]{problem}[/dim]")
+    console.print(f"\n{len(results) - bad} good, {bad} to fix.")
+    if bad:
+        raise typer.Exit(code=1)
 
 
 # --------------------------------------------------------------------------- #

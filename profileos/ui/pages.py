@@ -185,7 +185,13 @@ class ProfilePage(Page):
         self.load(sample)
 
     def open_dxf(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "Open profile DXF", "", "DXF (*.dxf);;All files (*)")
+        """A DWG is accepted too; it is converted on the way in."""
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Open profile drawing",
+            "",
+            "Drawings (*.dxf *.dwg);;DXF (*.dxf);;DWG (*.dwg);;All files (*)",
+        )
         if path:
             self.load(Path(path))
 

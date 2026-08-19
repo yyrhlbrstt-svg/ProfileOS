@@ -375,6 +375,7 @@ PIPE_CATALOGUE_SCHEMA = DataSchema(
     model=_validate_catalogue,
     registry=PIPE_CATALOGUES,
     key_field="id",
+    document_model=PipeCatalogue,
 )
 
 

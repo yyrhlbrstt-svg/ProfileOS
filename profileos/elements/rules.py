@@ -207,6 +207,7 @@ SYSTEM_RULES_SCHEMA = DataSchema(
     model=_validate_system_rules,
     registry=PROFILE_SYSTEMS,
     key_field="id",
+    document_model=SystemRules,
 )
 
 

@@ -166,6 +166,7 @@ PRICE_LIST_SCHEMA = DataSchema(
     model=_validate_supplier,
     registry=SUPPLIERS,
     key_field="id",
+    document_model=Supplier,
 )
 
 

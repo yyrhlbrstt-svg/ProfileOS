@@ -218,7 +218,11 @@ def _validate_brand(document: dict[str, Any]) -> Brand:
 
 #: Registers ``kind: "brand"`` documents as hot-reloadable plugins.
 BRAND_SCHEMA = DataSchema(
-    kind="brand", model=_validate_brand, registry=BRANDS, key_field="id"
+    kind="brand",
+    model=_validate_brand,
+    registry=BRANDS,
+    key_field="id",
+    document_model=Brand,
 )
 
 

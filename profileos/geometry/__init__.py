@@ -9,7 +9,10 @@ the Shapely geometry, and a validation report::
     section = load_section("MB70_mullion.dxf")
     print(section.topology.total_area, section.validation.ok)
 
-To go straight to a :class:`~profileos.models.profile.ProfileDefinition`, use
+A DWG is accepted anywhere a DXF is: it is converted first by whichever
+converter is installed, and :func:`profileos.geometry.dwg.converter_status`
+says which that is. To go straight to a
+:class:`~profileos.models.profile.ProfileDefinition`, use
 :func:`profile_from_dxf`.
 """
 
@@ -33,6 +36,7 @@ from ..models.profile import (
 )
 from ..models.results import GeometryReport
 from .contour import ContourChainer, Ring, Segment, rings_from_segments
+from .dwg import convert_dwg, converter_status, is_dwg, read_dwg
 from .dxf_reader import DxfExtraction, DxfReader, DxfReadOptions, read_dxf
 from .features import (
     DetectedFeature,
@@ -139,6 +143,11 @@ def load_section(
     TopologyError
         Closed contours exist but cannot be resolved into regions.
     """
+    if is_dwg(source):
+        # DWG is not read directly by anything honest; it is converted first.
+        # See profileos.geometry.dwg for why, and for what has to be installed.
+        return read_dwg(source, options=options, defaults=defaults, validate=validate)
+
     defaults = defaults or get_settings().geometry
     options = options or DxfReadOptions(sagitta=defaults.arc_sagitta_mm)
 
@@ -306,6 +315,10 @@ __all__ = [
     "DxfReadOptions",
     "DxfExtraction",
     "read_dxf",
+    "convert_dwg",
+    "converter_status",
+    "is_dwg",
+    "read_dwg",
     "ContourChainer",
     "rings_from_segments",
     "resolve_topology",

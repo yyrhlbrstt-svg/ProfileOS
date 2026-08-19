@@ -245,7 +245,9 @@ class DataSchema:
 
     ``model`` must be a pydantic model class (or any callable accepting the raw
     mapping and returning the validated object). ``key_field`` names the
-    attribute used as the registry key.
+    attribute used as the registry key. ``document_model`` names the pydantic
+    class the document has to match, which is what
+    :mod:`profileos.schemas` turns into a published JSON Schema.
     """
 
     kind: str
@@ -253,6 +255,11 @@ class DataSchema:
     registry: Registry[Any]
     key_field: str = "id"
     version_field: str = "version"
+    #: The pydantic model behind ``model``, when there is one. ``model`` may be
+    #: any callable, which is convenient for loading but useless for describing
+    #: the document shape — and a JSON Schema can only be generated from the
+    #: class. Set it and the file format documents itself.
+    document_model: type | None = None
 
 
 class DataSchemaRegistry:
