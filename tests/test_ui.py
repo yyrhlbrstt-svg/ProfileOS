@@ -886,3 +886,88 @@ class TestSessionSchedule:
         # Whatever happens to the unknown system, the good opening still builds.
         assert any(b.opening.element_id == "W-01" for b in window.session.builds)
         assert isinstance(problems, list)
+
+
+class TestQuoteReachesTheJob:
+    def test_issuing_a_quotation_records_it_on_the_open_job(
+        self, window, job_dir, tmp_path, monkeypatch
+    ):
+        from PySide6.QtWidgets import QFileDialog
+
+        from profileos.projects import JobStatus, default_store
+
+        job = default_store().create("עבודה מתומחרת")
+        window.session.set_job(job)
+
+        window.page("Element").build_element()
+        page = window.go_to_page("Quotation")
+        page.start_draft()
+        pump()
+
+        monkeypatch.setattr(
+            QFileDialog, "getExistingDirectory",
+            staticmethod(lambda *args, **kwargs: str(tmp_path)),
+        )
+        page.save_documents()
+        pump()
+
+        saved = default_store().load(job.job_id)
+        assert saved.quote_total > 0
+        assert saved.status is JobStatus.QUOTED
+
+    def test_a_won_job_is_not_dragged_back_by_reprinting(
+        self, window, job_dir, tmp_path, monkeypatch
+    ):
+        from PySide6.QtWidgets import QFileDialog
+
+        from profileos.projects import JobStatus, default_store
+
+        store = default_store()
+        job = store.create("כבר הוזמן")
+        job.advance(JobStatus.QUOTED)
+        job.advance(JobStatus.WON)
+        store.save(job)
+        window.session.set_job(job)
+
+        window.page("Element").build_element()
+        page = window.go_to_page("Quotation")
+        page.start_draft()
+        monkeypatch.setattr(
+            QFileDialog, "getExistingDirectory",
+            staticmethod(lambda *args, **kwargs: str(tmp_path)),
+        )
+        page.save_documents()
+        pump()
+        assert store.load(job.job_id).status is JobStatus.WON
+
+
+class TestDroppedFiles:
+    def test_a_dropped_drawing_opens_on_the_profile_page(self, window, mullion_dxf):
+        window.open_path(mullion_dxf)
+        pump()
+        assert window.stack.currentWidget().title == "Profile"
+        assert window.session.section_properties is not None
+
+    def test_a_dropped_job_file_is_filed_and_opened(self, window, job_dir, tmp_path):
+        from profileos.projects import JobFile, default_store
+
+        incoming = tmp_path / "mailed.json"
+        incoming.write_text(
+            JobFile(job_id="J-2026-0777", name="הגיע במייל").model_dump_json(),
+            encoding="utf-8",
+        )
+        window.open_path(incoming)
+        pump()
+        assert window.session.job.job_id == "J-2026-0777"
+        assert default_store().load("J-2026-0777").name == "הגיע במייל"
+
+    def test_a_json_that_is_not_a_job_is_refused_quietly(self, window, job_dir, tmp_path):
+        stray = tmp_path / "stray.json"
+        stray.write_text('{"hello": "world"}', encoding="utf-8")
+        window.open_path(stray)
+        pump()
+        assert window.session.job is None
+        assert any("אינו קובץ פרויקט" in t.text() for t in window._toasts)
+
+    def test_only_known_suffixes_are_accepted(self, window):
+        assert set(window.DROP_SUFFIXES) == {".dxf", ".dwg", ".json"}

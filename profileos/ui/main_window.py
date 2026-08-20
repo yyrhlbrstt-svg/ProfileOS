@@ -200,6 +200,10 @@ class MainWindow(QMainWindow):
         if self.sidebar.buttons:
             self.sidebar.buttons[0].setChecked(True)
 
+        # A drawing dragged onto the window is the shortest path there is from
+        # the supplier's email to a measured section.
+        self.setAcceptDrops(True)
+
         self.statusBar().showMessage("מוכן")
         self.session.subscribe(lambda _what: self._update_status())
         self._install_shortcuts()
@@ -305,6 +309,67 @@ class MainWindow(QMainWindow):
 
         show_toast(self, message, kind)
         self.statusBar().showMessage(message, 6000)
+
+    # -- dropped files --------------------------------------------------------- #
+    #: What a drop is allowed to open, and which page opens it.
+    DROP_SUFFIXES = {".dxf": "Profile", ".dwg": "Profile", ".json": "Projects"}
+
+    def _droppable(self, event: Any) -> list[Any]:
+        from pathlib import Path
+
+        data = event.mimeData()
+        if not data.hasUrls():
+            return []
+        paths = [Path(url.toLocalFile()) for url in data.urls() if url.isLocalFile()]
+        return [p for p in paths if p.suffix.lower() in self.DROP_SUFFIXES]
+
+    def dragEnterEvent(self, event: Any) -> None:  # noqa: N802 - Qt naming
+        if self._droppable(event):
+            event.acceptProposedAction()
+
+    def dragMoveEvent(self, event: Any) -> None:  # noqa: N802 - Qt naming
+        if self._droppable(event):
+            event.acceptProposedAction()
+
+    def dropEvent(self, event: Any) -> None:  # noqa: N802 - Qt naming
+        """Open what was dropped on the page that knows what to do with it."""
+        paths = self._droppable(event)
+        if not paths:
+            return
+        event.acceptProposedAction()
+        self.open_path(paths[0])
+        if len(paths) > 1:
+            self.toast(f"נפתח {paths[0].name}; {len(paths) - 1} קבצים נוספים דולגו")
+
+    def open_path(self, path: Any) -> None:
+        """Open one file: a drawing goes to the profile page, a job to the store."""
+        from pathlib import Path
+
+        path = Path(path)
+        suffix = path.suffix.lower()
+        if suffix in (".dxf", ".dwg"):
+            page = self.go_to_page("Profile")
+            page.load(path)
+            return
+        if suffix == ".json":
+            self._open_job_file(path)
+
+    def _open_job_file(self, path: Any) -> None:
+        """A job file mailed in: read it, file it, and open it."""
+        from ..projects import JobFile, default_store
+
+        try:
+            job = JobFile.model_validate_json(path.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001 - a stray JSON is not an error worth a dialog
+            self.toast(f"{path.name} אינו קובץ פרויקט", "danger")
+            return
+        default_store().save(job)
+        page = self.go_to_page("Projects")
+        self.session.set_job(job)
+        if job.schedule is not None:
+            self.session.load_schedule(job.schedule)
+        page.refresh()
+        self.toast(f"נפתח פרויקט {job.job_id} — {job.name}", "success")
 
     def resizeEvent(self, event: Any) -> None:  # noqa: N802 - Qt naming
         super().resizeEvent(event)

@@ -188,6 +188,19 @@ class HomePage(Page):
         actions.add_layout(buttons)
         self.body.addWidget(actions)
 
+        recent = Card("פרויקטים אחרונים")
+        self.recent_table = DataTable(
+            ["מספר", "שם", "לקוח", "סטטוס", "עודכן"],
+            empty_text="עדיין אין פרויקטים — פתח אחד בעמוד ״פרויקטים״",
+        )
+        self.recent_table.setMaximumHeight(190)
+        self.recent_table.itemDoubleClicked.connect(self._open_recent)
+        recent.add(self.recent_table)
+        hint = QLabel("לחיצה כפולה על שורה פותחת את הפרויקט לעבודה.")
+        hint.setObjectName("Hint")
+        recent.add(hint)
+        self.body.addWidget(recent)
+
         note = QLabel(
             "כל צעד בקו נשען על הקודם לו: הפרופיל שנמדד הוא זה שנבנה ממנו "
             "הפתח, רשימת החיתוך שלו היא זו שמגיעה למסור, והמחיר מחושב מאותם "
@@ -206,6 +219,22 @@ class HomePage(Page):
         window = self.window()
         if hasattr(window, "go_to_page"):
             window.go_to_page(page_title)
+
+    def _open_recent(self, item: Any) -> None:
+        """Double-clicking a recent job opens it, on the page that owns opening."""
+        row = item.row()
+        if row >= len(self._recent):
+            return
+        job = self._recent[row]
+        window = self.window()
+        if not hasattr(window, "go_to_page"):
+            return
+        page = window.go_to_page("Projects")
+        for index, listed in enumerate(page._jobs):
+            if listed.job_id == job.job_id:
+                page.jobs_table.setCurrentCell(index, 0)
+                page.open_job()
+                return
 
     def _load_sample(self) -> None:
         window = self.window()
@@ -265,6 +294,19 @@ class HomePage(Page):
             self.next_label.setText("כל שלבי הקו הושלמו — העבודה בדרך למשלוח.")
         else:
             self.next_label.setText(f"הצעד הבא: <b>{active_hebrew}</b>")
+
+        self._recent = []
+        try:
+            from ..projects import default_store
+
+            self._recent = default_store().all()[:5]
+        except Exception:  # noqa: BLE001 - the dashboard must open regardless
+            _log.exception("Could not read the job store for the dashboard")
+        self.recent_table.set_rows([
+            [job.job_id, job.name, job.customer_name or "—",
+             job.status.hebrew, job.updated]
+            for job in self._recent
+        ])
 
         area = self.session.total_area
         self.stats.update_many({
@@ -345,6 +387,12 @@ class ProjectsPage(Page):
         layout = QVBoxLayout(page)
         layout.setContentsMargins(0, METRICS.space(3), 0, 0)
         layout.setSpacing(METRICS.space(3))
+
+        self.search = QLineEdit()
+        self.search.setPlaceholderText("חיפוש לפי שם, לקוח, מספר או אתר…")
+        self.search.setClearButtonEnabled(True)
+        self.search.textChanged.connect(lambda _text: self.refresh())
+        layout.addWidget(self.search)
 
         self.jobs_table = DataTable(
             ["מספר", "שם", "לקוח", "סטטוס", "יחידות", "שווי", "עודכן"],
@@ -616,6 +664,15 @@ class ProjectsPage(Page):
     def refresh(self) -> None:
         store = self._store()
         self._jobs = store.all()
+        needle = self.search.text().strip().lower()
+        if needle:
+            self._jobs = [
+                job for job in self._jobs
+                if needle in " ".join((
+                    job.job_id, job.name, job.customer_name,
+                    job.site_address, job.reference,
+                )).lower()
+            ]
 
         colours: dict[tuple[int, int], str] = {}
         tint = {
@@ -637,6 +694,10 @@ class ProjectsPage(Page):
                 job.updated,
             ])
             colours[(index, 3)] = tint.get(job.status.value, self.colours.text)
+        self.jobs_table._empty_text = (
+            f"לא נמצא פרויקט התואם ״{needle}״" if needle
+            else "אין עדיין פרויקטים — לחץ ״פרויקט חדש״ כדי לפתוח את הראשון"
+        )
         self.jobs_table.set_rows(rows, numeric_columns=(4, 5), colours=colours)
         # A list with a row nobody has clicked still has a most-recent job, and
         # showing its detail beats an empty panel that says nothing was chosen.
@@ -1712,6 +1773,32 @@ class QuotePage(Page):
             encoding="utf-8",
         )
         self.status(f"נשמרו {customer.name} ו-{internal.name}")
+        self._record_in_job()
+
+    def _record_in_job(self) -> None:
+        """Write the quoted figure onto the open job, and move it along.
+
+        A quotation that has been issued is a fact about the job, not only
+        about this window: the order book should show the number without the
+        operator being asked to copy it across. The status only advances from
+        enquiry — a job already won is not dragged backwards by reprinting its
+        quotation.
+        """
+        job = self.session.job
+        if job is None or self.draft is None:
+            return
+        from ..projects import JobStatus, default_store
+
+        totals = self.draft.totals()
+        job.record_quote(float(totals["net"]), self.draft.quotation.currency)
+        if job.status is JobStatus.ENQUIRY:
+            job.advance(JobStatus.QUOTED, "הצעה הופקה מהמערכת")
+        try:
+            default_store().save(job)
+        except Exception:  # noqa: BLE001 - the documents are already written
+            _log.exception("Could not record the quotation on job %s", job.job_id)
+            return
+        self.status(f"{job.job_id} עודכן: {job.status.hebrew}")
 
 
 # --------------------------------------------------------------------------- #
