@@ -22,6 +22,7 @@ from .. import __version__
 from ..core.logging_setup import get_logger
 from .pages import PAGES, Page
 from .session import Session
+from ..design import BRAND
 from .theme import DARK, LIGHT, METRICS, Palette, stylesheet
 
 _log = get_logger("ui.window")
@@ -35,6 +36,58 @@ NAV_SECTIONS: list[tuple[str, list[int]]] = [
     ("מפעל", [10]),
     ("ספרייה", [11, 12]),
 ]
+
+
+class NavButton(QPushButton):
+    """One row of the sidebar: a glyph on the leading edge, then the name.
+
+    The icon and the label are laid out explicitly rather than left to the
+    button's own icon slot, because a right-to-left application needs the
+    glyph on the right of the text and the pair pinned to the sidebar's right
+    edge — and a stylesheet cannot say that about a composite the style draws
+    itself. Colour is set here for the same reason: painted glyphs cannot read
+    a stylesheet, so the button tells both halves what colour to be.
+    """
+
+    def __init__(self, text: str, page_title: str, colour: str, active: str) -> None:
+        super().__init__()
+        self.setObjectName("NavButton")
+        self.setCheckable(True)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._page_title = page_title
+
+        row = QHBoxLayout(self)
+        row.setContentsMargins(METRICS.space(2), 0, METRICS.space(2), 0)
+        row.setSpacing(METRICS.space(2))
+
+        self.glyph = QLabel()
+        self.glyph.setFixedSize(18, 18)
+        self.glyph.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.label = QLabel(text)
+        self.label.setObjectName("NavLabel")
+        self.label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+
+        row.addWidget(self.glyph)
+        row.addWidget(self.label)
+        row.addStretch(1)
+
+        self.toggled.connect(lambda _checked: self._paint())
+        self.restyle(colour, active)
+
+    def restyle(self, colour: str, active: str) -> None:
+        self._colour, self._active = colour, active
+        self._paint()
+
+    def _paint(self) -> None:
+        from .icons import PAGE_ICONS, pixmap
+
+        colour = self._active if self.isChecked() else self._colour
+        name = PAGE_ICONS.get(self._page_title)
+        if name:
+            self.glyph.setPixmap(pixmap(name, colour))
+        self.label.setStyleSheet(
+            f"color: {colour}; font-weight: {600 if self.isChecked() else 500};"
+        )
 
 
 class Sidebar(QWidget):
@@ -64,6 +117,11 @@ class Sidebar(QWidget):
         self.group = QButtonGroup(self)
         self.group.setExclusive(True)
         self.buttons: list[QPushButton] = []
+        self._titles: list[str] = []
+        # Painted icons cannot read the stylesheet, so the sidebar keeps the two
+        # colours it draws them in and re-renders them when the theme changes.
+        self._icon_colour = DARK.text_muted
+        self._icon_active = BRAND.x300
         self._layout = layout
 
     def refresh_brand(self) -> None:
@@ -79,15 +137,19 @@ class Sidebar(QWidget):
         label.setObjectName("SidebarSection")
         self._layout.addWidget(label)
 
-    def add_button(self, index: int, text: str) -> QPushButton:
-        button = QPushButton(text)
-        button.setObjectName("NavButton")
-        button.setCheckable(True)
-        button.setCursor(Qt.CursorShape.PointingHandCursor)
+    def add_button(self, index: int, text: str, page_title: str = "") -> QPushButton:
+        button = NavButton(text, page_title, self._icon_colour, self._icon_active)
         self.group.addButton(button, index)
         self.buttons.append(button)
         self._layout.addWidget(button)
+        self._titles.append(page_title)
         return button
+
+    def restyle_icons(self, colour: str, active: str) -> None:
+        """Re-render the glyphs after a theme change — they are painted, not themed."""
+        self._icon_colour, self._icon_active = colour, active
+        for button in self.buttons:
+            button.restyle(colour, active)
 
     def finish(self) -> None:
         self._layout.addStretch(1)
@@ -127,7 +189,11 @@ class MainWindow(QMainWindow):
                 page = page_class(self.session, self.colours)
                 self.pages.append(page)
                 self.stack.addWidget(page)
-                self.sidebar.add_button(len(self.pages) - 1, page_class.hebrew or page_class.title)
+                self.sidebar.add_button(
+                    len(self.pages) - 1,
+                    page_class.hebrew or page_class.title,
+                    page_class.title,
+                )
         self.sidebar.finish()
 
         self.sidebar.group.idClicked.connect(self.go_to)
@@ -258,6 +324,7 @@ class MainWindow(QMainWindow):
             if application.property("profileos_stylesheet") != sheet:
                 application.setStyleSheet(sheet)
                 application.setProperty("profileos_stylesheet", sheet)
+        self.sidebar.restyle_icons(palette.text_muted, palette.accent)
         # Painted views hold their own colours, so they need telling directly.
         for page in self.pages:
             page.colours = palette

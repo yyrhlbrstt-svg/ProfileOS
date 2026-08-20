@@ -371,6 +371,10 @@ class ProjectsPage(Page):
         advance = QPushButton("עדכון סטטוס")
         advance.clicked.connect(self.advance_status)
         row.addWidget(advance)
+
+        pack = QPushButton("תיק עבודה להדפסה")
+        pack.clicked.connect(self.export_dossier)
+        row.addWidget(pack)
         row.addStretch(1)
         detail.add_layout(row)
         layout.addWidget(detail)
@@ -522,6 +526,50 @@ class ProjectsPage(Page):
             self.session.set_job(job)
         self.refresh()
         self.status(f"{job.job_id} עודכן ל{target.hebrew}")
+
+    def export_dossier(self) -> None:
+        """Write the whole job as one printable page.
+
+        The elements are rebuilt from the job's own schedule rather than taken
+        from the screen, so the pack describes the job as it is saved — printing
+        one job while another is open cannot mix the two.
+        """
+        from ..projects import write_dossier
+
+        job = self._selected_job()
+        if job is None:
+            self.report(ProfileOSError("בחר פרויקט מהרשימה"), "אין מה להדפיס")
+            return
+
+        builds = list(self.session.builds)
+        if self.session.job is None or self.session.job.job_id != job.job_id:
+            builds = []
+            if job.schedule is not None:
+                from ..elements.builder import ElementBuilder
+
+                for opening in job.schedule.openings:
+                    try:
+                        builder = ElementBuilder.for_system(
+                            opening.system_id or job.system_id
+                        )
+                    except Exception:  # noqa: BLE001 - generic rules will do
+                        builder = ElementBuilder()
+                    try:
+                        builds.append(builder.build(opening))
+                    except Exception:  # noqa: BLE001 - reported by omission
+                        _log.warning("Dossier skipped %s", opening.element_id)
+
+        path, _ = QFileDialog.getSaveFileName(
+            self, "שמירת תיק העבודה", f"{job.job_id}.html", "דפי HTML (*.html)"
+        )
+        if not path:
+            return
+        try:
+            written = write_dossier(job, builds, path)
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "לא ניתן להפיק את תיק העבודה")
+            return
+        self.status(f"תיק העבודה נשמר: {written}")
 
     # -- customers ---------------------------------------------------------- #
     def _customers_tab(self) -> QWidget:

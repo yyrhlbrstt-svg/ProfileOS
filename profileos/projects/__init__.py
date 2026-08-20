@@ -13,6 +13,7 @@ from .model import (
     StatusEvent,
     TRANSITIONS,
 )
+from .dossier import render_dossier, write_dossier
 from .store import CustomerBook, JobStore, default_customers, default_store
 
 __all__ = [
@@ -26,4 +27,6 @@ __all__ = [
     "TRANSITIONS",
     "default_customers",
     "default_store",
+    "render_dossier",
+    "write_dossier",
 ]

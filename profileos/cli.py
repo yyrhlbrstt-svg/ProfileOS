@@ -2980,6 +2980,39 @@ def jobs_customers(
     console.print(table)
 
 
+@jobs_app.command("pack")
+def jobs_pack(
+    job_id: str = typer.Argument(..., help="Job number, e.g. J-2026-0001."),
+    out: Path = typer.Option(Path("job-pack.html"), "--out", "-o"),
+) -> None:
+    """Print pack: cover, elevations, cut list, glass and hardware, in one page."""
+    from .elements.builder import ElementBuilder
+    from .projects import default_store, write_dossier
+
+    try:
+        job = default_store().load(job_id)
+    except Exception as exc:  # noqa: BLE001
+        _fail(str(exc))
+
+    builds = []
+    if job.schedule is not None:
+        for opening in job.schedule.openings:
+            try:
+                builder = ElementBuilder.for_system(opening.system_id or job.system_id)
+            except Exception:  # noqa: BLE001 - generic rules will do
+                builder = ElementBuilder()
+            try:
+                builds.append(builder.build(opening, sill_height=job.schedule.sill_height))
+            except Exception as exc:  # noqa: BLE001
+                console.print(f"[yellow]{opening.element_id}: {exc}[/yellow]")
+
+    written = write_dossier(job, builds, out)
+    console.print(
+        f"[green]Wrote[/green] {written} — {len(builds)} element(s), "
+        f"{job.unit_count} unit(s)."
+    )
+
+
 def main() -> None:
     """Console-script entry point."""
     try:

@@ -165,3 +165,93 @@ class TestCustomers:
         book.update(customer)
         assert len(book.all()) == 1
         assert book.get(customer.customer_id).phone == "050-1112222"
+
+
+class TestDossier:
+    """The print pack: the whole job on one page a workshop can carry."""
+
+    @pytest.fixture
+    def builds(self):
+        from profileos.elements.builder import ElementBuilder
+        from profileos.elements.model import Cell, HingeSide, OpeningType, Sash
+
+        builder = ElementBuilder()
+        return [
+            builder.build(Opening(
+                element_id="W-01", name="W-01", width=2400, height=1800, quantity=4,
+                mullion_positions=[800, 1600],
+                cells=[Cell(column=1, row=0, sash=Sash(
+                    opening_type=OpeningType.TILT_TURN, hinge_side=HingeSide.LEFT))],
+            )),
+            builder.build(Opening(
+                element_id="D-01", name="D-01", width=1000, height=2200,
+                cells=[Cell(column=0, row=0, sash=Sash(
+                    opening_type=OpeningType.DOOR, hinge_side=HingeSide.RIGHT))],
+            )),
+        ]
+
+    def test_the_pack_is_one_self_contained_page(self, builds):
+        from profileos.projects import render_dossier
+
+        job = JobFile(job_id="J-2026-0009", name="בדיקה", customer_name="לקוח")
+        html = render_dossier(job, builds)
+        assert html.startswith("<!doctype html>") and html.rstrip().endswith("</html>")
+        # Nothing may be fetched at open time: no scripts, no remote stylesheets.
+        # The SVG namespace is an identifier, not a request, so it does not count.
+        assert "<script" not in html
+        without_namespaces = html.replace("http://www.w3.org/2000/svg", "")
+        assert "http://" not in without_namespaces
+        assert "https://" not in without_namespaces
+
+    def test_quantities_multiply_through_to_the_cut_list(self, builds):
+        from profileos.projects.dossier import _cut_rows
+
+        rows = _cut_rows(builds)
+        single = _cut_rows(builds[1:])
+        assert rows and single
+        # The window is ordered four times; its bars appear four times over.
+        total = sum(quantity for _p, _l, quantity, _m in rows)
+        assert total > sum(quantity for _p, _l, quantity, _m in single) * 4
+
+    def test_identical_cuts_from_two_openings_become_one_line(self):
+        from profileos.elements.builder import ElementBuilder
+        from profileos.projects.dossier import _cut_rows
+
+        builder = ElementBuilder()
+        same = [
+            builder.build(Opening(element_id=f"W-0{n}", name=f"W-0{n}",
+                                  width=1200, height=1400))
+            for n in (1, 2)
+        ]
+        rows = _cut_rows(same)
+        one = _cut_rows(same[:1])
+        assert len(rows) == len(one), "the saw counts one line, twice the pieces"
+        assert sum(r[2] for r in rows) == 2 * sum(r[2] for r in one)
+
+    def test_typical_figures_carry_a_not_for_production_banner(self, builds):
+        from profileos.projects import render_dossier
+
+        job = JobFile(job_id="J-1", name="x")
+        html = render_dossier(job, builds)
+        assert ("לא לייצור" in html) is not all(b.may_be_cut for b in builds)
+
+    def test_a_job_with_no_openings_still_renders_and_says_so(self):
+        from profileos.projects import render_dossier
+
+        html = render_dossier(JobFile(job_id="J-1", name="ריק"), [])
+        assert "עדיין אין פתחים" in html
+
+    def test_writing_creates_the_folder(self, tmp_path, builds):
+        from profileos.projects import write_dossier
+
+        target = tmp_path / "packs" / "J-1.html"
+        written = write_dossier(JobFile(job_id="J-1", name="x"), builds, target)
+        assert written.is_file() and written.read_text(encoding="utf-8")
+
+    def test_glass_and_hardware_are_gathered_by_kind(self, builds):
+        from profileos.projects.dossier import _glass_rows, _hardware_rows
+
+        panes = _glass_rows(builds)
+        assert panes and all(quantity > 0 for _s, _b, quantity, _a, _sf in panes)
+        hardware = _hardware_rows(builds)
+        assert hardware and len({code for code, *_ in hardware}) == len(hardware)

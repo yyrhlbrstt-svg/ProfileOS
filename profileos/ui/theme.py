@@ -252,10 +252,10 @@ QToolTip {{
 QPushButton#NavButton {{
     background: transparent; border: none; border-radius: {m.radius_small}px;
     color: {p.text_muted}; text-align: right;
-    padding: {m.space(1)}px {m.space(2)}px;
-    margin: 1px {m.space(2)}px; min-height: 30px;
+    padding: 0; margin: 1px {m.space(2)}px; min-height: 32px;
     font-size: {m.font_size}px; font-weight: 500;
 }}
+QLabel#NavLabel {{ font-size: {m.font_size}px; }}
 QPushButton#NavButton:hover {{ background: {p.surface_raised}; color: {p.text}; }}
 QPushButton#NavButton:checked {{
     background: {p.accent_subtle}; color: {BRAND.x300}; font-weight: 600;
