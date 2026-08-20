@@ -279,3 +279,70 @@ class TestCatalogueDocuments:
 
         schema = all_schemas()["system_catalogue"]
         assert schema["properties"]["kind"]["const"] == "system_catalogue"
+
+
+class TestDecisions:
+    """The shop's own classifications, which must survive a restart."""
+
+    @pytest.fixture
+    def book(self, tmp_path):
+        from profileos.systems import DecisionBook
+
+        return DecisionBook(tmp_path / "decisions.json")
+
+    def test_a_decision_round_trips(self, book):
+        book.record("klil-7000", "sliding", source="דאדי — קטלוג 2026")
+        saved = book.all()
+        assert len(saved) == 1
+        assert saved[0].entry_id == "klil-7000"
+        assert saved[0].family == "sliding"
+        assert "דאדי" in saved[0].source
+
+    def test_deciding_again_replaces_rather_than_duplicates(self, book):
+        book.record("klil-7000", "sliding", source="ראשון")
+        book.record("klil-7000", "casement", source="תיקון")
+        assert len(book.all()) == 1
+        assert book.all()[0].family == "casement"
+
+    def test_a_classification_without_a_source_is_refused(self, book):
+        from profileos.systems import DecisionError
+
+        with pytest.raises(DecisionError):
+            book.record("klil-7000", "sliding", source="   ")
+
+    def test_a_corrupt_file_does_not_stop_start_up(self, book):
+        book.path.parent.mkdir(parents=True, exist_ok=True)
+        book.path.write_text("{not json", encoding="utf-8")
+        assert book.all() == []
+
+    def test_applying_puts_the_series_in_its_family(self, book):
+        from profileos.systems import SystemDirectory, SERIES
+
+        directory = SystemDirectory(list(SERIES))
+        book.record("klil-7000", "sliding", source="דאדי")
+        assert book.apply(directory) == 1
+        assert directory.get("klil-7000").family.value == "sliding"
+
+    def test_a_stale_id_is_skipped_rather_than_fatal(self, book):
+        from profileos.systems import SystemDirectory, SERIES
+
+        directory = SystemDirectory(list(SERIES))
+        book.record("a-series-that-was-removed", "sliding", source="דאדי")
+        book.record("klil-7000", "sliding", source="דאדי")
+        assert book.apply(directory) == 1
+
+    def test_classifying_unlocks_quoting_but_never_cutting(self, book):
+        from profileos.systems import SystemDirectory, SERIES
+
+        directory = SystemDirectory(list(SERIES))
+        book.record("klil-7000", "sliding", source="דאדי")
+        book.apply(directory)
+        readiness = directory.readiness("klil-7000")
+        assert readiness.may_quote, "family stand-ins are enough to price"
+        assert not readiness.may_cut, "cutting waits for the supplier's own figures"
+
+    def test_forgetting_removes_only_that_series(self, book):
+        book.record("klil-7000", "sliding", source="א")
+        book.record("klil-9000", "curtain_wall", source="ב")
+        book.forget("klil-7000")
+        assert [d.entry_id for d in book.all()] == ["klil-9000"]

@@ -2954,6 +2954,8 @@ class CataloguePage(Page):
     subtitle = "קריאת שרטוטי יצרן וטבלאות לספרייה שבבעלותך"
 
     def build(self) -> None:
+        self._system_ids: list[str] = []
+
         run = QPushButton("קליטה")
         run.setObjectName("Primary")
         run.clicked.connect(self.run)
@@ -2969,6 +2971,18 @@ class CataloguePage(Page):
             ("unmatched", "ללא התאמה"),
         ])
         self.body.addWidget(self.stats)
+
+        tabs = QTabWidget()
+        tabs.addTab(self._systems_tab(), "מערכות")
+        tabs.addTab(self._ingest_tab(), "קליטת קטלוג")
+        self.body.addWidget(tabs, 1)
+        self.tabs = tabs
+
+    def _ingest_tab(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, METRICS.space(3), 0, 0)
+        layout.setSpacing(METRICS.space(3))
 
         sources = Card("מקורות")
         grid = FieldGrid()
@@ -3003,7 +3017,7 @@ class CataloguePage(Page):
         series_row.addStretch(1)
         sources.add_layout(series_row)
         sources.add(grid)
-        self.body.addWidget(sources)
+        layout.addWidget(sources)
 
         note = QLabel(
             "כל שרטוט נמדד על ידי מנועי הגאומטריה והחוזק ומושווה מול הטבלה "
@@ -3012,7 +3026,7 @@ class CataloguePage(Page):
         )
         note.setObjectName("Hint")
         note.setWordWrap(True)
-        self.body.addWidget(note)
+        layout.addWidget(note)
 
         splitter = QSplitter(Qt.Orientation.Vertical)
         self.entries = DataTable(
@@ -3026,12 +3040,132 @@ class CataloguePage(Page):
         splitter.addWidget(self.detail)
         splitter.setStretchFactor(0, 2)
         splitter.setStretchFactor(1, 1)
-        self.body.addWidget(splitter, 1)
+        layout.addWidget(splitter, 1)
 
         self.entries.itemSelectionChanged.connect(self._show_detail)
 
         self._drawings: Path | None = None
         self._table: Path | None = None
+        return page
+
+    # -- systems ------------------------------------------------------------- #
+    def _systems_tab(self) -> QWidget:
+        """The series this shop works with, and what each may be used for.
+
+        This is the screen that turns a directory into a library. A series
+        starts unclassified — the software will not guess whether קליל 7000 is
+        casement or sliding, because the wrong guess picks the wrong hardware.
+        Classifying it here takes seconds, is recorded with who decided, and
+        survives a restart. Cutting still waits for the supplier's own figures,
+        which arrive through ingestion on the tab beside this one.
+        """
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, METRICS.space(3), 0, 0)
+        layout.setSpacing(METRICS.space(3))
+
+        controls = QHBoxLayout()
+        controls.setSpacing(METRICS.space(3))
+        self.family_combo = QComboBox()
+        from ..systems import SystemFamily
+
+        for family in SystemFamily:
+            self.family_combo.addItem(family.label("he"), family.value)
+
+        self.decided_by = QLineEdit()
+        self.decided_by.setPlaceholderText("מי מחליט ולפי מה — למשל: דאדי, קטלוג קליל 2026")
+
+        classify = QPushButton("סווג את הסדרה שנבחרה")
+        classify.setObjectName("Primary")
+        classify.clicked.connect(self.classify_system)
+
+        for label, widget in (("משפחה", self.family_combo), ("מקור", self.decided_by)):
+            caption = QLabel(label)
+            caption.setObjectName("FieldLabel")
+            controls.addWidget(caption)
+            controls.addWidget(widget, 1 if widget is self.decided_by else 0)
+        controls.addWidget(classify)
+        layout.addLayout(controls)
+
+        self.systems_table = DataTable(
+            ["סדרה", "יצרן", "שם", "משפחה", "להצעה", "לחיתוך", "מקור"],
+            empty_text="ספריית המערכות ריקה",
+        )
+        layout.addWidget(self.systems_table, 1)
+
+        self.systems_status = QLabel()
+        self.systems_status.setObjectName("Hint")
+        self.systems_status.setWordWrap(True)
+        layout.addWidget(self.systems_status)
+
+        note = QLabel(
+            "סדרה שסווגה אפשר לתמחר לפיה — על ערכי משפחה טיפוסיים, לא על נתוני "
+            "היצרן. חיתוך נפתח רק אחרי קליטת הקטלוג של הספק בלשונית ״קליטה״, "
+            "וזה בכוונה: מוט שנחתך לפי ניחוש הוא מוט שנזרק."
+        )
+        note.setObjectName("Hint")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        return page
+
+    def _selected_system(self) -> str:
+        rows = self.systems_table.selectionModel()
+        if rows is None or not rows.selectedRows():
+            return ""
+        index = rows.selectedRows()[0].row()
+        return self._system_ids[index] if index < len(self._system_ids) else ""
+
+    def classify_system(self) -> None:
+        from ..systems import DIRECTORY, SystemFamily, default_decisions
+
+        entry_id = self._selected_system()
+        if not entry_id:
+            self.report(ProfileOSError("בחר סדרה מהרשימה"), "לא נבחרה סדרה")
+            return
+        source = self.decided_by.text().strip()
+        family = SystemFamily(self.family_combo.currentData())
+        try:
+            default_decisions().record(entry_id, family.value, source=source)
+            DIRECTORY.classify(entry_id, family, source=source)
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "לא ניתן לסווג את הסדרה")
+            return
+        self._refresh_systems()
+        self.status(f"{entry_id} סווגה כ{family.label('he')}")
+
+    def _refresh_systems(self) -> None:
+        from ..systems import DIRECTORY
+
+        entries = sorted(DIRECTORY, key=lambda e: (e.manufacturer, e.series))
+        self._system_ids = [entry.id for entry in entries]
+
+        colours: dict[tuple[int, int], str] = {}
+        rows = []
+        quotable = cuttable = 0
+        for index, entry in enumerate(entries):
+            readiness = DIRECTORY.readiness(entry.id)
+            quotable += bool(readiness.may_quote)
+            cuttable += bool(readiness.may_cut)
+            rows.append([
+                entry.series, entry.manufacturer,
+                entry.hebrew or entry.display,
+                entry.family.label("he") if entry.family else "לא סווגה",
+                "כן" if readiness.may_quote else "לא",
+                "כן" if readiness.may_cut else "לא",
+                entry.source or "—",
+            ])
+            colours[(index, 4)] = (
+                self.colours.success if readiness.may_quote else self.colours.text_faint
+            )
+            colours[(index, 5)] = (
+                self.colours.success if readiness.may_cut else self.colours.warning
+            )
+        self.systems_table.set_rows(rows, colours=colours)
+        self.systems_status.setText(
+            f"⁦{len(entries)}⁩ סדרות · ⁦{quotable}⁩ ניתנות לתמחור · "
+            f"⁦{cuttable}⁩ ניתנות לחיתוך"
+            + ("" if cuttable else " — אף סדרה עדיין ללא נתוני היצרן עצמו")
+        )
 
     def _pick_drawings(self) -> None:
         folder = QFileDialog.getExistingDirectory(self, "תיקיית DXF של היצרן")
@@ -3143,6 +3277,9 @@ class CataloguePage(Page):
             lines.append("אזהרות")
             lines.extend(f"  - {warning}" for warning in entry.warnings)
         self.detail.setPlainText("\n".join(lines))
+
+    def refresh(self) -> None:
+        self._refresh_systems()
 
     def export_plugin(self) -> None:
         from ..catalogue import to_plugin

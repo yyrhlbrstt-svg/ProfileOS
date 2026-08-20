@@ -1029,3 +1029,46 @@ class TestPlumbingPage:
         rows = list(csv.reader(target.read_text(encoding="utf-8-sig").splitlines()))
         assert rows[0] == ["סוג", "תיאור", "כמות", "יחידה", "הערה"]
         assert len(rows) > 5
+
+
+class TestSystemsLibrary:
+    def test_every_series_is_listed_with_what_it_may_be_used_for(self, window):
+        page = window.go_to_page("Catalogue")
+        pump()
+        assert page.systems_table.rowCount() >= 19
+        assert "סדרות" in page.systems_status.text()
+
+    def test_classifying_a_series_records_who_decided(self, window, job_dir):
+        from profileos.systems import DIRECTORY, default_decisions
+
+        page = window.go_to_page("Catalogue")
+        index = page._system_ids.index("klil-7000")
+        page.systems_table.setCurrentCell(index, 0)
+        page.family_combo.setCurrentIndex(page.family_combo.findData("sliding"))
+        page.decided_by.setText("דאדי — קטלוג קליל")
+        page.classify_system()
+        pump()
+
+        assert DIRECTORY.get("klil-7000").family.value == "sliding"
+        saved = default_decisions().all()
+        assert any(d.entry_id == "klil-7000" and "דאדי" in d.source for d in saved)
+
+    def test_classifying_without_a_source_is_refused_with_a_reason(
+        self, window, job_dir, monkeypatch
+    ):
+        recorded: list[str] = []
+        monkeypatch.setattr(
+            type(window.page("Catalogue")), "report",
+            lambda self, exc, context="": recorded.append(str(exc)),
+        )
+        page = window.go_to_page("Catalogue")
+        page.systems_table.setCurrentCell(0, 0)
+        page.decided_by.setText("")
+        page.classify_system()
+        assert recorded and "מקור" in recorded[0]
+
+    def test_nothing_is_cuttable_until_a_catalogue_is_ingested(self, window):
+        """The honest state of a fresh installation, said on the screen."""
+        page = window.go_to_page("Catalogue")
+        pump()
+        assert "ללא נתוני היצרן" in page.systems_status.text()

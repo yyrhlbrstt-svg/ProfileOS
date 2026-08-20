@@ -24,6 +24,14 @@ from .registry import (
     hardware_makers,
 )
 
+from .decisions import (
+    Decision,
+    DecisionBook,
+    DecisionError,
+    default_decisions,
+    load_decisions,
+)
+
 __all__ = [
     "DIRECTORY",
     "FAMILY_RULES",
@@ -38,4 +46,6 @@ __all__ = [
     "SystemReadiness",
     "UnclassifiedSystem",
     "hardware_makers",
+    "Decision", "DecisionBook", "DecisionError",
+    "default_decisions", "load_decisions",
 ]

@@ -29,6 +29,12 @@ def run(argv: Sequence[str] | None = None, *, theme: str = "dark") -> int:
         Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
     )
 
+    # The shop's own series classifications, restored before any page reads
+    # the directory — a family decided last week must not need deciding again.
+    from ..systems import load_decisions
+
+    load_decisions()
+
     application = QApplication(list(argv) if argv is not None else sys.argv)
     application.setApplicationName("ProfileOS")
     application.setOrganizationName("ProfileOS")
