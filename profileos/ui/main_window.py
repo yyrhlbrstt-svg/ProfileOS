@@ -28,12 +28,12 @@ _log = get_logger("ui.window")
 
 #: Sidebar grouping. Navigation follows the order work moves through the shop.
 NAV_SECTIONS: list[tuple[str, list[int]]] = [
-    ("סקירה", [0]),
-    ("תכנון", [1, 2, 3]),
-    ("ייצור", [4, 5, 6]),
-    ("מסחרי", [7, 8]),
-    ("מפעל", [9]),
-    ("ספרייה", [10, 11]),
+    ("סקירה", [0, 1]),
+    ("תכנון", [2, 3, 4]),
+    ("ייצור", [5, 6, 7]),
+    ("מסחרי", [8, 9]),
+    ("מפעל", [10]),
+    ("ספרייה", [11, 12]),
 ]
 
 
@@ -214,6 +214,15 @@ class MainWindow(QMainWindow):
         palette_action.setShortcut(QKeySequence("Ctrl+K"))
         palette_action.triggered.connect(self.open_palette)
         self.addAction(palette_action)
+
+        save_action = QAction(self)
+        save_action.setShortcut(QKeySequence("Ctrl+S"))
+        save_action.triggered.connect(self.save_job)
+        self.addAction(save_action)
+
+    def save_job(self) -> None:
+        """Ctrl+S from anywhere: write the work into the open job file."""
+        self.page("Projects").save_current()
 
     def open_palette(self) -> None:
         """The Ctrl+K search box: every page and common action, one keystroke."""

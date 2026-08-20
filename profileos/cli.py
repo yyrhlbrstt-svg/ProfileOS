@@ -55,6 +55,7 @@ systems_app = typer.Typer(help="Which profile systems exist, and how far each is
 draw_app = typer.Typer(help="Shop drawings: elevations, wall sections and sheets.")
 mobile_app = typer.Typer(help="Phones and tablets paired to this machine.")
 quote_app = typer.Typer(help="Quotations: price, negotiate, issue.")
+jobs_app = typer.Typer(help="Job files: the shop's own record of the work it has taken on.")
 
 app.add_typer(geometry_app, name="section")
 app.add_typer(nest_app, name="nest")
@@ -74,6 +75,7 @@ app.add_typer(systems_app, name="systems")
 app.add_typer(draw_app, name="draw")
 app.add_typer(mobile_app, name="mobile")
 app.add_typer(quote_app, name="quote")
+app.add_typer(jobs_app, name="jobs")
 
 
 # --------------------------------------------------------------------------- #
@@ -2814,6 +2816,168 @@ def access_rotate(
     except AccessDenied as exc:
         _fail(str(exc))
     console.print("[green]Changed.[/]")
+
+
+# --------------------------------------------------------------------------- #
+# Jobs
+# --------------------------------------------------------------------------- #
+@jobs_app.command("list")
+def jobs_list(
+    all_jobs: bool = typer.Option(False, "--all", help="Include installed and lost jobs."),
+    customer: Optional[str] = typer.Option(None, "--customer", "-c", help="Filter by customer name."),
+) -> None:
+    """The order book: every job the shop has open."""
+    from .projects import default_store
+
+    store = default_store()
+    jobs = store.all() if all_jobs else store.open_jobs()
+    if customer:
+        needle = customer.lower()
+        jobs = [job for job in jobs if needle in job.customer_name.lower()]
+
+    if not jobs:
+        console.print("[yellow]No jobs yet. Open one with `profileos jobs new`.[/yellow]")
+        return
+
+    table = Table(title="Jobs", header_style="dim")
+    table.add_column("Number", style="cyan")
+    table.add_column("Name")
+    table.add_column("Customer")
+    table.add_column("Status")
+    table.add_column("Units", justify="right")
+    table.add_column("Quoted", justify="right")
+    table.add_column("Updated")
+    for job in jobs:
+        table.add_row(
+            job.job_id, job.name, job.customer_name or "-",
+            f"{job.status.hebrew} ({job.status.value})",
+            str(job.unit_count),
+            f"{job.quote_total:,.0f}" if job.quote_total else "-",
+            job.updated,
+        )
+    console.print(table)
+    console.print(
+        f"[dim]{len(jobs)} job(s); backlog {store.backlog_value():,.0f} "
+        f"of work won but not installed.[/dim]"
+    )
+
+
+@jobs_app.command("new")
+def jobs_new(
+    name: str = typer.Argument(..., help="What the job is called."),
+    customer: Optional[str] = typer.Option(None, "--customer", "-c", help="Customer name or id."),
+    system: str = typer.Option("generic", "--system", "-s"),
+    reference: str = typer.Option("", "--reference", "-r"),
+    site: str = typer.Option("", "--site"),
+) -> None:
+    """Open a job. Only a name is required; everything else can follow."""
+    from .projects import default_customers, default_store
+
+    book = default_customers()
+    record = None
+    if customer:
+        needle = customer.strip().lower()
+        record = next(
+            (c for c in book.all()
+             if c.customer_id.lower() == needle or c.name.lower() == needle),
+            None,
+        )
+        if record is None:
+            record = book.add(customer.strip())
+            console.print(f"[dim]Added customer {record.customer_id} {record.name}.[/dim]")
+
+    job = default_store().create(
+        name, customer=record, system_id=system, reference=reference, site_address=site
+    )
+    console.print(f"[green]Opened {job.job_id}[/green] {job.name}")
+
+
+@jobs_app.command("show")
+def jobs_show(job_id: str = typer.Argument(..., help="Job number, e.g. J-2026-0001.")) -> None:
+    """Everything one job holds, including its status history."""
+    from .projects import default_store
+
+    try:
+        job = default_store().load(job_id)
+    except Exception as exc:  # noqa: BLE001
+        _fail(str(exc))
+
+    console.print(f"[bold]{job.job_id}[/bold]  {job.name}")
+    for label, value in (
+        ("Customer", job.customer_name), ("Site", job.site_address),
+        ("Reference", job.reference), ("System", job.system_id),
+        ("Status", f"{job.status.hebrew} ({job.status.value})"),
+        ("Openings", str(job.opening_count)),
+        ("Units", str(job.unit_count)),
+        ("Area", f"{job.total_area:.2f} m2"),
+        ("Quoted", f"{job.quote_total:,.2f} {job.currency}" if job.quote_total else "-"),
+        ("Created", job.created), ("Updated", job.updated),
+    ):
+        if value:
+            console.print(f"  {label:<10} {value}")
+    if job.history:
+        console.print("\n[dim]History[/dim]")
+        for event in job.history:
+            console.print(f"  {event.at}  {event.status.value}  {event.note}")
+
+
+@jobs_app.command("status")
+def jobs_status(
+    job_id: str = typer.Argument(...),
+    to: str = typer.Argument(..., help="enquiry, quoted, won, in_production, installed, lost"),
+    note: str = typer.Option("", "--note", "-n"),
+) -> None:
+    """Move a job along: quoted, won, in production, installed."""
+    from .projects import JobStatus, default_store
+
+    store = default_store()
+    try:
+        job = store.load(job_id)
+        target = JobStatus(to.lower())
+    except ValueError:
+        _fail(f"Unknown status {to!r}. Known: {', '.join(s.value for s in JobStatus)}")
+    except Exception as exc:  # noqa: BLE001
+        _fail(str(exc))
+
+    try:
+        job.advance(target, note)
+    except Exception as exc:  # noqa: BLE001
+        _fail(str(exc))
+    store.save(job)
+    console.print(f"[green]{job.job_id} -> {target.value}[/green]")
+
+
+@jobs_app.command("customers")
+def jobs_customers(
+    add: Optional[str] = typer.Option(None, "--add", help="Add a customer by name."),
+    phone: str = typer.Option("", "--phone"),
+    city: str = typer.Option("", "--city"),
+) -> None:
+    """The customer book."""
+    from .projects import default_customers
+
+    book = default_customers()
+    if add:
+        customer = book.add(add, phone=phone, city=city)
+        console.print(f"[green]Added {customer.customer_id}[/green] {customer.name}")
+        return
+
+    customers = book.all()
+    if not customers:
+        console.print("[yellow]No customers yet. Add one with --add.[/yellow]")
+        return
+    table = Table(title="Customers", header_style="dim")
+    table.add_column("Code", style="cyan")
+    table.add_column("Name")
+    table.add_column("Contact")
+    table.add_column("Phone")
+    table.add_column("City")
+    for customer in customers:
+        table.add_row(
+            customer.customer_id, customer.name, customer.contact or "-",
+            customer.phone or "-", customer.city or "-",
+        )
+    console.print(table)
 
 
 def main() -> None:

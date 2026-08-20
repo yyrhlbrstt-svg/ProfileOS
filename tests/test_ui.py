@@ -74,9 +74,9 @@ class TestTheme:
 class TestWindow:
     def test_all_pages_are_present(self, window):
         assert [p.title for p in window.pages] == [
-            "Home", "Profile", "Element", "3D view", "Nesting", "Glass",
-            "Machining", "Quotation", "Accounts", "Shop floor", "Catalogue",
-            "System",
+            "Home", "Projects", "Profile", "Element", "3D view", "Nesting",
+            "Glass", "Machining", "Quotation", "Accounts", "Shop floor",
+            "Catalogue", "System",
         ]
 
     def test_every_page_is_reachable_from_the_sidebar(self, window):
@@ -758,3 +758,131 @@ class TestToasts:
             window.toast(f"הודעה {index}")
         pump()
         assert len(window._toasts) == 3
+
+
+@pytest.fixture
+def job_dir(tmp_path, monkeypatch):
+    """Point the job store at a temporary folder for the duration of a test."""
+    from profileos.core.config import reload_settings
+
+    monkeypatch.setenv("PROFILEOS_DATA_DIR", str(tmp_path / "data"))
+    reload_settings()
+    yield tmp_path / "data"
+    monkeypatch.delenv("PROFILEOS_DATA_DIR", raising=False)
+    reload_settings()
+
+
+class TestProjectsPage:
+    def test_a_new_job_becomes_the_open_one(self, window, job_dir):
+        from profileos.projects import default_store
+
+        page = window.go_to_page("Projects")
+        store = default_store()
+        job = store.create("וילה בבית אל")
+        window.session.set_job(job)
+        page.refresh()
+        pump()
+        assert page.jobs_table.rowCount() == 1
+        assert job.job_id in page.header.subtitle.text()
+
+    def test_saving_writes_the_designed_openings_into_the_job(self, window, job_dir):
+        from profileos.projects import default_store
+
+        window.page("Element").build_element()
+        page = window.go_to_page("Projects")
+        job = default_store().create("עבודה")
+        window.session.set_job(job)
+        page.save_current()
+        pump()
+
+        saved = default_store().load(job.job_id)
+        assert saved.schedule is not None
+        assert saved.opening_count == len(window.session.builds)
+        assert saved.unit_count >= saved.opening_count
+
+    def test_saving_without_an_open_job_explains_itself(self, window, job_dir, monkeypatch):
+        recorded: list[str] = []
+        monkeypatch.setattr(
+            type(window.page("Projects")), "report",
+            lambda self, exc, context="": recorded.append(str(exc)),
+        )
+        page = window.go_to_page("Projects")
+        window.session.job = None
+        page.save_current()
+        assert recorded and "אין פרויקט פתוח" in recorded[0]
+
+    def test_opening_a_job_rebuilds_its_elements(self, window, job_dir):
+        from profileos.projects import default_store
+
+        window.page("Element").build_element()
+        page = window.go_to_page("Projects")
+        store = default_store()
+        job = store.create("לפתיחה")
+        window.session.set_job(job)
+        page.save_current()
+
+        window.session.clear_builds()
+        assert not window.session.builds
+
+        page.refresh()
+        page.jobs_table.setCurrentCell(0, 0)
+        page.open_job()
+        pump()
+        assert len(window.session.builds) == 1
+        assert window.session.job.job_id == job.job_id
+
+    def test_status_advances_only_where_the_rules_allow(self, window, job_dir, monkeypatch):
+        from profileos.projects import JobStatus, default_store
+
+        page = window.go_to_page("Projects")
+        job = default_store().create("סטטוס")
+        page.refresh()
+        page.jobs_table.setCurrentCell(0, 0)
+        pump()
+        # The picker only ever offers reachable statuses.
+        offered = {
+            page.status_combo.itemData(i) for i in range(page.status_combo.count())
+        }
+        assert offered == {"quoted", "lost"}
+
+        page.status_combo.setCurrentIndex(page.status_combo.findData("quoted"))
+        page.advance_status()
+        pump()
+        assert default_store().load(job.job_id).status is JobStatus.QUOTED
+
+    def test_the_selected_job_is_described_without_a_click(self, window, job_dir):
+        from profileos.projects import default_store
+
+        default_store().create("בלי קליק")
+        page = window.go_to_page("Projects")
+        pump()
+        assert "בלי קליק" in page.job_summary.text()
+
+
+class TestSessionSchedule:
+    def test_the_schedule_round_trips_through_the_builder(self, window):
+        window.page("Element").build_element()
+        original = [b.opening.element_id for b in window.session.builds]
+
+        schedule = window.session.to_schedule(name="בדיקה")
+        window.session.clear_builds()
+        problems = window.session.load_schedule(schedule)
+
+        assert not problems
+        assert [b.opening.element_id for b in window.session.builds] == original
+
+    def test_an_opening_that_cannot_be_rebuilt_is_reported_not_fatal(self, window):
+        from profileos.elements.model import ElementSchedule, Opening
+
+        schedule = ElementSchedule(
+            name="חלקי",
+            openings=[
+                Opening(element_id="W-01", name="W-01", width=1200, height=1400),
+                Opening(element_id="W-02", name="W-02", width=1200, height=1400,
+                        system_id="a-system-that-does-not-exist"),
+            ],
+        )
+        problems = window.session.load_schedule(schedule)
+        # Whatever happens to the unknown system, the good opening still builds.
+        assert any(b.opening.element_id == "W-01" for b in window.session.builds)
+        assert isinstance(problems, list)

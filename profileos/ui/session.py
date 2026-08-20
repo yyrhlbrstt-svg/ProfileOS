@@ -59,6 +59,11 @@ class Session:
     # Production
     work_order: Any = None
 
+    #: The job file this work belongs to, once one has been opened or saved.
+    #: ``None`` means a scratch session — nothing is lost by it, because a job
+    #: is created the moment somebody asks for the work to be kept.
+    job: Any = None
+
     #: Callbacks fired whenever the session changes, so pages can refresh.
     _listeners: list[Callable[[str], None]] = field(default_factory=list, repr=False)
 
@@ -153,9 +158,64 @@ class Session:
         """Total element area [m^2]."""
         return sum(b.opening.area * b.opening.quantity for b in self.builds)
 
+    # -- the job file ---------------------------------------------------- #
+    def set_job(self, job: Any) -> None:
+        """Attach this work to a job file, and say so everywhere."""
+        self.job = job
+        self._notify("job")
+
+    def to_schedule(self, name: str = "", system_id: str = "generic") -> Any:
+        """The openings currently designed, as a schedule that can be saved.
+
+        The schedule is what a job file keeps: the elements are rebuilt from it
+        on open, so a job saved before a system rule was corrected picks the
+        correction up rather than preserving the old cut list.
+        """
+        from ..elements.model import ElementSchedule
+
+        openings = [build.opening for build in self.builds]
+        return ElementSchedule(
+            name=name or (self.job.name if self.job else "פרויקט"),
+            client=self.job.customer_name if self.job else "",
+            reference=self.job.reference if self.job else "",
+            system_id=system_id,
+            openings=openings,
+        )
+
+    def load_schedule(self, schedule: Any) -> list[str]:
+        """Rebuild the elements of a saved schedule. Returns any warnings.
+
+        One opening that no longer builds — a system removed, a rule tightened
+        — must not stop the rest of the job from opening, so the failure is
+        reported and the remaining openings are still built.
+        """
+        from ..elements.builder import ElementBuilder
+
+        problems: list[str] = []
+        builds = []
+        for opening in schedule.openings:
+            try:
+                builder = ElementBuilder.for_system(opening.system_id or schedule.system_id)
+            except Exception:  # noqa: BLE001 - fall back to the generic rules
+                builder = ElementBuilder()
+            try:
+                builds.append(builder.build(opening, sill_height=schedule.sill_height))
+            except Exception as exc:  # noqa: BLE001 - reported, never raised
+                problems.append(f"{opening.element_id}: {exc}")
+        self.builds = builds
+        self.nesting_report = None
+        self.glass_report = None
+        self.bom = None
+        self.quote = None
+        self.work_order = None
+        self._notify("builds")
+        return problems
+
     def describe(self) -> str:
         """One-line status summary for the status bar."""
         parts: list[str] = []
+        if self.job is not None:
+            parts.append(f"{self.job.job_id} · {self.job.name}")
         if self.section_path:
             parts.append(f"פרופיל {self.section_path.stem}")
         if self.builds:

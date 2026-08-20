@@ -17,6 +17,7 @@ from typing import Any
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QComboBox,
+    QDialog,
     QHeaderView,
     QDoubleSpinBox,
     QFileDialog,
@@ -174,6 +175,7 @@ class HomePage(Page):
         buttons = QHBoxLayout()
         buttons.setSpacing(METRICS.space(2))
         for label, handler in (
+            ("פרויקטים", lambda: self._go("Projects")),
             ("טעינת פרופיל לדוגמה", self._load_sample),
             ("תכנון פתח", lambda: self._go("Element")),
             ("הצעת מחיר", lambda: self._go("Quotation")),
@@ -230,9 +232,14 @@ class HomePage(Page):
             "צהריים טובים" if 12 <= now.hour < 17 else "ערב טוב"
         )
         self.greeting.setText(f"{part}, {self._brand_name}")
-        self.header.set_subtitle(
+        when = (
             f"יום {hebrew_days[now.weekday()]}, "
             f"{now.day} ב{hebrew_months[now.month - 1]} {now.year}"
+        )
+        job = self.session.job
+        self.header.set_subtitle(
+            f"{when}  ·  פרויקט פתוח: {job.job_id} — {job.name}"
+            if job is not None else when
         )
 
         # Step states: everything the session holds is "done"; the first gap
@@ -274,6 +281,351 @@ class HomePage(Page):
                 "פריטים בעבודה" if self.session.work_order else "טרם שוחרר",
             ),
         })
+
+
+# --------------------------------------------------------------------------- #
+# Projects
+# --------------------------------------------------------------------------- #
+
+class ProjectsPage(Page):
+    """The order book: every job the shop has taken on, and where it stands.
+
+    This is the page the other packages open on, and the one this suite was
+    missing: without it the work lives in memory and dies with the window.
+    A job here is a file on disk — openable next year, mailable to an
+    engineer, readable in a text editor.
+    """
+
+    title = "Projects"
+    hebrew = "פרויקטים"
+    subtitle = "תיקי עבודה, לקוחות ומצב ההזמנות"
+
+    def build(self) -> None:
+        new_job = QPushButton("פרויקט חדש")
+        new_job.setObjectName("Primary")
+        new_job.clicked.connect(self.new_job)
+        self.header.add_action(new_job)
+
+        save = QPushButton("שמירת העבודה")
+        save.clicked.connect(self.save_current)
+        self.header.add_action(save)
+
+        self.stats = StatRow([
+            ("open", "פרויקטים פתוחים"), ("quoted", "בהצעה"),
+            ("production", "בייצור"), ("backlog", "צבר הזמנות"),
+        ])
+        self.body.addWidget(self.stats)
+
+        tabs = QTabWidget()
+        tabs.addTab(self._jobs_tab(), "פרויקטים")
+        tabs.addTab(self._customers_tab(), "לקוחות")
+        self.body.addWidget(tabs, 1)
+        self.tabs = tabs
+
+    # -- storage ----------------------------------------------------------- #
+    def _store(self) -> Any:
+        """The job folder, read fresh each time.
+
+        Resolving it per call rather than caching it means a data directory
+        changed in the settings takes effect without a restart — and it keeps
+        the page testable against a temporary folder.
+        """
+        from ..projects import default_store
+
+        return default_store()
+
+    def _book(self) -> Any:
+        from ..projects import default_customers
+
+        return default_customers()
+
+    # -- jobs -------------------------------------------------------------- #
+    def _jobs_tab(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, METRICS.space(3), 0, 0)
+        layout.setSpacing(METRICS.space(3))
+
+        self.jobs_table = DataTable(
+            ["מספר", "שם", "לקוח", "סטטוס", "יחידות", "שווי", "עודכן"],
+            empty_text="אין עדיין פרויקטים — לחץ ״פרויקט חדש״ כדי לפתוח את הראשון",
+        )
+        self.jobs_table.itemSelectionChanged.connect(self._show_job)
+        layout.addWidget(self.jobs_table, 1)
+
+        detail = Card("הפרויקט הנבחר")
+        self.job_summary = QLabel("לא נבחר פרויקט")
+        self.job_summary.setObjectName("FieldValue")
+        self.job_summary.setWordWrap(True)
+        detail.add(self.job_summary)
+
+        row = QHBoxLayout()
+        row.setSpacing(METRICS.space(2))
+        self.open_button = QPushButton("פתיחה לעבודה")
+        self.open_button.setObjectName("Primary")
+        self.open_button.clicked.connect(self.open_job)
+        row.addWidget(self.open_button)
+
+        self.status_combo = QComboBox()
+        row.addWidget(self.status_combo)
+        advance = QPushButton("עדכון סטטוס")
+        advance.clicked.connect(self.advance_status)
+        row.addWidget(advance)
+        row.addStretch(1)
+        detail.add_layout(row)
+        layout.addWidget(detail)
+
+        note = QLabel(
+            "הפרויקט נשמר כקובץ אחד לכל עבודה בתיקיית הנתונים — אפשר לגבות "
+            "אותו, לשלוח אותו במייל ולפתוח אותו גם בעוד חמש שנים. הפתחים "
+            "נבנים מחדש בכל פתיחה, כך שתיקון בכללי המערכת מגיע גם לעבודות ישנות."
+        )
+        note.setObjectName("Hint")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        return page
+
+    def _selected_job(self) -> Any:
+        rows = self.jobs_table.selectionModel()
+        if rows is None or not rows.selectedRows():
+            return None
+        index = rows.selectedRows()[0].row()
+        if index >= len(self._jobs):
+            return None
+        return self._jobs[index]
+
+    def _show_job(self) -> None:
+        from ..projects import TRANSITIONS
+
+        job = self._selected_job()
+        self.status_combo.clear()
+        if job is None:
+            self.job_summary.setText("לא נבחר פרויקט")
+            return
+
+        lines = [f"{job.job_id} · {job.name}"]
+        if job.customer_name:
+            lines.append(f"לקוח: {job.customer_name}")
+        if job.site_address:
+            lines.append(f"אתר: {job.site_address}")
+        if job.reference:
+            lines.append(f"אסמכתה: {job.reference}")
+        lines.append(
+            f"סטטוס: {job.status.hebrew} · {job.unit_count} יחידות "
+            f"({job.opening_count} פתחים) · "
+            f"⁦{job.total_area:.1f} m²⁩"
+        )
+        if job.quote_total:
+            lines.append(f"הצעה אחרונה: ⁦{job.quote_total:,.0f} ₪⁩ ({job.quoted_on})")
+        self.job_summary.setText("  ·  ".join(lines[:1]) + "\n" + "\n".join(lines[1:]))
+
+        for status in sorted(TRANSITIONS[job.status], key=lambda s: s.value):
+            self.status_combo.addItem(status.hebrew, status.value)
+        self.status_combo.setEnabled(self.status_combo.count() > 0)
+
+    def new_job(self) -> None:
+        from ..systems import DIRECTORY
+        from .dialogs import NewJobDialog
+
+        systems = [("generic", "כללי")]
+        systems += [
+            (entry.id, f"{entry.hebrew or entry.display}")
+            for entry in sorted(DIRECTORY, key=lambda e: e.display)
+        ]
+        customers = self._book().all()
+        dialog = NewJobDialog(customers, systems, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        values = dialog.values()
+        customer = next(
+            (c for c in customers if c.customer_id == values["customer_id"]), None
+        )
+        try:
+            job = self._store().create(
+                values["name"],
+                customer=customer,
+                reference=values["reference"],
+                site_address=values["site_address"],
+                system_id=values["system_id"],
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "לא ניתן לפתוח את הפרויקט")
+            return
+
+        self.session.set_job(job)
+        self.refresh()
+        self.status(f"נפתח פרויקט {job.job_id} — {job.name}")
+
+    def open_job(self) -> None:
+        job = self._selected_job()
+        if job is None:
+            self.report(ProfileOSError("בחר פרויקט מהרשימה"), "לא נבחר פרויקט")
+            return
+
+        problems: list[str] = []
+        if job.schedule is not None:
+            problems = self.session.load_schedule(job.schedule)
+        else:
+            self.session.clear_builds()
+        self.session.set_job(job)
+        for problem in problems[:3]:
+            self.status(problem)
+        self.status(
+            f"נפתח {job.job_id} — {len(self.session.builds)} פתחים נטענו"
+            if self.session.builds
+            else f"נפתח {job.job_id} — עדיין אין בו פתחים"
+        )
+        self.refresh()
+
+    def save_current(self) -> None:
+        """Write what is on screen into the open job."""
+        job = self.session.job
+        if job is None:
+            self.report(
+                ProfileOSError("אין פרויקט פתוח. פתח פרויקט חדש או בחר קיים."),
+                "אין לאן לשמור",
+            )
+            return
+
+        job.schedule = self.session.to_schedule(
+            name=job.name, system_id=job.system_id
+        )
+        if self.session.quote is not None:
+            job.record_quote(
+                float(self.session.quote.net_price),
+                getattr(self.session.quote, "currency", "ILS"),
+            )
+        try:
+            self._store().save(job)
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "השמירה נכשלה")
+            return
+        self.refresh()
+        self.status(f"נשמרו {job.opening_count} פתחים ב{job.job_id}")
+
+    def advance_status(self) -> None:
+        from ..projects import JobStatus
+
+        job = self._selected_job()
+        if job is None or not self.status_combo.count():
+            self.report(ProfileOSError("בחר פרויקט וסטטוס"), "אין מה לעדכן")
+            return
+        target = JobStatus(self.status_combo.currentData())
+        try:
+            job.advance(target)
+            self._store().save(job)
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "לא ניתן לעדכן את הסטטוס")
+            return
+        if self.session.job is not None and self.session.job.job_id == job.job_id:
+            self.session.set_job(job)
+        self.refresh()
+        self.status(f"{job.job_id} עודכן ל{target.hebrew}")
+
+    # -- customers ---------------------------------------------------------- #
+    def _customers_tab(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, METRICS.space(3), 0, 0)
+        layout.setSpacing(METRICS.space(3))
+
+        add = QPushButton("לקוח חדש")
+        add.clicked.connect(self.new_customer)
+        layout.addWidget(add)
+
+        self.customers_table = DataTable(
+            ["קוד", "שם", "איש קשר", "טלפון", "דוא\"ל", "עיר", "מספר עוסק"],
+            empty_text="עדיין אין לקוחות — לחץ ״לקוח חדש״",
+        )
+        layout.addWidget(self.customers_table, 1)
+
+        note = QLabel(
+            "הלקוחות משותפים לכל הפרויקטים: פרטי הלקוח נכנסים להצעת המחיר "
+            "ולמסמכי המשלוח בלי להקליד אותם מחדש בכל עבודה."
+        )
+        note.setObjectName("Hint")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        return page
+
+    def new_customer(self) -> None:
+        from .dialogs import NewCustomerDialog
+
+        dialog = NewCustomerDialog(self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        values = dialog.values()
+        try:
+            customer = self._book().add(**values)
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "לא ניתן להוסיף את הלקוח")
+            return
+        self.refresh()
+        self.status(f"נוסף לקוח {customer.name}")
+
+    # -- refresh ------------------------------------------------------------- #
+    def refresh(self) -> None:
+        store = self._store()
+        self._jobs = store.all()
+
+        colours: dict[tuple[int, int], str] = {}
+        tint = {
+            "enquiry": self.colours.text_muted,
+            "quoted": self.colours.info,
+            "won": self.colours.accent,
+            "in_production": self.colours.warning,
+            "installed": self.colours.success,
+            "lost": self.colours.danger,
+        }
+        rows = []
+        for index, job in enumerate(self._jobs):
+            rows.append([
+                job.job_id, job.name, job.customer_name or "—",
+                job.status.hebrew, str(job.unit_count),
+                # The shekel sits after the figure in Hebrew, and the whole
+                # amount is isolated so the bidi run does not reorder it.
+                f"⁦{job.quote_total:,.0f} ₪⁩" if job.quote_total else "—",
+                job.updated,
+            ])
+            colours[(index, 3)] = tint.get(job.status.value, self.colours.text)
+        self.jobs_table.set_rows(rows, numeric_columns=(4, 5), colours=colours)
+        # A list with a row nobody has clicked still has a most-recent job, and
+        # showing its detail beats an empty panel that says nothing was chosen.
+        if rows and not self.jobs_table.selectionModel().hasSelection():
+            self.jobs_table.setCurrentCell(0, 0)
+
+        pipeline = store.pipeline()
+        open_count = sum(
+            count for status, count in pipeline.items()
+            if status not in ("installed", "lost")
+        )
+        backlog = store.backlog_value()
+        self.stats.update_many({
+            "open": (str(open_count) if open_count else "—", "בעבודה כרגע"),
+            "quoted": (str(pipeline["quoted"]) if pipeline["quoted"] else "—",
+                       "ממתינות לתשובה"),
+            "production": (
+                str(pipeline["in_production"]) if pipeline["in_production"] else "—",
+                "על רצפת הייצור",
+            ),
+            "backlog": (
+                f"⁦{backlog:,.0f} ₪⁩" if backlog else "—",
+                "הוזמן וטרם הותקן",
+            ),
+        })
+
+        self.customers_table.set_rows([
+            [c.customer_id, c.name, c.contact or "—", c.phone or "—",
+             c.email or "—", c.city or "—", c.tax_id or "—"]
+            for c in self._book().all()
+        ])
+
+        job = self.session.job
+        self.header.set_subtitle(
+            f"פתוח: {job.job_id} — {job.name}" if job is not None
+            else "תיקי עבודה, לקוחות ומצב ההזמנות"
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -2959,13 +3311,13 @@ class AccountsPage(Page):
 
 
 PAGES: list[type[Page]] = [
-    HomePage, ProfilePage, ElementPage, ViewPage, NestingPage, GlassPage,
+    HomePage, ProjectsPage, ProfilePage, ElementPage, ViewPage, NestingPage, GlassPage,
     MachiningPage, QuotePage, AccountsPage, ShopFloorPage, CataloguePage,
     SystemPage,
 ]
 
 __all__ = [
-    "Page", "HomePage", "ProfilePage", "ElementPage", "ViewPage",
+    "Page", "HomePage", "ProjectsPage", "ProfilePage", "ElementPage", "ViewPage",
     "NestingPage", "GlassPage", "MachiningPage", "QuotePage", "AccountsPage",
     "ShopFloorPage", "CataloguePage", "SystemPage", "PAGES",
 ]
