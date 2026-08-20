@@ -3138,6 +3138,63 @@ def pipe_circulation(
         console.print(f"[yellow]{note}[/yellow]")
 
 
+@app.command("seed")
+def seed(
+    quiet: bool = typer.Option(False, "--quiet", "-q", help="Say nothing on success."),
+    force: bool = typer.Option(False, "--force", help="Seed even if jobs already exist."),
+) -> None:
+    """Put a starting order book in place, so the first launch is not empty.
+
+    A brand new installation with no jobs and no customers teaches nobody
+    anything: every screen shows its empty state and the operator has to
+    invent data before they can look around. This writes a handful of
+    realistic jobs and customers — and refuses to run twice, so it can never
+    scribble over a shop's real work.
+    """
+    from .projects import JobStatus, default_customers, default_store
+
+    store, book = default_store(), default_customers()
+    if store.all() and not force:
+        if not quiet:
+            console.print("[yellow]Jobs already exist; nothing seeded.[/yellow]")
+        return
+
+    customers = [
+        book.add("משפחת לוי", contact="יוסי לוי", phone="052-8841200",
+                 city="בית אל", address="הגפן 4"),
+        book.add('כהן בנייה בע"מ', contact="אבי כהן", phone="02-9971234",
+                 city="עפרה", tax_id="514882201"),
+        book.add("שוקרון יזמות", contact="דוד שוקרון", phone="050-7712399",
+                 city="שילה"),
+    ]
+
+    plan: list[tuple[str, int, str, str, list[JobStatus], float]] = [
+        ("וילה משפחת לוי", 0, "klil-7300", "הגפן 4, בית אל",
+         [JobStatus.QUOTED], 86_420.0),
+        ('בניין מגורים — 8 יח"ד', 1, "klil-4300", "עפרה, מגרש 22",
+         [JobStatus.QUOTED, JobStatus.WON], 412_750.0),
+        ("חזית מסחרית שילה", 2, "klil-9000", "מרכז מסחרי שילה",
+         [JobStatus.QUOTED, JobStatus.WON, JobStatus.IN_PRODUCTION], 238_900.0),
+        ("החלפת חלונות — דירה", 0, "klil-4300", "", [], 0.0),
+    ]
+    for name, customer_index, system_id, site, statuses, quoted in plan:
+        job = store.create(
+            name, customer=customers[customer_index],
+            system_id=system_id, site_address=site,
+        )
+        for status in statuses:
+            job.advance(status)
+            if status is JobStatus.QUOTED and quoted:
+                job.record_quote(quoted)
+        store.save(job)
+
+    if not quiet:
+        console.print(
+            f"[green]Seeded[/green] {len(plan)} job(s) and "
+            f"{len(customers)} customer(s)."
+        )
+
+
 def main() -> None:
     """Console-script entry point."""
     try:

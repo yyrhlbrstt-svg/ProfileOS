@@ -255,3 +255,48 @@ class TestDossier:
         assert panes and all(quantity > 0 for _s, _b, quantity, _a, _sf in panes)
         hardware = _hardware_rows(builds)
         assert hardware and len({code for code, *_ in hardware}) == len(hardware)
+
+
+class TestSeeding:
+    """The starting order book a fresh installation opens on."""
+
+    @pytest.fixture
+    def seeded(self, tmp_path, monkeypatch):
+        from profileos.core.config import reload_settings
+
+        monkeypatch.setenv("PROFILEOS_DATA_DIR", str(tmp_path / "data"))
+        reload_settings()
+        yield
+        monkeypatch.delenv("PROFILEOS_DATA_DIR", raising=False)
+        reload_settings()
+
+    def _seed(self, **kwargs):
+        from typer.testing import CliRunner
+
+        from profileos.cli import app
+
+        args = ["seed"] + [f"--{key}" for key, value in kwargs.items() if value]
+        return CliRunner().invoke(app, args)
+
+    def test_a_fresh_installation_gets_a_believable_order_book(self, seeded):
+        from profileos.projects import JobStatus, default_customers, default_store
+
+        assert self._seed(quiet=True).exit_code == 0
+        jobs = default_store().all()
+        assert len(jobs) == 4
+        assert default_customers().all()
+        assert any(job.status is JobStatus.IN_PRODUCTION for job in jobs)
+        assert default_store().backlog_value() > 0
+
+    def test_seeding_twice_never_scribbles_over_real_work(self, seeded):
+        from profileos.projects import default_store
+
+        self._seed(quiet=True)
+        store = default_store()
+        job = store.all()[0]
+        job.name = "עבודה אמיתית של הלקוח"
+        store.save(job)
+
+        self._seed(quiet=True)
+        assert len(store.all()) == 4
+        assert any(j.name == "עבודה אמיתית של הלקוח" for j in store.all())

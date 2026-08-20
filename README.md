@@ -17,11 +17,26 @@ Everything runs from one library, one CLI, one HTTP API and one desktop
 application.
 
 Configured for **דאדי בע"מ**, Beit El. Overview and capability comparison:
-<https://profileos-git-claude-aluminum-8e2c8c-yyrhlbrstt-7372s-projects.vercel.app>
+<https://profile-os-one.vercel.app>
 
 ---
 
-## Quick start
+## Installing on a Windows machine (the way it is delivered)
+
+1. Install **Python 3.11 or newer** from <https://www.python.org/downloads> —
+   tick **Add python.exe to PATH** on the first screen of the installer. This
+   is the one box that matters; nothing works without it.
+2. Double-click `install\התקנה.bat`. It checks Python, installs every
+   component, seeds a starting order book and puts a shortcut on the desktop.
+3. Double-click `ProfileOS.bat` — or the desktop shortcut — to run.
+
+To use the shop-floor terminal from a phone on the same Wi-Fi, double-click
+`install\טרמינל-לטלפון.bat` and type the six-digit code it prints into the
+phone's browser.
+
+---
+
+## Quick start (from a shell)
 
 ```bash
 pip install -r requirements.txt
@@ -36,6 +51,11 @@ profileos section analyse data/samples/mullion_mb70.dxf
 profileos element build 2400 1800 --mullions 800,1600 --sash 1,0 --sash-type tilt_turn
 profileos pipe size 1.2 45 --lift 12 --available 250
 profileos cnc drivers
+profileos seed                          # a starting order book
+profileos jobs list                     # the order book
+profileos jobs pack J-2026-0001         # the printable job pack
+profileos pipe fixtures -d 8            # fixture units and demand
+profileos pipe drainage -d 8 -f 4       # branch, stack, vent, house drain
 profileos ui                            # desktop application
 profileos serve                         # HTTP API, docs at /docs
 ```
