@@ -29,8 +29,10 @@ class BrandColours(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    accent: str = "#3d8bfd"
-    accent_light: str = "#0b62d0"
+    # The bronze from the design tokens (profileos.design.tokens.Brand):
+    # x300 for dark surfaces, x600 as the deep ink used on paper.
+    accent: str = "#F0B269"
+    accent_light: str = "#B0671F"
     #: Used on documents; defaults to the accent when unset.
     document: str | None = None
 
@@ -146,7 +148,7 @@ DADI_BRAND = Brand(
     country="ישראל",
     phone="02-9973510",
     fax="02-9973159",
-    colours=BrandColours(accent="#3d8bfd", accent_light="#0b62d0"),
+    colours=BrandColours(),
     machine_code_signature='דאדי בע"מ - ProfileOS',
     notes=(
         "Contact details taken from public business-directory listings. "

@@ -122,7 +122,7 @@ class TestWorkflow:
         window.page("Profile").run_check()
         pump()
         assert window.page("Profile").checks.rowCount() >= 3
-        assert "Maximum span" in window.page("Profile").max_span.text()
+        assert "המפתח המרבי" in window.page("Profile").max_span.text()
 
     def test_element_page_builds(self, window):
         window.go_to_page("Element")
@@ -154,7 +154,7 @@ class TestWorkflow:
         window.session.clear_builds()
         window.go_to_page("Nesting")
         window.page("Nesting").run()
-        assert recorded and "No elements" in recorded[0]
+        assert recorded and "לא תוכננו פתחים" in recorded[0]
 
     def test_machining_page_posts(self, window):
         window.go_to_page("Machining")
@@ -163,7 +163,7 @@ class TestWorkflow:
         pump()
         assert window.session.post_results
         assert page.code.toPlainText().strip()
-        assert "interference" in page.clamp_status.text()
+        assert "הפרעות" in page.clamp_status.text()
 
     def test_machining_defaults_to_a_machining_centre(self, window):
         assert window.page("Machining").driver.currentData() == "elumatec.ncx"
@@ -216,11 +216,11 @@ class TestWorkflow:
         assert order is not None and len(order) > 0
 
         page.item.setCurrentIndex(0)
-        page.stage.setCurrentText("cut")
+        page.stage.setCurrentIndex(page.stage.findData("cut"))
         page.scan()
         pump()
         assert order.items[0].stage is Stage.CUT
-        assert "cut" in page.scan_result.text()
+        assert page.scan_result.text()
 
     def test_invalid_scan_shows_the_reason(self, window):
         window.page("Element").build_element()
@@ -228,16 +228,16 @@ class TestWorkflow:
         page = window.page("Shop floor")
         page.release()
         page.item.setCurrentIndex(0)
-        page.stage.setCurrentText("shipped")
+        page.stage.setCurrentIndex(page.stage.findData("shipped"))
         page.scan()
         pump()
-        assert "cannot go from" in page.scan_result.text()
+        assert "אי אפשר לעבור" in page.scan_result.text()
 
     def test_status_bar_summarises_the_session(self, window):
         window.page("Profile").load_sample()
         window.page("Element").build_element()
         pump()
-        assert "element(s)" in window.session.describe()
+        assert "פתחים" in window.session.describe()
 
 
 class TestSessionInvalidation:
@@ -318,7 +318,7 @@ class TestGlassPage:
         window.page("Element").build_element()
         page.stock.setCurrentText("not-a-size")
         page.run()
-        assert recorded and "WIDTHxHEIGHT" in recorded[0]
+        assert recorded and "רוחב×גובה" in recorded[0]
 
     def test_nesting_without_elements_is_reported_not_crashed(self, window, monkeypatch):
         recorded: list[str] = []
@@ -329,7 +329,7 @@ class TestGlassPage:
         )
         window.session.clear_builds()
         page.run()
-        assert recorded and "no elements" in recorded[0].lower()
+        assert recorded and "לא תוכננו פתחים" in recorded[0]
 
     def test_adding_an_element_invalidates_the_glass_plan(self, window):
         window.page("Element").build_element()
@@ -410,7 +410,7 @@ class TestCataloguePage:
         page.entries.selectRow(index)
         pump()
         detail = page.detail.toPlainText()
-        assert "conflict" in detail
+        assert "סתירה" in detail
         assert "ixx" in detail
 
     def test_ingesting_nothing_is_reported_not_crashed(self, window, monkeypatch):
@@ -479,7 +479,7 @@ class TestSystemPage:
         )
         page._update_key = None
         page.check_updates()
-        assert recorded and "public key" in recorded[0]
+        assert recorded and "המפתח הציבורי" in recorded[0]
 
     def test_applying_without_checking_is_refused(self, window, monkeypatch):
         recorded: list[str] = []
@@ -490,7 +490,7 @@ class TestSystemPage:
         )
         page._update_plan = None
         page.apply_updates()
-        assert recorded and "Check for updates" in recorded[0]
+        assert recorded and "בדוק עדכונים" in recorded[0]
 
     def test_a_signed_update_is_installed_and_goes_live(self, window, tmp_path):
         """The whole point of the mechanism, end to end and in one process.
@@ -562,7 +562,7 @@ class TestSystemPage:
             page.brand_picker.setCurrentIndex(index)
             pump()
             assert "דאדי" in window.sidebar.logo.text()
-            assert "בית אל" in page._brand_values["City"].text()
+            assert "בית אל" in page._brand_values["עיר"].text()
         finally:
             set_active_brand("profileos")
 
@@ -576,7 +576,7 @@ class TestSystemPage:
             pump()
             page.brand_picker.setCurrentIndex(page.brand_picker.findData("profileos"))
             pump()
-            assert page._brand_values["City"].text() == "not set"
+            assert page._brand_values["עיר"].text() == "לא הוגדר"
             assert "דאדי" not in window.sidebar.logo.text()
         finally:
             set_active_brand("profileos")

@@ -18,7 +18,7 @@ def run(argv: Sequence[str] | None = None, *, theme: str = "dark") -> int:
     from PySide6.QtWidgets import QApplication
 
     from .main_window import MainWindow
-    from .theme import DARK, LIGHT, UI_FONTS, stylesheet
+    from .theme import DARK, LIGHT, UI_FONTS, load_fonts, stylesheet
 
     configure_logging(get_settings().log_level, use_rich=True)
 
@@ -33,6 +33,12 @@ def run(argv: Sequence[str] | None = None, *, theme: str = "dark") -> int:
     application.setApplicationName("ProfileOS")
     application.setOrganizationName("ProfileOS")
 
+    # Hebrew is the working language, so the whole application runs mirrored.
+    # Numbers inside text stay left-to-right on their own; that is bidi, not
+    # layout, and Qt handles it per text run.
+    application.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
+
+    load_fonts()
     font = QFont()
     font.setFamilies(list(UI_FONTS))
     font.setPointSize(10)

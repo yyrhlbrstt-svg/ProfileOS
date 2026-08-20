@@ -177,7 +177,8 @@ class TestDrawingsCarryTheLanguage:
 
     def test_the_date_follows_the_language(self):
         rows = dict(self._package("ru").sheets[0].title_block.rows())
-        assert "19.08.2026" in rows.values()
+        expected = date.today().strftime("%d.%m.%Y")
+        assert expected in rows.values()
 
     def test_the_not_for_construction_stamp_is_translated(self):
         stamp = self._package("es").stamps[0]

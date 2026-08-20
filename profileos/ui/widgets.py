@@ -9,14 +9,15 @@ from __future__ import annotations
 
 from typing import Any, Iterable, Sequence
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QFont
+from PySide6.QtCore import QRectF, Qt, QTimer
+from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (
     QFrame,
     QGridLayout,
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QPushButton,
     QSizePolicy,
     QTableWidget,
     QTableWidgetItem,
@@ -24,7 +25,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .theme import METRICS, MONO_FONTS, Palette, badge_style
+from .theme import DARK, METRICS, MONO_FONTS, Palette, badge_style
 
 
 class Card(QFrame):
@@ -189,10 +190,21 @@ class FieldGrid(QWidget):
 
 
 class DataTable(QTableWidget):
-    """A read-only table with sensible defaults for numeric engineering data."""
+    """A read-only table with sensible defaults for numeric engineering data.
 
-    def __init__(self, headers: Sequence[str], parent: QWidget | None = None) -> None:
+    ``empty_text`` is painted in the body while the table has no rows, so an
+    empty table explains itself instead of presenting a blank rectangle.
+    """
+
+    def __init__(
+        self,
+        headers: Sequence[str],
+        parent: QWidget | None = None,
+        *,
+        empty_text: str = "אין נתונים עדיין",
+    ) -> None:
         super().__init__(0, len(headers), parent)
+        self._empty_text = empty_text
         self.setHorizontalHeaderLabels(list(headers))
         self.setAlternatingRowColors(True)
         self.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
@@ -239,6 +251,24 @@ class DataTable(QTableWidget):
     def clear_rows(self) -> None:
         self.setRowCount(0)
 
+    def paintEvent(self, event) -> None:  # noqa: N802 - Qt naming
+        super().paintEvent(event)
+        if self.rowCount() or not self._empty_text:
+            return
+        from PySide6.QtGui import QPainter
+
+        painter = QPainter(self.viewport())
+        painter.setPen(QColor(DARK.text_faint))
+        font = painter.font()
+        font.setPointSize(METRICS.font_size)
+        painter.setFont(font)
+        painter.drawText(
+            self.viewport().rect(),
+            Qt.AlignmentFlag.AlignCenter,
+            self._empty_text,
+        )
+        painter.end()
+
 
 def divider(parent: QWidget | None = None) -> QFrame:
     """A one-pixel horizontal rule."""
@@ -267,3 +297,119 @@ __all__ = [
     "divider",
     "page_layout",
 ]
+
+class EmptyState(QWidget):
+    """What a screen shows before it has anything: what this is, and the way in.
+
+    Every page starts empty on a fresh morning, and a blank card teaches
+    nobody. The empty state names the thing the page will show, says how it
+    comes to exist, and carries the button that starts it — so the first click
+    of the day is on the screen itself, not in a menu somebody has to know.
+    """
+
+    def __init__(
+        self,
+        glyph: str,
+        title: str,
+        body: str,
+        *,
+        action: str = "",
+        on_action: Any = None,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(METRICS.space(6), METRICS.space(10),
+                                  METRICS.space(6), METRICS.space(10))
+        layout.setSpacing(METRICS.space(2))
+        layout.addStretch(1)
+
+        # The glyph is drawn, not typed: a large thin-stroke mark in the faint
+        # ink, so the empty state reads as designed rather than as a missing
+        # image. Callers pass a short string of drawing characters ("▢", "⌀").
+        mark = QLabel(glyph)
+        mark.setObjectName("EmptyGlyph")
+        mark.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        font = mark.font()
+        font.setPointSize(34)
+        font.setWeight(QFont.Weight.Thin)
+        mark.setFont(font)
+        layout.addWidget(mark)
+
+        heading = QLabel(title)
+        heading.setObjectName("EmptyTitle")
+        heading.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(heading)
+
+        text = QLabel(body)
+        text.setObjectName("EmptyBody")
+        text.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        text.setWordWrap(True)
+        layout.addWidget(text)
+
+        if action:
+            row = QHBoxLayout()
+            row.addStretch(1)
+            self.button = QPushButton(action)
+            self.button.setObjectName("Primary")
+            self.button.setCursor(Qt.CursorShape.PointingHandCursor)
+            if on_action is not None:
+                self.button.clicked.connect(on_action)
+            row.addWidget(self.button)
+            row.addStretch(1)
+            layout.addSpacing(METRICS.space(3))
+            layout.addLayout(row)
+        layout.addStretch(2)
+
+
+class Skeleton(QWidget):
+    """A shimmering placeholder for content that is being computed.
+
+    Rows of soft bars in the raised tone, with a slow sweep of slightly
+    lighter ink. Shown while an engine call runs, so a working screen never
+    looks like a frozen one.
+    """
+
+    def __init__(self, rows: int = 4, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._rows = rows
+        self._phase = 0.0
+        self._timer = QTimer(self)
+        self._timer.setInterval(40)
+        self._timer.timeout.connect(self._advance)
+        self.setMinimumHeight(rows * (METRICS.row_height + METRICS.space(2)))
+
+    def start(self) -> None:
+        self._timer.start()
+        self.show()
+
+    def stop(self) -> None:
+        self._timer.stop()
+        self.hide()
+
+    def _advance(self) -> None:
+        self._phase = (self._phase + 0.02) % 1.4
+        self.update()
+
+    def paintEvent(self, event: Any) -> None:
+        from PySide6.QtGui import QLinearGradient, QPainter
+
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        base = QColor(DARK.surface_raised)
+        sheen = QColor(DARK.border_strong)
+        width = self.width()
+        row_height = METRICS.row_height - METRICS.space(1)
+        for index in range(self._rows):
+            y = index * (METRICS.row_height + METRICS.space(2))
+            bar_width = width * (0.92 - 0.14 * (index % 3))
+            gradient = QLinearGradient(0, 0, width, 0)
+            centre = self._phase - 0.2
+            gradient.setColorAt(max(0.0, min(1.0, centre - 0.18)), base)
+            gradient.setColorAt(max(0.0, min(1.0, centre)), sheen)
+            gradient.setColorAt(max(0.0, min(1.0, centre + 0.18)), base)
+            painter.setBrush(gradient)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.drawRoundedRect(QRectF(0, y, bar_width, row_height),
+                                    METRICS.radius_small, METRICS.radius_small)
+        painter.end()

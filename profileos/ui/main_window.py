@@ -28,11 +28,11 @@ _log = get_logger("ui.window")
 
 #: Sidebar grouping. Navigation follows the order work moves through the shop.
 NAV_SECTIONS: list[tuple[str, list[int]]] = [
-    ("Design", [0, 1, 2]),
-    ("Production", [3, 4, 5]),
-    ("Commercial", [6, 7]),
-    ("Factory", [8]),
-    ("Library", [9, 10]),
+    ("תכנון", [0, 1, 2]),
+    ("ייצור", [3, 4, 5]),
+    ("מסחרי", [6, 7]),
+    ("מפעל", [8]),
+    ("ספרייה", [9, 10]),
 ]
 
 
@@ -74,7 +74,7 @@ class Sidebar(QWidget):
         self.version.setText(brand.tagline or f"v{__version__}")
 
     def add_section(self, title: str) -> None:
-        label = QLabel(title.upper())
+        label = QLabel(title)
         label.setObjectName("SidebarSection")
         self._layout.addWidget(label)
 
@@ -126,14 +126,14 @@ class MainWindow(QMainWindow):
                 page = page_class(self.session, self.colours)
                 self.pages.append(page)
                 self.stack.addWidget(page)
-                self.sidebar.add_button(len(self.pages) - 1, page_class.title)
+                self.sidebar.add_button(len(self.pages) - 1, page_class.hebrew or page_class.title)
         self.sidebar.finish()
 
         self.sidebar.group.idClicked.connect(self.go_to)
         if self.sidebar.buttons:
             self.sidebar.buttons[0].setChecked(True)
 
-        self.statusBar().showMessage("Ready")
+        self.statusBar().showMessage("מוכן")
         self.session.subscribe(lambda _what: self._update_status())
         self._install_shortcuts()
         self.apply_palette(palette)
@@ -148,7 +148,7 @@ class MainWindow(QMainWindow):
         """Record who signed in, and show it in the title and the status bar."""
         self.access_session = session
         self.setWindowTitle(f"{self.windowTitle()} — {session.username}")
-        self.statusBar().showMessage(f"Signed in as {session.describe()}", 8000)
+        self.statusBar().showMessage(f"מחובר: {session.describe()}", 8000)
 
     def go_to(self, index: int) -> None:
         if not (0 <= index < len(self.pages)):
@@ -156,7 +156,28 @@ class MainWindow(QMainWindow):
         self.stack.setCurrentIndex(index)
         self.sidebar.buttons[index].setChecked(True)
         self.pages[index].refresh()
+        self._fade_in(self.pages[index])
         self._update_status()
+
+    def _fade_in(self, page: Any) -> None:
+        """A quiet 150 ms entrance for the page that just appeared.
+
+        The effect is removed when the animation ends: a persistent opacity
+        effect forces every later paint through an offscreen buffer, which
+        blurs text on fractional-DPI displays.
+        """
+        from PySide6.QtCore import QEasingCurve, QPropertyAnimation
+        from PySide6.QtWidgets import QGraphicsOpacityEffect
+
+        effect = QGraphicsOpacityEffect(page)
+        page.setGraphicsEffect(effect)
+        animation = QPropertyAnimation(effect, b"opacity", page)
+        animation.setDuration(METRICS.motion_fast_ms)
+        animation.setStartValue(0.35)
+        animation.setEndValue(1.0)
+        animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+        animation.finished.connect(lambda: page.setGraphicsEffect(None))
+        animation.start(QPropertyAnimation.DeletionPolicy.DeleteWhenStopped)
 
     def page(self, title: str) -> Page:
         """Find a page by its title.

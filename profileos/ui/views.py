@@ -35,6 +35,17 @@ from PySide6.QtWidgets import QSizePolicy, QWidget
 from .theme import DARK, MONO_FONTS, Palette
 
 
+def ltr(text: str) -> str:
+    """Isolate a string as left-to-right for painting on a canvas.
+
+    The application runs right-to-left, and Qt applies the bidi algorithm to
+    every painted string — which turns "754 × 1734" into "1734 × 754" the
+    moment it is drawn in an RTL context. Dimensions, marks and units on a
+    drawing are technical notation and always read left-to-right, so each one
+    is wrapped in an isolate before it reaches the painter.
+    """
+    return f"\u2066{text}\u2069"
+
 def _colour(value: str, alpha: int | None = None) -> QColor:
     colour = QColor(value)
     if alpha is not None:
@@ -252,7 +263,7 @@ class CanvasView(QWidget):
         label = f"{step:g} mm" if step < 1000 else f"{step / 1000:g} m"
         font = QFont(MONO_FONTS[0], 9)
         painter.setFont(font)
-        painter.drawText(QPointF(x + pixels + 8, y + 4), label)
+        painter.drawText(QPointF(x + pixels + 8, y + 4), ltr(label))
 
     # -- helpers for subclasses ---------------------------------------------- #
     def world_path(self, rings: Sequence[Sequence[tuple[float, float]]]) -> QPainterPath:
@@ -279,7 +290,7 @@ class CanvasView(QWidget):
         if centre:
             metrics = QFontMetricsF(painter.font())
             point -= QPointF(metrics.horizontalAdvance(text) / 2.0, -metrics.height() / 4.0)
-        painter.drawText(point, text)
+        painter.drawText(point, ltr(text))
 
 
 # --------------------------------------------------------------------------- #
@@ -380,7 +391,7 @@ class SectionView(CanvasView):
         painter.drawLine(point + QPointF(-9, 0), point + QPointF(9, 0))
         painter.drawLine(point + QPointF(0, -9), point + QPointF(0, 9))
         painter.setFont(QFont(MONO_FONTS[0], 9, QFont.Weight.Bold))
-        painter.drawText(point + QPointF(11, -6), label)
+        painter.drawText(point + QPointF(11, -6), ltr(label))
 
     def _paint_thin_spots(self, painter: QPainter) -> None:
         painter.setPen(QPen(_colour(self.palette_colours.danger), 1.4))
@@ -390,7 +401,7 @@ class SectionView(CanvasView):
 
     def _paint_placeholder(self, painter: QPainter, message: str) -> None:
         painter.setPen(QPen(_colour(self.palette_colours.text_faint)))
-        painter.setFont(QFont("Inter", 12))
+        painter.setFont(QFont("Heebo", 12))
         painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, message)
 
 
@@ -419,9 +430,9 @@ class ElevationView(CanvasView):
     def paint_world(self, painter: QPainter) -> None:
         if self._build is None:
             painter.setPen(QPen(_colour(self.palette_colours.text_faint)))
-            painter.setFont(QFont("Inter", 12))
+            painter.setFont(QFont("Heebo", 12))
             painter.drawText(
-                self.rect(), Qt.AlignmentFlag.AlignCenter, "Design an element to see its elevation"
+                self.rect(), Qt.AlignmentFlag.AlignCenter, "תכנן פתח כדי לראות את החזית"
             )
             return
 
@@ -630,9 +641,9 @@ class NestingView(QWidget):
 
         if self._result is None or not self._result.layouts:
             painter.setPen(QPen(_colour(palette.text_faint)))
-            painter.setFont(QFont("Inter", 12))
+            painter.setFont(QFont("Heebo", 12))
             painter.drawText(
-                self.rect(), Qt.AlignmentFlag.AlignCenter, "Run the optimiser to see the cutting plan"
+                self.rect(), Qt.AlignmentFlag.AlignCenter, "הרץ אופטימיזציה כדי לראות את תוכנית החיתוך"
             )
             painter.end()
             return
@@ -671,10 +682,10 @@ class NestingView(QWidget):
         # Label on the left.
         painter.setFont(QFont(MONO_FONTS[0], 9))
         painter.setPen(QPen(_colour(palette.text_muted)))
-        kind = "remnant" if layout.is_remnant else "bar"
+        kind = "שארית" if layout.is_remnant else "מוט"
         painter.drawText(QRectF(4, y, geometry.left_margin - 12, height),
                          Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight,
-                         f"{kind} {index + 1}\n{layout.stock_length:.0f}")
+                         ltr(f"{kind} {index + 1}\n{layout.stock_length:.0f}"))
 
         # Pieces.
         cursor = x0 + layout.trim_start * scale
@@ -695,7 +706,7 @@ class NestingView(QWidget):
                 painter.setFont(QFont(MONO_FONTS[0], 8))
                 painter.setPen(QPen(_colour(palette.text_inverse if palette.mode.value == "light" else "#0f1216")))
                 painter.drawText(rect, Qt.AlignmentFlag.AlignCenter,
-                                 f"{placement.demand_key.length:.0f}")
+                                 ltr(f"{placement.demand_key.length:.0f}"))
             cursor += width
 
         # Remnant.
@@ -710,7 +721,7 @@ class NestingView(QWidget):
             if remnant * scale > 52:
                 painter.setFont(QFont(MONO_FONTS[0], 8))
                 painter.setPen(QPen(_colour(colour)))
-                painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, f"{remnant:.0f}")
+                painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, ltr(f"{remnant:.0f}"))
 
         # Yield readout on the right.
         painter.setFont(QFont(MONO_FONTS[0], 9))
@@ -718,7 +729,7 @@ class NestingView(QWidget):
         painter.drawText(
             QRectF(x0 + bar_width + 4, y, geometry.right_margin + 40, height),
             Qt.AlignmentFlag.AlignVCenter,
-            f"{layout.piece_count}",
+            ltr(f"{layout.piece_count}"),
         )
 
     def _paint_mitre(self, painter: QPainter, rect: QRectF, placement: Any) -> None:
@@ -781,9 +792,9 @@ class ClampView(QWidget):
 
         if self._piece is None:
             painter.setPen(QPen(_colour(palette.text_faint)))
-            painter.setFont(QFont("Inter", 12))
+            painter.setFont(QFont("Heebo", 12))
             painter.drawText(
-                self.rect(), Qt.AlignmentFlag.AlignCenter, "Build a machining job to see the setup"
+                self.rect(), Qt.AlignmentFlag.AlignCenter, "בנה תוכנית עיבוד כדי לראות את הקיבוע"
             )
             painter.end()
             return
@@ -801,7 +812,7 @@ class ClampView(QWidget):
 
         painter.setFont(QFont(MONO_FONTS[0], 9))
         painter.setPen(QPen(_colour(palette.text_faint)))
-        painter.drawText(QPointF(left, bar_y - 46), f"{piece.label}  {piece.length:.0f} mm")
+        painter.drawText(QPointF(left, bar_y - 46), ltr(f"{piece.label}  {piece.length:.0f} mm"))
 
         colliding = {c.operation.op_id for c in self._collisions}
 
@@ -836,7 +847,7 @@ class ClampView(QWidget):
             painter.setPen(QPen(_colour(palette.text_muted)))
             painter.drawText(
                 QRectF(x - 12, bar_y + bar_height + 30, width + 24, 14),
-                Qt.AlignmentFlag.AlignCenter, clamp.id,
+                Qt.AlignmentFlag.AlignCenter, ltr(clamp.id),
             )
 
         # Interference spans.
@@ -848,8 +859,8 @@ class ClampView(QWidget):
             painter.drawRect(QRectF(x, bar_y - 8, max((hi - lo) * scale, 2.0), bar_height + 22))
 
         # Legend.
-        painter.setFont(QFont("Inter", 9))
-        entries = [("operation", palette.accent), ("clamp", palette.success)]
+        painter.setFont(QFont("Heebo", 9))
+        entries = [("עיבוד", palette.accent), ("מלחציים", palette.success)]
         if self._collisions:
             entries.append((f"{len(self._collisions)} collision(s)", palette.danger))
         x = left
@@ -858,7 +869,7 @@ class ClampView(QWidget):
             painter.setPen(Qt.PenStyle.NoPen)
             painter.drawRect(QRectF(x, self.height() - 22, 10, 10))
             painter.setPen(QPen(_colour(palette.text_muted)))
-            painter.drawText(QPointF(x + 15, self.height() - 13), label)
+            painter.drawText(QPointF(x + 15, self.height() - 13), ltr(label))
             x += 40 + len(label) * 6
 
         painter.end()
@@ -969,11 +980,11 @@ class SheetView(QWidget):
 
         if self._result is None or not self._result.layouts:
             painter.setPen(QPen(_colour(palette.text_faint)))
-            painter.setFont(QFont("Inter", 12))
+            painter.setFont(QFont("Heebo", 12))
             painter.drawText(
                 self.rect(),
                 Qt.AlignmentFlag.AlignCenter,
-                "Nest the project's glass to see the cutting maps",
+                "שבץ את הזכוכית כדי לראות את מפות החיתוך",
             )
             painter.end()
             return
@@ -1045,7 +1056,7 @@ class SheetView(QWidget):
                 painter.drawText(
                     box,
                     Qt.AlignmentFlag.AlignCenter,
-                    f"{rect.width:.0f}x{rect.height:.0f}",
+                    ltr(f"{rect.width:.0f}x{rect.height:.0f}"),
                 )
 
         for position, placement in enumerate(layout.placements):
@@ -1079,7 +1090,7 @@ class SheetView(QWidget):
             painter.drawText(
                 box,
                 Qt.AlignmentFlag.AlignCenter,
-                f"{placement.part.name}\n{placement.width:.0f}x{placement.height:.0f}{turned}",
+                ltr(f"{placement.part.name}\n{placement.width:.0f}x{placement.height:.0f}{turned}"),
             )
 
         # Caption under the sheet.
@@ -1089,8 +1100,10 @@ class SheetView(QWidget):
         painter.drawText(
             QRectF(left, top + height + 2, width, geometry.label_height),
             Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
-            f"sheet {index + 1}  {layout.stock.name}  "
-            f"{layout.piece_count} pieces  {layout.yield_pct:.1f}% yield{stages}",
+            ltr(
+                f"sheet {index + 1}  {layout.stock.name}  "
+                f"{layout.piece_count} pieces  {layout.yield_pct:.1f}% yield{stages}"
+            ),
         )
 
 

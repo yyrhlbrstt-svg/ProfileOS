@@ -135,12 +135,15 @@ class ProductionItem:
     def can_advance(self, to: Stage) -> tuple[bool, str | None]:
         """Whether ``to`` is reachable, and why not if it is not."""
         if self.stage is to:
-            return False, f"already at stage {to.value}"
+            return False, f"כבר בשלב {to.label('he')}"
         if self.stage.is_terminal:
-            return False, f"{self.item_id} is {self.stage.value} and cannot move"
+            return False, f"{self.item_id} במצב {self.stage.label('he')} ולא יכול לזוז"
         if to not in TRANSITIONS[self.stage]:
-            allowed = ", ".join(sorted(s.value for s in TRANSITIONS[self.stage]))
-            return False, f"cannot go from {self.stage.value} to {to.value} (allowed: {allowed})"
+            allowed = ", ".join(sorted(s.label("he") for s in TRANSITIONS[self.stage]))
+            return False, (
+                f"אי אפשר לעבור מ{self.stage.label('he')} ל{to.label('he')} "
+                f"(מותר: {allowed})"
+            )
         return True, None
 
     def advance(
@@ -288,12 +291,12 @@ class WorkOrder:
         """
         item = self.by_barcode(payload) or self.find(payload)
         if item is None:
-            return False, f"Unknown code: {payload}"
+            return False, f"קוד לא מוכר: {payload}"
 
         ok, reason = item.advance(to, operator=operator, station=station)
         if not ok:
             return False, f"{item.description or item.item_id}: {reason}"
-        return True, f"{item.description or item.item_id} -> {to.value}"
+        return True, f"{item.description or item.item_id} ← {to.label('he')}"
 
     def bottleneck(self) -> tuple[Stage, int] | None:
         """The stage holding the most items — where the floor is jammed."""
@@ -343,6 +346,12 @@ def work_order_from_builds(
         for copy_index in range(opening.quantity):
             suffix = f"-{copy_index + 1:02d}" if opening.quantity > 1 else ""
 
+            role_hebrew = {
+                "frame_horizontal": "מלבן אופקי", "frame_vertical": "מלבן אנכי",
+                "sash_horizontal": "כנף אופקי", "sash_vertical": "כנף אנכי",
+                "mullion": "אומנה", "transom": "משקוף רוחב",
+                "bead_horizontal": "סרגל זיגוג אופקי", "bead_vertical": "סרגל זיגוג אנכי",
+            }
             for cut_index, cut in enumerate(build.cuts, start=1):
                 for piece_index in range(cut.quantity):
                     item_id = f"{opening.element_id}{suffix}-P{cut_index:02d}{piece_index + 1}"
@@ -356,7 +365,10 @@ def work_order_from_builds(
                         ProductionItem(
                             item_id=item_id,
                             kind=ItemKind.PROFILE_PIECE,
-                            description=f"{cut.profile_id} {cut.length:.1f} mm ({cut.role})",
+                            description=(
+                                f"{cut.profile_id} ⁦{cut.length:.1f}⁩ מ\"מ — "
+                                f"{role_hebrew.get(cut.role, cut.role)}"
+                            ),
                             project_id=project_id,
                             element_ref=opening.element_id,
                             barcode=code.payload(),
@@ -382,7 +394,10 @@ def work_order_from_builds(
                     ProductionItem(
                         item_id=item_id,
                         kind=ItemKind.GLASS_PANE,
-                        description=f"{panel.width:.0f} x {panel.height:.0f} {panel.build_up.name}",
+                        description=(
+                            f"זכוכית ⁦{panel.width:.0f} × {panel.height:.0f}⁩ — "
+                            f"⁦{panel.build_up.name}⁩"
+                        ),
                         project_id=project_id,
                         element_ref=opening.element_id,
                         barcode=code.payload(),
@@ -406,7 +421,7 @@ def work_order_from_builds(
                 ProductionItem(
                     item_id=element_id,
                     kind=ItemKind.ELEMENT,
-                    description=f"{opening.name} {opening.width:.0f} x {opening.height:.0f} mm",
+                    description=f"{opening.name} ⁦{opening.width:.0f} × {opening.height:.0f}⁩ מ\"מ",
                     project_id=project_id,
                     element_ref=opening.element_id,
                     barcode=code.payload(),

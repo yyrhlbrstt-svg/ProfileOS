@@ -205,7 +205,7 @@ class TestMesEndpoints:
         )
         assert response.status_code == 200
         assert not response.json()["ok"]
-        assert "cannot go from" in response.json()["message"]
+        assert "אי אפשר לעבור" in response.json()["message"]
 
     def test_unknown_work_order_is_404(self, client):
         assert client.get("/mes/work-orders/NOPE").status_code == 404

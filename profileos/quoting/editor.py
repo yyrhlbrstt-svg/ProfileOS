@@ -684,6 +684,7 @@ class QuoteDraft:
                     "glass": glass.describe() if glass else variant.glass_id,
                     "u_value": round(glass.u_value(), 2) if glass else None,
                     "finish": variant.finish.name,
+                    "finish_hebrew": variant.finish.hebrew,
                     "aluminium_kg": variant.aluminium_kg,
                     "net": net,
                     "gross": round(net * (1.0 + vat), 2),

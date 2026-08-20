@@ -50,7 +50,7 @@ class LoginDialog(QDialog):
         self._answers: list[QLineEdit] = []
 
         brand = self._brand_name()
-        self.setWindowTitle(f"{brand} — sign in")
+        self.setWindowTitle(f"{brand} — כניסה")
         self.setModal(True)
         self.setMinimumWidth(460)
 
@@ -68,23 +68,23 @@ class LoginDialog(QDialog):
         layout.addWidget(self.key_label)
 
         key_row = QHBoxLayout()
-        find = QPushButton("Look for the key again")
+        find = QPushButton("חפש את המפתח שוב")
         find.clicked.connect(self._find_key)
-        choose = QPushButton("Choose the key file…")
+        choose = QPushButton("בחירת קובץ מפתח…")
         choose.clicked.connect(self._choose_key)
         key_row.addWidget(find)
         key_row.addWidget(choose)
         key_row.addStretch(1)
         layout.addLayout(key_row)
 
-        self.card = Card("Credentials")
+        self.card = Card("פרטי כניסה")
         self.grid = FieldGrid()
         self.username = QLineEdit()
-        self.username.setPlaceholderText("username")
+        self.username.setPlaceholderText("שם משתמש")
         self.password = QLineEdit()
         self.password.setEchoMode(QLineEdit.EchoMode.Password)
-        self.grid.add("Username", self.username)
-        self.grid.add("Password", self.password)
+        self.grid.add("שם משתמש", self.username)
+        self.grid.add("סיסמה", self.password)
         self.card.add(self.grid)
         layout.addWidget(self.card)
 
@@ -97,8 +97,10 @@ class LoginDialog(QDialog):
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
         )
         self.ok = buttons.button(QDialogButtonBox.StandardButton.Ok)
-        self.ok.setText("Sign in")
+        self.ok.setText("כניסה")
         self.ok.setObjectName("Primary")
+        cancel = buttons.button(QDialogButtonBox.StandardButton.Cancel)
+        cancel.setText("ביטול")
         buttons.accepted.connect(self._attempt)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
@@ -122,7 +124,7 @@ class LoginDialog(QDialog):
 
     def _choose_key(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
-            self, "ProfileOS key file", "", "Key file (*.key);;All files (*)"
+            self, "קובץ מפתח ProfileOS", "", "קובץ מפתח (*.key);;כל הקבצים (*)"
         )
         if path:
             self._key_path = Path(path)
@@ -136,8 +138,8 @@ class LoginDialog(QDialog):
 
         if self._key_path is None:
             self.key_label.setText(
-                "No key file found. Insert the ProfileOS USB key, then press "
-                "“Look for the key again”."
+                "לא נמצא קובץ מפתח. חבר את מפתח ה-USB של ProfileOS ולחץ "
+                "״חפש את המפתח שוב״."
             )
             self.ok.setEnabled(False)
             return
@@ -145,11 +147,13 @@ class LoginDialog(QDialog):
         try:
             prompts = self.gate.prompts(key_path=self._key_path)
         except Exception as exc:  # noqa: BLE001 - shown, never raised at the user
-            self.key_label.setText(f"That key cannot open this installation: {exc}")
+            self.key_label.setText(f"המפתח הזה לא פותח את ההתקנה הזאת: {exc}")
             self.ok.setEnabled(False)
             return
 
-        self.key_label.setText(f"Key found: {self._key_path}")
+        # The path is Latin text inside a Hebrew sentence; the isolates keep
+        # its slashes from being re-ordered by the bidi algorithm.
+        self.key_label.setText(f"נמצא מפתח: ⁦{self._key_path}⁩")
         for prompt in prompts:
             field = QLineEdit()
             field.setEchoMode(QLineEdit.EchoMode.Password)

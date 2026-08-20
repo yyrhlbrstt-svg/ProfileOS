@@ -38,22 +38,39 @@ def _esc(value: Any) -> str:
     return html.escape(str(value))
 
 
-_CSS = """
-:root{--ink:#15202b;--muted:#5a6a7a;--line:#d8dee6;--accent:__ACCENT__;--soft:#f4f6f9}
+def _document_css() -> str:
+    """The stylesheet, built from the Paper tokens so documents and interface
+    share one design system, with the Heebo face embedded so the file renders
+    the same on a machine that has never seen the font."""
+    from ..design.tokens import BRAND, PAPER, STATUS, font_face_css
+
+    return (
+        font_face_css(embed=True)
+        + f"""
+:root{{--ink:{PAPER.text};--muted:{PAPER.muted};--line:{PAPER.line};
+      --line-strong:{PAPER.line_strong};--accent:__ACCENT__;
+      --accent-deep:{BRAND.x600};--soft:{PAPER.tint};--paper:{PAPER.bg};
+      --warn:{STATUS.warn};--warn-wash:{STATUS.warn_wash}}}
+"""
+        + _CSS_BODY
+    )
+
+
+_CSS_BODY = """
 *{box-sizing:border-box}
-body{margin:0;background:#fff;color:var(--ink);
-     font:14px/1.55 'DejaVu Sans','Segoe UI','Noto Sans Hebrew',Arial,sans-serif}
+body{margin:0;background:var(--paper);color:var(--ink);
+     font:14px/1.55 'Heebo','Segoe UI','Noto Sans Hebrew',Arial,sans-serif}
 .page{max-width:820px;margin:0 auto;padding:34px 40px}
 .num{font-variant-numeric:tabular-nums}
 header{display:flex;justify-content:space-between;align-items:flex-start;gap:24px;
        border-bottom:3px solid var(--accent);padding-bottom:14px;margin-bottom:22px}
-h1{margin:0;font-size:24px;color:var(--accent)}
+h1{margin:0;font-size:24px;font-weight:700;color:var(--accent-deep)}
 .letterhead{font-size:12px;color:var(--muted);text-align:end;line-height:1.5}
 .meta{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;
       background:var(--soft);border-radius:8px;padding:12px 16px;margin-bottom:22px}
 .meta b{display:block;font-size:11px;color:var(--muted);font-weight:600}
 .meta span{font-size:14px}
-h2{font-size:15px;margin:26px 0 8px;color:var(--accent)}
+h2{font-size:15px;margin:26px 0 8px;color:var(--accent-deep)}
 table{width:100%;border-collapse:collapse;font-size:13px}
 th{border-bottom:2px solid var(--ink);padding:6px 8px;font-size:11px;color:var(--muted);
    text-transform:uppercase;letter-spacing:.03em}
@@ -73,10 +90,10 @@ th,td{text-align:start}
 .options td:first-child{font-weight:600}
 .terms{font-size:12px;color:var(--muted);border-top:1px solid var(--line);
        margin-top:28px;padding-top:12px;white-space:pre-line}
-.warn{background:#fff7e6;border:1px solid #e6c56b;border-radius:8px;padding:10px 14px;
-      font-size:12px;margin:14px 0}
-.internal{background:#eef4fb;border:1px solid #9db9dd;border-radius:8px;padding:2px 14px 10px;
-          margin-top:26px}
+.warn{background:var(--warn-wash);border:1px solid var(--warn);border-radius:8px;
+      padding:10px 14px;font-size:12px;margin:14px 0}
+.internal{background:var(--soft);border:1px solid var(--line-strong);border-radius:8px;
+          padding:2px 14px 10px;margin-top:26px}
 .internal h2{margin-top:12px}
 footer{margin-top:34px;font-size:11px;color:var(--muted);text-align:center}
 @media print{
@@ -153,7 +170,7 @@ def render_quotation(
     parts.append(
         f'<!doctype html><html lang="{locale.code}" dir="{"rtl" if locale.rtl else "ltr"}">'
         f'<head><meta charset="utf-8"><title>{_esc(t("quote.quotation"))} — '
-        f'{_esc(draft.project_name)}</title><style>{_CSS.replace("__ACCENT__", accent)}</style></head><body>'
+        f'{_esc(draft.project_name)}</title><style>{_document_css().replace("__ACCENT__", accent)}</style></head><body>'
         '<div class="page">'
     )
 
@@ -247,9 +264,10 @@ def render_quotation(
                 "—" if abs(row["difference"]) < 0.005
                 else f"{'+' if row['difference'] > 0 else '−'}{money(abs(row['difference']))}"
             )
+            finish = row["finish_hebrew"] if locale.code == "he" else row["finish"]
             parts.append(
                 f"<tr><td>{_esc(row['name'])}</td><td>{_esc(row['glass'])} · "
-                f"{_esc(row['finish'])}</td><td class='num'>{u_value}</td>"
+                f"{_esc(finish)}</td><td class='num'>{u_value}</td>"
                 f"<td class='n num'>{money(row['net'])}</td>"
                 f"<td class='n num'>{difference}</td></tr>"
             )

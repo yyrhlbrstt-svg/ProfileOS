@@ -140,13 +140,13 @@ class WorkCentre:
 
 #: A plausible small fabricator: one saw, one machining centre, two benches.
 DEFAULT_WORK_CENTRES: tuple[WorkCentre, ...] = (
-    WorkCentre("SAW", "Cutting saw", Operation.CUTTING),
-    WorkCentre("CNC", "Machining centre", Operation.MACHINING),
-    WorkCentre("GLS-ORD", "Glass on order", Operation.GLAZING_ORDER,
+    WorkCentre("SAW", "מסור חיתוך", Operation.CUTTING),
+    WorkCentre("CNC", "מרכז עיבוד", Operation.MACHINING),
+    WorkCentre("GLS-ORD", "זכוכית בהזמנה", Operation.GLAZING_ORDER,
                stations=99, efficiency=1.0),
-    WorkCentre("ASM", "Assembly bench", Operation.ASSEMBLY, stations=2),
-    WorkCentre("GLZ", "Glazing bench", Operation.GLAZING, cure_days=1),
-    WorkCentre("PACK", "Packing", Operation.PACKING),
+    WorkCentre("ASM", "שולחן הרכבה", Operation.ASSEMBLY, stations=2),
+    WorkCentre("GLZ", "שולחן זיגוג", Operation.GLAZING, cure_days=1),
+    WorkCentre("PACK", "אריזה", Operation.PACKING),
 )
 
 

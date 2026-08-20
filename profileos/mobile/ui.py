@@ -19,26 +19,28 @@ PAGE = """<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="theme-color" content="#0d1117">
+<meta name="theme-color" content="#0F0E0D">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <title>__TITLE__</title>
 <style>
+__FONT_FACE__
 :root{
-  --bg:#0d1117; --card:#161b22; --line:#262d36; --text:#e6edf3; --muted:#8b949e;
-  --accent:#2f81f7; --accent-dim:#1f4f8f; --ok:#3fb950; --warn:#d29922; --bad:#f85149;
+  --bg:#0F0E0D; --card:#151413; --field:#0A0908; --line:#262320; --text:#F4F2EF;
+  --muted:#A7A199; --accent:#E29A47; --accent-strong:#D07E2F;
+  --ok:#3FA672; --warn:#D9B13B; --bad:#DE5D5D;
   --radius:14px; --tap:52px;
 }
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 html,body{margin:0;padding:0;background:var(--bg);color:var(--text)}
 body{
-  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans Hebrew",Arial,sans-serif;
+  font-family:'Heebo',-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans Hebrew",Arial,sans-serif;
   font-size:16px;line-height:1.45;padding-bottom:calc(var(--tap) + 28px + env(safe-area-inset-bottom));
 }
 .num{font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace;font-variant-numeric:tabular-nums}
 header{
-  position:sticky;top:0;z-index:5;background:rgba(13,17,23,.94);backdrop-filter:blur(8px);
+  position:sticky;top:0;z-index:5;background:rgba(15,14,13,.94);backdrop-filter:blur(8px);
   border-bottom:1px solid var(--line);padding:14px 16px calc(14px + env(safe-area-inset-top));
   padding-top:calc(14px + env(safe-area-inset-top));
 }
@@ -52,7 +54,7 @@ section.on{display:block}
 .card h2{margin:0 0 10px;font-size:16px;font-weight:600}
 label{display:block;font-size:13px;color:var(--muted);margin:12px 0 5px}
 input,select,textarea{
-  width:100%;min-height:var(--tap);background:#0b0f14;color:var(--text);
+  width:100%;min-height:var(--tap);background:var(--field);color:var(--text);
   border:1px solid var(--line);border-radius:10px;padding:10px 12px;font-size:17px;
   font-family:inherit;
 }
@@ -61,8 +63,8 @@ input:focus,select:focus,textarea:focus{outline:2px solid var(--accent);border-c
 .row{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px}
 .row2{display:grid;grid-template-columns:1fr 1fr;gap:8px}
 button{
-  width:100%;min-height:var(--tap);border:0;border-radius:12px;background:var(--accent);
-  color:#fff;font-size:17px;font-weight:600;font-family:inherit;margin-top:14px;cursor:pointer;
+  width:100%;min-height:var(--tap);border:0;border-radius:12px;background:var(--accent-strong);
+  color:#1C0F02;font-size:17px;font-weight:600;font-family:inherit;margin-top:14px;cursor:pointer;
 }
 button.ghost{background:transparent;border:1px solid var(--line);color:var(--text)}
 button.bad{background:var(--bad)}
@@ -70,7 +72,7 @@ button:active{transform:translateY(1px)}
 .stack button{margin-top:8px}
 nav{
   position:fixed;bottom:0;inset-inline:0;z-index:6;display:grid;grid-auto-flow:column;
-  background:rgba(13,17,23,.97);border-top:1px solid var(--line);
+  background:rgba(15,14,13,.97);border-top:1px solid var(--line);
   padding-bottom:env(safe-area-inset-bottom);
 }
 nav button{
@@ -87,16 +89,16 @@ nav svg{width:22px;height:22px;stroke:currentColor;fill:none;stroke-width:1.7}
 .item small{color:var(--muted);font-size:13px}
 .pill{font-size:12px;padding:3px 9px;border-radius:999px;border:1px solid var(--line);
       color:var(--muted);white-space:nowrap}
-.pill.ok{color:var(--ok);border-color:#1d4429}
-.pill.warn{color:var(--warn);border-color:#4a3a11}
-.pill.bad{color:var(--bad);border-color:#5c2220}
-.bar{height:6px;border-radius:999px;background:#0b0f14;overflow:hidden;margin:10px 0 2px}
+.pill.ok{color:var(--ok);border-color:rgba(63,166,114,.4)}
+.pill.warn{color:var(--warn);border-color:rgba(217,177,59,.4)}
+.pill.bad{color:var(--bad);border-color:rgba(222,93,93,.4)}
+.bar{height:6px;border-radius:999px;background:var(--field);overflow:hidden;margin:10px 0 2px}
 .bar i{display:block;height:100%;background:var(--accent)}
 .note{font-size:13px;color:var(--muted);margin:8px 0 0}
 .msg{border-radius:10px;padding:10px 12px;margin:10px 0 0;font-size:14px;display:none}
 .msg.on{display:block}
-.msg.ok{background:#0f2d18;color:#7ee891}
-.msg.bad{background:#3a1614;color:#ffb4ae}
+.msg.ok{background:rgba(63,166,114,.15);color:#8FD9B2}
+.msg.bad{background:rgba(222,93,93,.15);color:#F0A8A8}
 .big{font-size:34px;font-weight:700;letter-spacing:.16em;text-align:center}
 .empty{color:var(--muted);font-size:14px;text-align:center;padding:26px 8px}
 svg.dwg{width:100%;height:auto;background:#fff;border-radius:10px}
@@ -452,11 +454,13 @@ def render(*, title: str, subtitle: str, base: str, language: Any = None) -> str
     """
     import json
 
+    from ..design.tokens import font_face_css
     from ..i18n import available, catalogue, get_locale
 
     locale = get_locale(language)
     return (
-        PAGE.replace("__TITLE__", title)
+        PAGE.replace("__FONT_FACE__", font_face_css(embed=True))
+        .replace("__TITLE__", title)
         .replace("__SUB__", subtitle)
         .replace("__BASE__", base)
         .replace("__LANG__", locale.code)

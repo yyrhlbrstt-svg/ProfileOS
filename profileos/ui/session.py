@@ -157,19 +157,19 @@ class Session:
         """One-line status summary for the status bar."""
         parts: list[str] = []
         if self.section_path:
-            parts.append(f"profile {self.section_path.stem}")
+            parts.append(f"פרופיל {self.section_path.stem}")
         if self.builds:
-            parts.append(f"{len(self.builds)} element(s), {self.total_area:.1f} m²")
+            parts.append(f"{len(self.builds)} פתחים, ⁦{self.total_area:.1f} m²⁩")
         if self.nesting_report:
             parts.append(
-                f"{self.nesting_report.total_bars} bars at "
-                f"{self.nesting_report.overall_yield_pct:.1f}%"
+                f"{self.nesting_report.total_bars} מוטות בניצולת "
+                f"⁦{self.nesting_report.overall_yield_pct:.1f}%⁩"
             )
         if self.quote:
-            parts.append(f"{self.quote.net_price:,.0f} {self.quote.currency}")
+            parts.append(f"⁦{self.quote.net_price:,.0f} {self.quote.currency}⁩")
         if self.work_order:
-            parts.append(f"{len(self.work_order)} items released")
-        return "  ·  ".join(parts) or "Ready"
+            parts.append(f"{len(self.work_order)} פריטים שוחררו")
+        return "  ·  ".join(parts) or "מוכן"
 
 
 __all__ = ["Session"]

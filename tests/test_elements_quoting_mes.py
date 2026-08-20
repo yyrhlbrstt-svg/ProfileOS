@@ -427,13 +427,13 @@ class TestProductionTracking:
     def test_stage_skip_is_refused_with_a_reason(self):
         item = ProductionItem(item_id="X", kind=ItemKind.PROFILE_PIECE)
         ok, reason = item.advance(Stage.SHIPPED)
-        assert not ok and "cannot go from" in reason
+        assert not ok and "אי אפשר לעבור" in reason
 
     def test_terminal_stage_cannot_move(self):
         item = ProductionItem(item_id="X", kind=ItemKind.PROFILE_PIECE)
         item.advance(Stage.SCRAPPED)
         ok, reason = item.advance(Stage.CUT)
-        assert not ok and "scrapped" in reason
+        assert not ok and "לא יכול לזוז" in reason
 
     def test_rework_returns_to_an_earlier_stage(self):
         item = ProductionItem(item_id="X", kind=ItemKind.PROFILE_PIECE)
@@ -450,7 +450,7 @@ class TestProductionTracking:
 
     def test_scan_of_unknown_code_is_reported(self, order):
         ok, message = order.scan("NOPE", Stage.CUT)
-        assert not ok and "Unknown code" in message
+        assert not ok and "קוד לא מוכר" in message
 
     def test_scan_advances_by_barcode(self, order):
         item = order.by_kind(ItemKind.PROFILE_PIECE)[0]

@@ -44,9 +44,16 @@ _log = get_logger("ui.pages")
 
 
 class Page(QWidget):
-    """Base page: a header, a body, and access to the shared session."""
+    """Base page: a header, a body, and access to the shared session.
+
+    ``title`` is the stable identifier code navigates by; ``hebrew`` is what
+    the person sees. The two are separate on purpose — the working language of
+    the interface is Hebrew, and renaming an identifier every time wording
+    improves would break every lookup.
+    """
 
     title = "Page"
+    hebrew = ""
     subtitle = ""
 
     def __init__(self, session: Any, palette: Palette, parent: QWidget | None = None) -> None:
@@ -58,7 +65,7 @@ class Page(QWidget):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
 
-        self.header = PageHeader(self.title, self.subtitle)
+        self.header = PageHeader(self.hebrew or self.title, self.subtitle)
         outer.addWidget(self.header)
 
         body = QWidget()
@@ -79,7 +86,7 @@ class Page(QWidget):
         _log.error("%s: %s", context or "Operation failed", exc, exc_info=True)
         box = QMessageBox(self)
         box.setIcon(QMessageBox.Icon.Warning)
-        box.setWindowTitle(context or "Operation failed")
+        box.setWindowTitle(context or "הפעולה נכשלה")
         box.setText(str(exc))
         if not isinstance(exc, ProfileOSError):
             box.setDetailedText(traceback.format_exc())
@@ -99,21 +106,22 @@ class ProfilePage(Page):
     """Import a DXF cross-section and analyse it."""
 
     title = "Profile"
-    subtitle = "Import a cross-section and compute its structural properties"
+    hebrew = "פרופיל"
+    subtitle = "ייבוא חתך מקטלוג היצרן וחישוב תכונות הנדסיות"
 
     def build(self) -> None:
-        self.open_button = QPushButton("Open DXF...")
+        self.open_button = QPushButton("פתח שרטוט...")
         self.open_button.setObjectName("Primary")
         self.open_button.clicked.connect(self.open_dxf)
         self.header.add_action(self.open_button)
 
-        self.sample_button = QPushButton("Load sample")
+        self.sample_button = QPushButton("טען דוגמה")
         self.sample_button.clicked.connect(self.load_sample)
         self.header.add_action(self.sample_button)
 
         self.stats = StatRow(
-            [("area", "Area mm²"), ("ix", "Iₓ mm⁴"), ("iy", "I_y mm⁴"),
-             ("j", "J mm⁴"), ("mass", "Mass kg/m")]
+            [("area", "שטח מ״מ²"), ("ix", "Iₓ מ״מ⁴"), ("iy", "I_y מ״מ⁴"),
+             ("j", "J מ״מ⁴"), ("mass", "משקל ק״ג/מ׳")]
         )
         self.body.addWidget(self.stats)
 
@@ -126,10 +134,10 @@ class ProfilePage(Page):
         side_layout.setContentsMargins(0, 0, 0, 0)
         side_layout.setSpacing(METRICS.space(3))
 
-        properties_card = Card("Section")
+        properties_card = Card("חתך")
         tabs = QTabWidget()
-        self.properties = DataTable(["Symbol", "Value", "Unit"])
-        tabs.addTab(self.properties, "Properties")
+        self.properties = DataTable(["סימן", "ערך", "יחידה"])
+        tabs.addTab(self.properties, "תכונות")
 
         features_panel = QWidget()
         features_layout = QVBoxLayout(features_panel)
@@ -139,31 +147,31 @@ class ProfilePage(Page):
         self.feature_summary.horizontalHeader().setVisible(False)
         self.feature_summary.setMaximumHeight(METRICS.row_height * 6 + 4)
         features_layout.addWidget(self.feature_summary)
-        self.features = DataTable(["Feature", "Mouth", "Depth", "Undercut"])
+        self.features = DataTable(["מאפיין", "פתח", "עומק", "חתירה"])
         features_layout.addWidget(self.features, 1)
         self.feature_notes = QLabel("")
         self.feature_notes.setWordWrap(True)
         self.feature_notes.setObjectName("Muted")
         features_layout.addWidget(self.feature_notes)
-        tabs.addTab(features_panel, "Features")
+        tabs.addTab(features_panel, "מאפיינים")
 
         properties_card.add(tabs, 1)
         side_layout.addWidget(properties_card, 1)
 
-        check_card = Card("Wind load check")
+        check_card = Card("בדיקת עומס רוח")
         fields = FieldGrid()
         self.span = QDoubleSpinBox(); self.span.setRange(100, 20000); self.span.setValue(3000); self.span.setSuffix(" mm")
         self.pressure = QDoubleSpinBox(); self.pressure.setRange(0.1, 10.0); self.pressure.setValue(1.2); self.pressure.setSingleStep(0.1); self.pressure.setSuffix(" kN/m²")
         self.tributary = QDoubleSpinBox(); self.tributary.setRange(100, 10000); self.tributary.setValue(1500); self.tributary.setSuffix(" mm")
-        fields.add("Span", self.span)
-        fields.add("Wind pressure", self.pressure)
-        fields.add("Tributary width", self.tributary)
+        fields.add("מפתח", self.span)
+        fields.add("לחץ רוח", self.pressure)
+        fields.add("רוחב תורם", self.tributary)
         check_card.add(fields)
 
-        run = QPushButton("Verify")
+        run = QPushButton("בדוק")
         run.clicked.connect(self.run_check)
         check_card.add(run)
-        self.checks = DataTable(["Check", "Demand", "Capacity", "Use"])
+        self.checks = DataTable(["בדיקה", "דרישה", "כושר", "ניצולת"])
         check_card.add(self.checks, 1)
         self.max_span = QLabel("—")
         self.max_span.setObjectName("StatLabel")
@@ -180,7 +188,7 @@ class ProfilePage(Page):
 
         sample = PROJECT_ROOT / "data" / "samples" / "mullion_mb70.dxf"
         if not sample.is_file():
-            self.report(ProfileOSError("Sample drawings not generated yet"), "No sample")
+            self.report(ProfileOSError("שרטוטי הדוגמה עדיין לא נוצרו"), "אין דוגמה")
             return
         self.load(sample)
 
@@ -188,9 +196,9 @@ class ProfilePage(Page):
         """A DWG is accepted too; it is converted on the way in."""
         path, _ = QFileDialog.getOpenFileName(
             self,
-            "Open profile drawing",
+            "פתיחת שרטוט פרופיל",
             "",
-            "Drawings (*.dxf *.dwg);;DXF (*.dxf);;DWG (*.dwg);;All files (*)",
+            "שרטוטים (*.dxf *.dwg);;DXF (*.dxf);;DWG (*.dwg);;כל הקבצים (*)",
         )
         if path:
             self.load(Path(path))
@@ -201,7 +209,7 @@ class ProfilePage(Page):
         try:
             properties, section = analyse_dxf(str(path), profile_id=path.stem)
         except Exception as exc:  # noqa: BLE001 - surfaced to the user
-            self.report(exc, "Could not analyse the DXF")
+            self.report(exc, "לא ניתן לנתח את השרטוט")
             return
 
         self.session.set_section(properties, section, path)
@@ -219,11 +227,11 @@ class ProfilePage(Page):
             "mass": (fmt(properties.mass_per_metre, 3), properties.material_id or ""),
         })
         self.header.set_subtitle(
-            f"{path.name} — {section.width:.0f} × {section.height:.0f} mm, "
-            f"{section.topology.chamber_count} chamber(s)"
+            f"{path.name} · \u2066{section.width:.0f} × {section.height:.0f}\u2069 מ״מ · "
+            f"{section.topology.chamber_count} תאים"
         )
         self.show_features(section, properties.material_id)
-        self.status(f"Analysed {path.name}")
+        self.status(f"נותח {path.name}")
         self.run_check()
 
     def show_features(self, section: Any, material: str | None) -> None:
@@ -238,7 +246,7 @@ class ProfilePage(Page):
             report = features_for_section(section, material=material)
         except Exception as exc:  # noqa: BLE001 - the section is still usable
             _log.warning("Feature recognition failed: %s", exc)
-            self.feature_summary.set_rows([["Feature recognition", "unavailable"]])
+            self.feature_summary.set_rows([["זיהוי מאפיינים", "לא זמין"]])
             self.features.set_rows([])
             self.feature_notes.setText(str(exc))
             return
@@ -252,7 +260,7 @@ class ProfilePage(Page):
         for index, feature in enumerate(report.features):
             pocket = feature.pocket
             rows.append([
-                f"{feature.kind.label(self.session.language)} · {feature.kind.value}",
+                feature.kind.label(self.session.language),
                 f"{pocket.mouth:.2f}",
                 f"{pocket.depth:.2f}",
                 f"{pocket.undercut:.2f}" if pocket.undercut > 0.4 else "—",
@@ -262,7 +270,7 @@ class ProfilePage(Page):
         self.features.set_rows(rows, numeric_columns=(1, 2, 3), colours=colours)
 
         notes = [strip.evidence and
-                 f"Polyamide strip {strip.width:.1f} mm ({', '.join(strip.evidence)})"
+                 f"פס פוליאמיד \u2066{strip.width:.1f}\u2069 מ״מ"
                  for strip in report.strips]
         notes.extend(report.warnings)
         self.feature_notes.setText("  ".join(note for note in notes if note))
@@ -286,23 +294,31 @@ class ProfilePage(Page):
                 tributary_width_mm=self.tributary.value(),
             )
         except ProfileOSError as exc:
-            self.report(exc, "Verification failed")
+            self.report(exc, "הבדיקה נכשלה")
             return
 
         colours: dict[tuple[int, int], str] = {}
         rows = []
+        check_names = {
+            "bending": "כפיפה", "shear": "גזירה", "deflection": "כפף",
+            "web crippling": "מעיכת דופן", "buckling": "קריסה",
+        }
         for index, entry in enumerate(check.results):
+            name = next(
+                (hebrew for key, hebrew in check_names.items() if key in entry.name.lower()),
+                entry.name,
+            )
             rows.append([
-                entry.name, f"{entry.demand:.4g}", f"{entry.capacity:.4g}",
+                name, f"{entry.demand:.4g}", f"{entry.capacity:.4g}",
                 f"{entry.utilisation * 100:.1f}%",
             ])
             colours[(index, 3)] = self.colours.success if entry.passes else self.colours.danger
         self.checks.set_rows(rows, numeric_columns=(1, 2, 3), colours=colours)
 
-        verdict = "passes" if check.passes else "FAILS"
+        verdict = "עומד" if check.passes else "נכשל"
         self.max_span.setText(
-            f"Member {verdict} at {self.span.value():.0f} mm. "
-            f"Maximum span for these loads: {limit:,.0f} mm."
+            f"הפרופיל {verdict} במפתח \u2066{self.span.value():.0f}\u2069 מ״מ. "
+            f"המפתח המרבי לעומסים אלה: \u2066{limit:,.0f}\u2069 מ״מ."
         )
 
 
@@ -314,44 +330,53 @@ class ElementPage(Page):
     """Design a window, door or curtain-wall element."""
 
     title = "Element"
-    subtitle = "Lay out an opening and derive its cut list, glass and hardware"
+    hebrew = "פתח"
+    subtitle = "תכנון פתח וגזירת רשימת חיתוך, זכוכית ופרזול"
 
     def build(self) -> None:
-        build_button = QPushButton("Build element")
+        build_button = QPushButton("בנה פתח")
         build_button.setObjectName("Primary")
         build_button.clicked.connect(self.build_element)
         self.header.add_action(build_button)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
 
-        form_card = Card("Opening")
+        form_card = Card("פתח")
         fields = FieldGrid()
         self.name = QComboBox(); self.name.setEditable(True); self.name.addItems(["W-04", "D-01", "CW-01"])
         self.width = QDoubleSpinBox(); self.width.setRange(200, 12000); self.width.setValue(2400); self.width.setSuffix(" mm")
         self.height = QDoubleSpinBox(); self.height.setRange(200, 6000); self.height.setValue(1800); self.height.setSuffix(" mm")
         self.quantity = QSpinBox(); self.quantity.setRange(1, 999); self.quantity.setValue(4)
-        self.kind = QComboBox(); self.kind.addItems(["window", "door", "curtain_wall", "shopfront", "sliding_unit"])
+        self.kind = QComboBox()
+        for kind_id, kind_he in [("window", "חלון"), ("door", "דלת"), ("curtain_wall", "קיר מסך"),
+                                 ("shopfront", "חזית מסחרית"), ("sliding_unit", "מערכת הזזה")]:
+            self.kind.addItem(kind_he, kind_id)
         self.columns = QSpinBox(); self.columns.setRange(1, 12); self.columns.setValue(3)
         self.rows = QSpinBox(); self.rows.setRange(1, 12); self.rows.setValue(1)
         self.sash_column = QSpinBox(); self.sash_column.setRange(0, 11); self.sash_column.setValue(1)
         self.sash_row = QSpinBox(); self.sash_row.setRange(0, 11); self.sash_row.setValue(0)
         self.sash_type = QComboBox()
-        self.sash_type.addItems(["fixed", "casement", "tilt_turn", "top_hung", "sliding", "door"])
-        self.sash_type.setCurrentText("tilt_turn")
+        from ..elements.model import OpeningType as _OT
+
+        for sash_kind in ("fixed", "casement", "tilt_turn", "top_hung", "sliding", "door"):
+            self.sash_type.addItem(_OT(sash_kind).label("he"), sash_kind)
+        self.sash_type.setCurrentIndex(2)
         self.sill = QDoubleSpinBox(); self.sill.setRange(0, 100000); self.sill.setValue(900); self.sill.setSuffix(" mm")
         self.glass = QComboBox()
 
         from ..glazing import STANDARD_BUILDUPS
 
+        hebrew_kinds = {"mono": "מונוליטית", "dgu": "בידודית", "tgu": "טריפל", "lam": "טריפלקס"}
         for key, unit in STANDARD_BUILDUPS.items():
-            self.glass.addItem(f"{unit.name}  (U {unit.u_value():.2f})", key)
+            kind = next((name for prefix, name in hebrew_kinds.items() if key.startswith(prefix)), "")
+            self.glass.addItem(f"{kind} \u2066{unit.describe()}\u2069 · U \u2066{unit.u_value():.2f}\u2069", key)
         self.glass.setCurrentIndex(min(1, self.glass.count() - 1))
 
         for label, widget in [
-            ("Name", self.name), ("Type", self.kind), ("Width", self.width),
-            ("Height", self.height), ("Quantity", self.quantity), ("Columns", self.columns),
-            ("Rows", self.rows), ("Sash column", self.sash_column), ("Sash row", self.sash_row),
-            ("Sash type", self.sash_type), ("Sill height", self.sill), ("Glass", self.glass),
+            ("שם", self.name), ("סוג", self.kind), ("רוחב", self.width),
+            ("גובה", self.height), ("כמות", self.quantity), ("עמודות", self.columns),
+            ("שורות", self.rows), ("עמודת כנף", self.sash_column), ("שורת כנף", self.sash_row),
+            ("סוג פתיחה", self.sash_type), ("גובה סף", self.sill), ("זכוכית", self.glass),
         ]:
             fields.add(label, widget)
         form_card.add(fields)
@@ -365,8 +390,8 @@ class ElementPage(Page):
         right_layout.setSpacing(METRICS.space(3))
 
         self.stats = StatRow([
-            ("pieces", "Pieces"), ("glass", "Glass m²"), ("mass", "Glass kg"),
-            ("gasket", "Gasket m"), ("hardware", "Hardware"),
+            ("pieces", "חלקים"), ("glass", "זכוכית מ״ר"), ("mass", "זכוכית ק״ג"),
+            ("gasket", "אטמים מ׳"), ("hardware", "פרזול"),
         ])
         right_layout.addWidget(self.stats)
 
@@ -387,16 +412,16 @@ class ElementPage(Page):
         lower_layout.addWidget(self.verdict)
 
         tabs = QTabWidget()
-        self.cuts = DataTable(["Role", "Profile", "Length", "Qty", "Angles"])
-        self.panes = DataTable(["Mark", "Size", "Specification", "Area m²", "Mass kg", "U", "Safety"])
-        self.hardware = DataTable(["Code", "Item", "Qty", "Unit"])
-        self.feasibility = DataTable(["", "Where", "What", "Measured", "Limit"])
+        self.cuts = DataTable(["תפקיד", "פרופיל", "אורך", "כמות", "זוויות"])
+        self.panes = DataTable(["סימון", "מידה", "מפרט", "שטח מ״ר", "משקל ק״ג", "U", "בטיחות"])
+        self.hardware = DataTable(["קוד", "פריט", "כמות", "יחידה"])
+        self.feasibility = DataTable(["", "היכן", "מה", "נמדד", "גבול"])
         self.warnings = QPlainTextEdit(); self.warnings.setReadOnly(True)
-        tabs.addTab(self.cuts, "Cut list")
-        tabs.addTab(self.panes, "Glass")
-        tabs.addTab(self.hardware, "Hardware")
-        tabs.addTab(self.feasibility, "Feasibility")
-        tabs.addTab(self.warnings, "Warnings")
+        tabs.addTab(self.cuts, "רשימת חיתוך")
+        tabs.addTab(self.panes, "זכוכית")
+        tabs.addTab(self.hardware, "פרזול")
+        tabs.addTab(self.feasibility, "ישימות")
+        tabs.addTab(self.warnings, "אזהרות")
         lower_layout.addWidget(tabs, 1)
         inner.addWidget(lower)
         inner.setStretchFactor(0, 3)
@@ -413,14 +438,14 @@ class ElementPage(Page):
         try:
             opening = Opening(
                 name=self.name.currentText() or "Element",
-                kind=ElementKind(self.kind.currentText()),
+                kind=ElementKind(self.kind.currentData()),
                 width=self.width.value(), height=self.height.value(),
                 quantity=self.quantity.value(),
                 glass_spec_id=self.glass.currentData(),
             )
             opening.divide_evenly(self.columns.value(), self.rows.value())
 
-            sash_type = OpeningType(self.sash_type.currentText())
+            sash_type = OpeningType(self.sash_type.currentData())
             if sash_type is not OpeningType.FIXED:
                 column = min(self.sash_column.value(), opening.column_count - 1)
                 row = min(self.sash_row.value(), opening.row_count - 1)
@@ -428,7 +453,7 @@ class ElementPage(Page):
 
             build = ElementBuilder().build(opening, sill_height=self.sill.value())
         except Exception as exc:  # noqa: BLE001
-            self.report(exc, "Could not build the element")
+            self.report(exc, "לא ניתן לבנות את הפתח")
             return
 
         self.session.add_build(build)
@@ -437,7 +462,7 @@ class ElementPage(Page):
         summary = build.summary()
         self.stats.update_many({
             "pieces": (str(summary["pieces"]), f"×{opening.quantity}"),
-            "glass": (f"{summary['glass_area_m2']:.2f}", f"{summary['glass_panes']} panes"),
+            "glass": (f"{summary['glass_area_m2']:.2f}", f"{summary['glass_panes']} שמשות"),
             "mass": (f"{summary['glass_mass_kg']:.0f}", ""),
             "gasket": (f"{summary['gasket_m']:.1f}", ""),
             "hardware": (str(summary["hardware_items"]), ""),
@@ -453,7 +478,7 @@ class ElementPage(Page):
         colours: dict[tuple[int, int], str] = {}
         pane_rows = []
         for index, panel in enumerate(build.glass):
-            safety = "ok" if panel.compliant else ("REQUIRED" if panel.safety_required else "—")
+            safety = "תקין" if panel.compliant else ("נדרשת בטיחותית" if panel.safety_required else "—")
             if not panel.compliant:
                 colours[(index, 6)] = self.colours.danger
             pane_rows.append([
@@ -467,13 +492,15 @@ class ElementPage(Page):
             [[h.code, h.name, h.quantity, h.unit] for h in build.hardware], numeric_columns=(2,)
         )
         self.warnings.setPlainText(
-            "\n".join(f"• {w}" for w in build.warnings) or "No warnings."
+            "\n".join(f"• {w}" for w in build.warnings) or "אין אזהרות."
         )
         self.show_feasibility(build)
         self.header.set_subtitle(
-            f"{opening.describe()} — {len(self.session.builds)} element(s) in the project"
+            f"{opening.name}: \u2066{opening.width:.0f} × {opening.height:.0f}\u2069 מ״מ · "
+            f"רשת \u2066{opening.column_count}×{opening.row_count}\u2069 · "
+            f"{len(self.session.builds)} פתחים בפרויקט"
         )
-        self.status(f"Built {opening.name}")
+        self.status(f"נבנה {opening.name}")
 
     @staticmethod
     def _finding_text(finding: Any) -> str:
@@ -517,21 +544,15 @@ class ElementPage(Page):
 
         if not report.blockers and not report.warnings:
             notes = len(report.findings)
-            tail = f" ({notes} note(s))" if notes else ""
-            self.verdict.setText(f"ניתן לייצור — buildable as drawn{tail}.")
+            tail = f" ({notes} הערות)" if notes else ""
+            self.verdict.setText(f"ניתן לייצור כמתוכנן{tail}")
             self.verdict.setStyleSheet(f"color: {self.colours.success};")
         elif report.can_be_made:
-            self.verdict.setText(
-                f"ניתן לייצור, עם {len(report.warnings)} הערות — buildable, "
-                f"{len(report.warnings)} thing(s) to look at."
-            )
+            self.verdict.setText(f"ניתן לייצור, עם {len(report.warnings)} נקודות לבדיקה")
             self.verdict.setStyleSheet(f"color: {self.colours.warning};")
         else:
             first = report.blockers[0]
-            self.verdict.setText(
-                f"{Severity.BLOCKER.label(self.session.language)}: "
-                f"{self._finding_text(first)}  —  {first.english}"
-            )
+            self.verdict.setText(f"לא ניתן לייצור: {self._finding_text(first)}")
             self.verdict.setStyleSheet(f"color: {self.colours.danger};")
 
 
@@ -543,29 +564,30 @@ class NestingPage(Page):
     """Optimise the project's cut list onto stock bars."""
 
     title = "Nesting"
-    subtitle = "Optimise the cutting list onto stock bars"
+    hebrew = "אופטימיזציית חיתוך"
+    subtitle = "שיבוץ רשימת החיתוך על מוטות המלאי"
 
     def build(self) -> None:
-        run = QPushButton("Optimise")
+        run = QPushButton("הרץ אופטימיזציה")
         run.setObjectName("Primary")
         run.clicked.connect(self.run)
         self.header.add_action(run)
 
         self.stats = StatRow([
-            ("bars", "Bars"), ("pieces", "Pieces"), ("yield", "Yield"),
-            ("waste", "Waste"), ("remnants", "Remnants"),
+            ("bars", "מוטות"), ("pieces", "חלקים"), ("yield", "ניצולת"),
+            ("waste", "פחת"), ("remnants", "שאריות"),
         ])
         self.body.addWidget(self.stats)
 
-        controls = Card("Parameters")
+        controls = Card("פרמטרים")
         row = QHBoxLayout()
         row.setSpacing(METRICS.space(4))
         self.kerf = QDoubleSpinBox(); self.kerf.setRange(0, 20); self.kerf.setValue(3.5); self.kerf.setSuffix(" mm")
         self.stock = QComboBox(); self.stock.setEditable(True); self.stock.addItems(["6000", "6500", "6000,6500", "7000"])
         self.strategy = QComboBox(); self.strategy.addItems(["auto", "milp", "ffd", "bfd"])
         self.profile = QComboBox()
-        for label, widget in [("Kerf", self.kerf), ("Stock lengths", self.stock),
-                              ("Strategy", self.strategy), ("Profile", self.profile)]:
+        for label, widget in [("עובי להב", self.kerf), ("אורכי מלאי", self.stock),
+                              ("אסטרטגיה", self.strategy), ("פרופיל", self.profile)]:
             caption = QLabel(label); caption.setObjectName("FieldLabel")
             row.addWidget(caption); row.addWidget(widget)
         row.addStretch(1)
@@ -580,7 +602,7 @@ class NestingPage(Page):
         scroll.setWidget(self.view)
         splitter.addWidget(scroll)
 
-        self.summary = DataTable(["Profile", "Bars", "Pieces", "Yield", "Waste", "Strategy", "Optimal"])
+        self.summary = DataTable(["פרופיל", "מוטות", "חלקים", "ניצולת", "פחת", "אסטרטגיה", "אופטימלי"])
         splitter.addWidget(self.summary)
         splitter.setStretchFactor(0, 3)
         splitter.setStretchFactor(1, 1)
@@ -590,8 +612,8 @@ class NestingPage(Page):
 
     def refresh(self) -> None:
         self.header.set_subtitle(
-            f"{len(self.session.builds)} element(s) queued"
-            if self.session.builds else "Design an element first"
+            f"{len(self.session.builds)} פתחים ממתינים"
+            if self.session.builds else "תכנן פתח קודם — בעמוד ״פתח״"
         )
 
     def run(self) -> None:
@@ -600,7 +622,7 @@ class NestingPage(Page):
         from ..nesting import nest_project
 
         if not self.session.builds:
-            self.report(ProfileOSError("No elements have been designed yet"), "Nothing to nest")
+            self.report(ProfileOSError("עדיין לא תוכננו פתחים. תכנן פתח בעמוד ״פתח״ ואז חזור לכאן."), "אין מה לשבץ")
             return
 
         from ..core.config import get_settings
@@ -612,25 +634,25 @@ class NestingPage(Page):
                 float(v) for v in self.stock.currentText().split(",") if v.strip()
             ]
         except ValueError:
-            self.report(ProfileOSError("Stock lengths must be numbers"), "Bad input")
+            self.report(ProfileOSError("אורכי המלאי חייבים להיות מספרים, מופרדים בפסיק"), "קלט שגוי")
             return
 
-        project = Project(name="Project", items=collect_cut_items(self.session.builds))
+        project = Project(name="פרויקט", items=collect_cut_items(self.session.builds))
         try:
             report = nest_project(project, strategy=self.strategy.currentText())
         except Exception as exc:  # noqa: BLE001
-            self.report(exc, "Nesting failed")
+            self.report(exc, "האופטימיזציה נכשלה")
             return
 
         self.session.set_nesting(project, report)
 
         remnants = sum(len(r.reusable_remnants(300.0)) for r in report.results.values())
         self.stats.update_many({
-            "bars": (str(report.total_bars), f"{report.total_stock_length / 1000:.1f} m"),
+            "bars": (str(report.total_bars), f"\u2066{report.total_stock_length / 1000:.1f} m\u2069"),
             "pieces": (str(sum(r.total_pieces for r in report.results.values())), ""),
-            "yield": (f"{report.overall_yield_pct:.2f}%", "target 97.5%"),
+            "yield": (f"{report.overall_yield_pct:.2f}%", "יעד 97.5%"),
             "waste": (f"{100 - report.overall_yield_pct:.2f}%", ""),
-            "remnants": (str(remnants), "reusable"),
+            "remnants": (str(remnants), "לשימוש חוזר"),
         })
 
         colours: dict[tuple[int, int], str] = {}
@@ -639,7 +661,7 @@ class NestingPage(Page):
             rows.append([
                 profile_id, result.bar_count, result.total_pieces,
                 f"{result.yield_pct:.2f}%", f"{result.waste_pct:.2f}%",
-                result.strategy, "yes" if result.optimal else "—",
+                result.strategy, "כן" if result.optimal else "—",
             ])
             colours[(index, 3)] = (
                 self.colours.success if result.yield_pct >= 95 else self.colours.warning
@@ -654,8 +676,8 @@ class NestingPage(Page):
             self._show_profile(self.profile.currentText())
 
         self.status(
-            f"{report.total_bars} bars at {report.overall_yield_pct:.2f}% yield "
-            f"in {report.solve_time_s:.2f} s"
+            f"{report.total_bars} מוטות בניצולת {report.overall_yield_pct:.2f}% "
+            f"תוך \u2066{report.solve_time_s:.2f}\u2069 שניות"
         )
 
     def _show_profile(self, profile_id: str) -> None:
@@ -673,19 +695,20 @@ class MachiningPage(Page):
     """Plan clamps and post machine code."""
 
     title = "Machining"
-    subtitle = "Plan the setup and post native machine code"
+    hebrew = "עיבוד CNC"
+    subtitle = "תכנון הקיבוע והפקת קוד למכונה"
 
     def build(self) -> None:
-        post = QPushButton("Post program")
+        post = QPushButton("הפק תוכנית")
         post.setObjectName("Primary")
         post.clicked.connect(self.post)
         self.header.add_action(post)
 
-        save = QPushButton("Save to disk...")
+        save = QPushButton("שמור לקובץ...")
         save.clicked.connect(self.save)
         self.header.add_action(save)
 
-        controls = Card("Job")
+        controls = Card("עבודה")
         row = QHBoxLayout(); row.setSpacing(METRICS.space(4))
         self.driver = QComboBox()
 
@@ -703,16 +726,16 @@ class MachiningPage(Page):
         self.angle_left = QDoubleSpinBox(); self.angle_left.setRange(15, 165); self.angle_left.setValue(45); self.angle_left.setSuffix("°")
         self.angle_right = QDoubleSpinBox(); self.angle_right.setRange(15, 165); self.angle_right.setValue(45); self.angle_right.setSuffix("°")
         self.clearance = QDoubleSpinBox(); self.clearance.setRange(0, 100); self.clearance.setValue(15); self.clearance.setSuffix(" mm")
-        for label, widget in [("Driver", self.driver), ("Bar length", self.length),
-                              ("Left angle", self.angle_left), ("Right angle", self.angle_right),
-                              ("Clamp clearance", self.clearance)]:
+        for label, widget in [("דרייבר", self.driver), ("אורך מוט", self.length),
+                              ("זווית שמאל", self.angle_left), ("זווית ימין", self.angle_right),
+                              ("מרווח מלחציים", self.clearance)]:
             caption = QLabel(label); caption.setObjectName("FieldLabel")
             row.addWidget(caption); row.addWidget(widget)
         row.addStretch(1)
         controls.add_layout(row)
         self.body.addWidget(controls)
 
-        setup_card = Card("Setup — operations above the bar, clamps below")
+        setup_card = Card("קיבוע — עיבודים מעל המוט, מלחציים מתחתיו")
         self.clamp_view = ClampView(self.colours)
         setup_card.add(self.clamp_view, 1)
         self.clamp_status = QLabel("—")
@@ -720,7 +743,7 @@ class MachiningPage(Page):
         setup_card.add(self.clamp_status)
         self.body.addWidget(setup_card, 1)
 
-        code_card = Card("Machine code")
+        code_card = Card("קוד מכונה")
         self.code = QPlainTextEdit(); self.code.setReadOnly(True)
         self.code.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
         code_card.add(self.code, 1)
@@ -778,15 +801,26 @@ class MachiningPage(Page):
             job.plan_all_clamps()
             plan = piece.clamp_plan
             self.clamp_view.set_piece(piece, plan.unresolved)
+            parts: list[str] = []
+            if plan.moves:
+                parts.append(
+                    f"{len(plan.moves)} מלחציים הוזזו "
+                    f"(\u2066{plan.total_travel:.0f}\u2069 מ״מ)"
+                )
+            if plan.disabled:
+                parts.append(f"{len(plan.disabled)} מלחציים נוטרלו")
+            if plan.unresolved:
+                parts.append(f"{len(plan.unresolved)} התנגשויות לא נפתרו")
+            outcome = "; ".join(parts) if parts else "אין הפרעות מלחציים; המלחציים נותרו במקומם."
             self.clamp_status.setText(
-                f"{len(before)} interference(s) detected before planning. {plan.summary()}"
-                + ("" if plan.ok else "  UNRESOLVED — do not run this program.")
+                f"זוהו {len(before)} הפרעות לפני התכנון. {outcome}"
+                + ("" if plan.ok else "  לא נפתר — אין להריץ את התוכנית הזו.")
             )
 
             results = get_driver(self.driver.currentData()).post(job)
         except Exception as exc:  # noqa: BLE001
             self.code.setPlainText("")
-            self.report(exc, "Posting failed")
+            self.report(exc, "ההפקה נכשלה")
             return
 
         self._results = results
@@ -794,20 +828,20 @@ class MachiningPage(Page):
         preview = results[0]
         self.code.setPlainText(preview.content[:40000])
         self.header.set_subtitle(
-            f"{preview.filename} — {preview.size:,} bytes, {len(job.all_operations())} operations"
+            f"{preview.filename} · \u2066{preview.size:,}\u2069 בתים · {len(job.all_operations())} עיבודים"
         )
-        self.status(f"Posted {len(results)} file(s) with {self.driver.currentData()}")
+        self.status(f"הופקו {len(results)} קבצים עם {self.driver.currentData()}")
 
     def save(self) -> None:
         if not self._results:
-            self.report(ProfileOSError("Post a program first"), "Nothing to save")
+            self.report(ProfileOSError("הפק תוכנית קודם"), "אין מה לשמור")
             return
-        directory = QFileDialog.getExistingDirectory(self, "Save machine code to")
+        directory = QFileDialog.getExistingDirectory(self, "שמירת קוד מכונה אל")
         if not directory:
             return
         for result in self._results:
             result.write(directory)
-        self.status(f"Wrote {len(self._results)} file(s) to {directory}")
+        self.status(f"נשמרו {len(self._results)} קבצים אל {directory}")
 
 
 # --------------------------------------------------------------------------- #
@@ -825,29 +859,30 @@ class QuotePage(Page):
     """
 
     title = "Quotation"
-    subtitle = "Price the elements, negotiate the lines, issue the document"
+    hebrew = "הצעת מחיר"
+    subtitle = "תמחור, משא ומתן על השורות והפקת המסמכים"
 
     def build(self) -> None:
         from PySide6.QtWidgets import QTableWidgetItem
 
         self._item_type = QTableWidgetItem
 
-        run = QPushButton("Price the project")
+        run = QPushButton("תמחר את הפרויקט")
         run.setObjectName("Primary")
         run.clicked.connect(self.start_draft)
         self.header.add_action(run)
 
-        save = QPushButton("Write documents...")
+        save = QPushButton("הפק מסמכים...")
         save.clicked.connect(self.save_documents)
         self.header.add_action(save)
 
         self.stats = StatRow([
-            ("net", "Net"), ("vat", "VAT"), ("gross", "Total due"),
-            ("margin", "Margin after edits"), ("kg", "Aluminium"),
+            ("net", "לפני מע״מ"), ("vat", "מע״מ"), ("gross", "סה״כ לתשלום"),
+            ("margin", "רווח אחרי עריכות"), ("kg", "אלומיניום"),
         ])
         self.body.addWidget(self.stats)
 
-        controls = Card("Specification and terms — every change reprices everything")
+        controls = Card("מפרט ותנאים — כל שינוי מתמחר הכל מחדש")
         row = QHBoxLayout(); row.setSpacing(METRICS.space(4))
         self.system = QComboBox()
         from ..systems import DIRECTORY
@@ -868,8 +903,8 @@ class QuotePage(Page):
             self.finish.addItem(f"{finish.hebrew} · {finish.name}", finish.id)
         self.finish.setCurrentIndex(1)
         self.margin = QDoubleSpinBox(); self.margin.setRange(0, 90); self.margin.setValue(25); self.margin.setSuffix(" %")
-        for label, widget in [("System", self.system), ("Glass", self.glass),
-                              ("Finish", self.finish), ("Margin", self.margin)]:
+        for label, widget in [("סדרה", self.system), ("זכוכית", self.glass),
+                              ("גמר", self.finish), ("רווח", self.margin)]:
             caption = QLabel(label); caption.setObjectName("FieldLabel")
             row.addWidget(caption); row.addWidget(widget)
         row.addStretch(1)
@@ -882,14 +917,14 @@ class QuotePage(Page):
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
 
-        lines_card = Card("Customer lines — double-click a unit price to pin it")
-        self.lines = DataTable(["Item", "Description", "Qty", "Unit price", "Total", ""])
+        lines_card = Card("שורות ללקוח — לחיצה כפולה על מחיר ליחידה מקבעת אותו")
+        self.lines = DataTable(["פריט", "תיאור", "כמות", "מחיר ליחידה", "סה״כ", ""])
         self.lines.setEditTriggers(
             self.lines.EditTrigger.DoubleClicked | self.lines.EditTrigger.EditKeyPressed
         )
         self.lines.itemChanged.connect(self._line_edited)
         lines_card.add(self.lines, 1)
-        undo = QPushButton("Undo last edit")
+        undo = QPushButton("בטל עריכה אחרונה")
         undo.clicked.connect(self.undo_edit)
         lines_card.add(undo)
         splitter.addWidget(lines_card)
@@ -899,16 +934,16 @@ class QuotePage(Page):
         side_layout.setContentsMargins(0, 0, 0, 0)
         side_layout.setSpacing(METRICS.space(3))
 
-        options_card = Card("Options")
-        self.options = DataTable(["Option", "Specification", "Net", "±"])
+        options_card = Card("חלופות")
+        self.options = DataTable(["חלופה", "מפרט", "לפני מע״מ", "±"])
         options_card.add(self.options, 1)
-        add_option = QPushButton("Add thermal option")
+        add_option = QPushButton("הוסף חלופה תרמית")
         add_option.clicked.connect(self.add_option)
         options_card.add(add_option)
         side_layout.addWidget(options_card, 1)
 
-        internal_card = Card("Internal — never printed on the customer copy")
-        self.waterfall = DataTable(["Item", "Amount"])
+        internal_card = Card("פנימי — לעולם לא מודפס בעותק הלקוח")
+        self.waterfall = DataTable(["רכיב", "סכום"])
         internal_card.add(self.waterfall, 1)
         self.notes = QPlainTextEdit(); self.notes.setReadOnly(True); self.notes.setMaximumHeight(100)
         internal_card.add(self.notes)
@@ -927,12 +962,12 @@ class QuotePage(Page):
         from ..quoting.editor import QuoteDraft
 
         if not self.session.builds:
-            self.report(ProfileOSError("No elements have been designed yet"), "Nothing to price")
+            self.report(ProfileOSError("עדיין לא תוכננו פתחים. תכנן פתח בעמוד ״פתח״ ואז חזור לכאן."), "אין מה לתמחר")
             return
         try:
             self.draft = QuoteDraft.start(
                 [build.opening for build in self.session.builds],
-                project_name="Project",
+                project_name="פרויקט",
                 system_id=self.system.currentData() or "generic",
                 glass_id=self.glass.currentData(),
                 finish_id=self.finish.currentData(),
@@ -942,11 +977,11 @@ class QuotePage(Page):
             )
             self.draft.set_margin(self.margin.value())
         except Exception as exc:  # noqa: BLE001
-            self.report(exc, "Costing failed")
+            self.report(exc, "התמחור נכשל")
             return
         self.session.set_quote(self.draft.variant().bom, self.draft.quotation)
         self.refresh_draft()
-        self.status(f"Priced {self.draft.quotation.quote_id}")
+        self.status(f"תומחר {self.draft.quotation.quote_id}")
 
     def apply_spec(self, *_args: Any) -> None:
         if self.draft is None or self._loading:
@@ -962,7 +997,7 @@ class QuotePage(Page):
             if abs(self.margin.value() - variant.policy.margin_pct) > 1e-9:
                 self.draft.set_margin(self.margin.value())
         except Exception as exc:  # noqa: BLE001
-            self.report(exc, "Could not reprice")
+            self.report(exc, "לא ניתן לתמחר מחדש")
             return
         self.refresh_draft()
 
@@ -976,7 +1011,7 @@ class QuotePage(Page):
         if self.draft is None:
             return
         entry = self.draft.undo()
-        self.status(f"Undid {entry.what}" if entry else "Nothing to undo")
+        self.status(f"בוטל: {entry.what}" if entry else "אין מה לבטל")
         self.refresh_draft()
 
     # -- line edits ----------------------------------------------------------- #
@@ -990,7 +1025,7 @@ class QuotePage(Page):
             value = float(str(item.text()).replace(",", ""))
             self.draft.set_line_price(code.text(), value, by="desktop")
         except Exception as exc:  # noqa: BLE001
-            self.report(exc, "Could not set the price")
+            self.report(exc, "לא ניתן לקבוע את המחיר")
         self.refresh_draft()
 
     # -- rendering -------------------------------------------------------------- #
@@ -1006,11 +1041,22 @@ class QuotePage(Page):
 
             rows = []
             colours: dict[tuple[int, int], str] = {}
+            openings = {opening.element_id: opening for opening in draft.openings}
+            kind_hebrew = {"window": "חלון", "door": "דלת", "curtain_wall": "קיר מסך",
+                           "shopfront": "חזית מסחרית", "sliding_unit": "מערכת הזזה"}
             for index, line in enumerate(draft.customer_lines()):
+                opening = openings.get(line["code"])
+                description = line["description"]
+                if opening is not None:
+                    kind = kind_hebrew.get(opening.kind.value, opening.kind.value)
+                    description = (
+                        f"{opening.name or opening.element_id} — {kind} "
+                        f"\u2066{opening.width:.0f} × {opening.height:.0f}\u2069 מ״מ"
+                    )
                 rows.append([
-                    line["code"], line["description"], f"{line['quantity']:g}",
+                    line["code"], description, f"{line['quantity']:g}",
                     f"{line['unit_price']:,.2f}", f"{line['total']:,.2f}",
-                    "edited" if line["edited"] else "",
+                    "נערך ידנית" if line["edited"] else "",
                 ])
                 if line["edited"]:
                     colours[(index, 5)] = self.colours.warning
@@ -1027,18 +1073,33 @@ class QuotePage(Page):
                 ])
             self.options.set_rows(option_rows, numeric_columns=(2, 3))
 
+            waterfall_hebrew = {
+                "Materials": "חומרים", "Labour": "עבודה", "Fixed charges": "עלויות קבועות",
+                "Total cost": "עלות כוללת", "Net price": "מחיר לפני מע״מ",
+                "Gross price": "מחיר כולל מע״מ",
+            }
+
+            def hebrew_row(label: str) -> str:
+                for english, hebrew in waterfall_hebrew.items():
+                    if label.startswith(english):
+                        return label.replace(english, hebrew)
+                return (label.replace("Contingency", "בצ״מ")
+                        .replace("Overhead", "תקורה")
+                        .replace("Delivery", "הובלה והתקנה")
+                        .replace("Margin", "רווח")
+                        .replace("Tax", "מע״מ"))
+
             self.waterfall.set_rows(
-                [[label, f"{value:,.2f}"] for label, value in sheet["breakdown"]],
+                [[hebrew_row(label), f"{value:,.2f}"] for label, value in sheet["breakdown"]],
                 numeric_columns=(1,),
             )
             warnings = list(sheet["warnings"])
             for override in sheet["overrides"]:
                 if override["stale"]:
                     warnings.append(
-                        f"{override['element']}: the computed price has moved since "
-                        "this line was pinned — look at it again."
+                        f"{override['element']}: השורה קובעה ידנית והחישוב זז מאז — יש להסתכל שוב."
                     )
-            self.notes.setPlainText("\n".join(f"• {w}" for w in warnings) or "No warnings.")
+            self.notes.setPlainText("\n".join(f"• {w}" for w in warnings) or "אין אזהרות.")
 
             self.stats.update_many({
                 "net": (f"{totals['net']:,.0f}", variant.policy.currency),
@@ -1048,19 +1109,19 @@ class QuotePage(Page):
                 "kg": (f"{variant.aluminium_kg:,.0f}", variant.finish.name),
             })
             self.header.set_subtitle(
-                f"{draft.quotation.quote_id} — valid until "
-                f"{draft.quotation.valid_until.isoformat()}"
+                f"{draft.quotation.quote_id} · בתוקף עד "
+                f"\u2066{draft.quotation.valid_until.strftime('%d/%m/%Y')}\u2069"
             )
         finally:
             self._loading = False
 
     def save_documents(self) -> None:
         if self.draft is None:
-            self.report(ProfileOSError("Price the project first"), "Nothing to write")
+            self.report(ProfileOSError("תמחר את הפרויקט קודם"), "אין מה להפיק")
             return
         from ..quoting.document import render_quotation
 
-        directory = QFileDialog.getExistingDirectory(self, "Write the quotation documents")
+        directory = QFileDialog.getExistingDirectory(self, "לאן לשמור את מסמכי ההצעה?")
         if not directory:
             return
         base = Path(directory) / self.draft.quotation.quote_id
@@ -1072,7 +1133,7 @@ class QuotePage(Page):
             render_quotation(self.draft, language=self.session.language, internal=True),
             encoding="utf-8",
         )
-        self.status(f"Wrote {customer.name} and {internal.name}")
+        self.status(f"נשמרו {customer.name} ו-{internal.name}")
 
 
 # --------------------------------------------------------------------------- #
@@ -1083,37 +1144,40 @@ class ShopFloorPage(Page):
     """Release the project to production and track it."""
 
     title = "Shop floor"
-    subtitle = "Release the work order and track production"
+    hebrew = "רצפת ייצור"
+    subtitle = "שחרור פקודת עבודה ומעקב ייצור"
 
     def build(self) -> None:
-        release = QPushButton("Release work order")
+        release = QPushButton("שחרר פקודת עבודה")
         release.setObjectName("Primary")
         release.clicked.connect(self.release)
         self.header.add_action(release)
 
-        card = QPushButton("Export job card...")
+        card = QPushButton("ייצא כרטיס עבודה...")
         card.clicked.connect(self.export_card)
         self.header.add_action(card)
 
         self.stats = StatRow([
-            ("items", "Items"), ("progress", "Progress"), ("stage", "Bottleneck"),
-            ("rework", "Rework"), ("scrap", "Scrapped"),
+            ("items", "פריטים"), ("progress", "התקדמות"), ("stage", "צוואר בקבוק"),
+            ("rework", "לתיקון"), ("scrap", "פסולים"),
         ])
         self.body.addWidget(self.stats)
 
-        scan_card = Card("Record a scan")
+        scan_card = Card("רישום סריקה")
         row = QHBoxLayout(); row.setSpacing(METRICS.space(3))
         self.item = QComboBox()
         self.stage = QComboBox()
 
         from ..mes import Stage
 
-        self.stage.addItems([s.value for s in Stage if s.value != "planned"])
+        for stage in Stage:
+            if stage.value != "planned":
+                self.stage.addItem(stage.label("he"), stage.value)
         self.operator = QComboBox(); self.operator.setEditable(True)
-        self.operator.addItems(["Dana", "Yossi", "Maya"])
-        scan = QPushButton("Scan")
+        self.operator.addItems(["דנה", "יוסי", "מאיה"])
+        scan = QPushButton("סרוק")
         scan.clicked.connect(self.scan)
-        for label, widget in [("Item", self.item), ("Stage", self.stage), ("Operator", self.operator)]:
+        for label, widget in [("פריט", self.item), ("שלב", self.stage), ("מפעיל", self.operator)]:
             caption = QLabel(label); caption.setObjectName("FieldLabel")
             row.addWidget(caption); row.addWidget(widget)
         row.addWidget(scan)
@@ -1124,8 +1188,8 @@ class ShopFloorPage(Page):
         scan_card.add(self.scan_result)
         self.body.addWidget(scan_card)
 
-        items_card = Card("Production items")
-        self.items = DataTable(["ID", "Kind", "Description", "Stage", "Progress"])
+        items_card = Card("פריטי ייצור")
+        self.items = DataTable(["מזהה", "סוג", "תיאור", "שלב", "התקדמות"])
         items_card.add(self.items, 1)
         self.body.addWidget(items_card, 1)
 
@@ -1133,28 +1197,28 @@ class ShopFloorPage(Page):
         from ..mes import work_order_from_builds
 
         if not self.session.builds:
-            self.report(ProfileOSError("No elements have been designed yet"), "Nothing to release")
+            self.report(ProfileOSError("עדיין לא תוכננו פתחים. תכנן פתח בעמוד ״פתח״ ואז חזור לכאן."), "אין מה לשחרר")
             return
-        order = work_order_from_builds(self.session.builds, project_id="PRJ", name="Project")
+        order = work_order_from_builds(self.session.builds, project_id="PRJ", name="פרויקט")
         self.session.set_work_order(order)
 
         self.item.clear()
         for entry in order.items:
             self.item.addItem(f"{entry.item_id} — {entry.description[:40]}", entry.item_id)
         self._refresh_items()
-        self.status(f"Released {len(order)} items as {order.work_order_id}")
+        self.status(f"שוחררו {len(order)} פריטים כ-{order.work_order_id}")
 
     def scan(self) -> None:
         from ..mes import Stage
 
         order = self.session.work_order
         if order is None:
-            self.report(ProfileOSError("Release a work order first"), "Nothing to scan")
+            self.report(ProfileOSError("שחרר פקודת עבודה קודם"), "אין מה לסרוק")
             return
 
         item_id = self.item.currentData()
         ok, message = order.scan(
-            item_id or "", Stage(self.stage.currentText()),
+            item_id or "", Stage(self.stage.currentData()),
             operator=self.operator.currentText(), station="UI",
         )
         colour = self.colours.success if ok else self.colours.danger
@@ -1166,9 +1230,13 @@ class ShopFloorPage(Page):
         order = self.session.work_order
         if order is None:
             return
+        kind_hebrew = {
+            "profile_piece": "פרופיל", "glass_pane": "זכוכית",
+            "element": "פתח", "hardware_kit": "ערכת פרזול",
+        }
         self.items.set_rows(
-            [[i.item_id, i.kind.value, i.description, i.stage.value,
-              f"{i.progress() * 100:.0f}%"] for i in order.items],
+            [[i.item_id, kind_hebrew.get(i.kind.value, i.kind.value), i.description,
+              i.stage.label("he"), f"{i.progress() * 100:.0f}%"] for i in order.items],
             numeric_columns=(4,),
         )
         summary = order.summary()
@@ -1176,8 +1244,8 @@ class ShopFloorPage(Page):
         self.stats.update_many({
             "items": (str(summary["items"]), order.work_order_id),
             "progress": (f"{summary['progress_pct']:.0f}%", ""),
-            "stage": (bottleneck[0].value if bottleneck else "—",
-                      f"{bottleneck[1]} items" if bottleneck else ""),
+            "stage": (bottleneck[0].label("he") if bottleneck else "—",
+                      f"{bottleneck[1]} פריטים" if bottleneck else ""),
             "rework": (str(summary["rework"]), ""),
             "scrap": (str(summary["scrapped"]), ""),
         })
@@ -1187,13 +1255,13 @@ class ShopFloorPage(Page):
 
         order = self.session.work_order
         if order is None:
-            self.report(ProfileOSError("Release a work order first"), "Nothing to export")
+            self.report(ProfileOSError("שחרר פקודת עבודה קודם"), "אין מה לייצא")
             return
-        path, _ = QFileDialog.getSaveFileName(self, "Save job card", "job-card.html", "HTML (*.html)")
+        path, _ = QFileDialog.getSaveFileName(self, "שמירת כרטיס עבודה", "job-card.html", "HTML (*.html)")
         if not path:
             return
         write_job_card(order, path, self.session.builds)
-        self.status(f"Wrote {path}")
+        self.status(f"נשמר {path}")
 
 
 
@@ -1206,25 +1274,26 @@ class GlassPage(Page):
     """Nest the project's glass onto stock sheets."""
 
     title = "Glass"
-    subtitle = "Nest the project's glazing onto stock sheets"
+    hebrew = "זכוכית"
+    subtitle = "שיבוץ הזיגוג על לוחות גלם"
 
     def build(self) -> None:
-        run = QPushButton("Nest glass")
+        run = QPushButton("שבץ זכוכית")
         run.setObjectName("Primary")
         run.clicked.connect(self.run)
         self.header.add_action(run)
 
-        export = QPushButton("Export maps")
+        export = QPushButton("ייצא מפות חיתוך")
         export.clicked.connect(self.export_maps)
         self.header.add_action(export)
 
         self.stats = StatRow([
-            ("sheets", "Sheets"), ("panes", "Panes"), ("yield", "Yield"),
-            ("offcuts", "Off-cuts"), ("stages", "Stages"),
+            ("sheets", "לוחות"), ("panes", "שמשות"), ("yield", "ניצולת"),
+            ("offcuts", "שאריות"), ("stages", "שלבי חיתוך"),
         ])
         self.body.addWidget(self.stats)
 
-        controls = Card("Machine and stock")
+        controls = Card("מכונה ומלאי")
         row = QHBoxLayout()
         row.setSpacing(METRICS.space(4))
 
@@ -1233,9 +1302,8 @@ class GlassPage(Page):
         self.kerf.setValue(0.0)
         self.kerf.setSuffix(" mm")
         self.kerf.setToolTip(
-            "A glass scoring wheel removes nothing — it scores and the piece is "
-            "snapped — so glass is zero. A beam saw cutting composite panel "
-            "removes its blade width, typically 4 to 5 mm."
+            "גלגלת חריטה לזכוכית לא מסירה חומר — חורטים ושוברים — לכן בזכוכית "
+            "הערך אפס. מסור לפאנל מרוכב מסיר את עובי הלהב, בדרך כלל 4–5 מ״מ."
         )
 
         self.trim = QDoubleSpinBox()
@@ -1243,31 +1311,30 @@ class GlassPage(Page):
         self.trim.setValue(20.0)
         self.trim.setSuffix(" mm")
         self.trim.setToolTip(
-            "Taken off all four sides before any pane is placed. Float glass "
-            "arrives with damaged arrises and, on coated stock, a deleted "
-            "coating band at the edge."
+            "מוסר מכל ארבע הצלעות לפני שיבוץ. לוח גלם מגיע עם שוליים פגומים, "
+            "ובזכוכית עם ציפוי — עם רצועת ציפוי מוסרת בקצה."
         )
 
         self.stages = QComboBox()
-        self.stages.addItems(["unlimited", "2", "3"])
+        self.stages.addItems(["ללא הגבלה", "2", "3"])
         self.stages.setToolTip(
-            "How many times the cutting line may turn. An unattended line "
-            "manages two: cross cuts into strips, then rip cuts into panes."
+            "כמה פעמים קו החיתוך רשאי לפנות. קו אוטומטי מסתדר עם שניים: "
+            "חיתוכי רוחב לפסים, ואז חיתוכי אורך לשמשות."
         )
 
         self.stock = QComboBox()
         self.stock.setEditable(True)
         self.stock.addItems([
-            "all standard", "3210x2250", "3210x2550", "6000x3210",
+            "כל הסטנדרטיים", "3210x2250", "3210x2550", "6000x3210",
             "3210x2250,6000x3210",
         ])
         self.stock.setToolTip(
-            "Sheet sizes as WIDTHxHEIGHT. Stock choice usually matters more "
-            "than the packing: a 2334 mm pane will not come off a 2250 plate."
+            "מידות לוח כרוחב×גובה. בחירת הגלם חשובה בדרך כלל יותר מהשיבוץ: "
+            "שמשה של 2334 מ״מ לא תצא מלוח 2250."
         )
 
-        for label, widget in [("Kerf", self.kerf), ("Edge trim", self.trim),
-                              ("Stages", self.stages), ("Stock", self.stock)]:
+        for label, widget in [("עובי להב", self.kerf), ("שולי קצה", self.trim),
+                              ("שלבים", self.stages), ("גלם", self.stock)]:
             caption = QLabel(label)
             caption.setObjectName("FieldLabel")
             row.addWidget(caption)
@@ -1285,7 +1352,7 @@ class GlassPage(Page):
         splitter.addWidget(scroll)
 
         self.summary = DataTable(
-            ["Build-up", "Panes", "Sheets", "Yield", "Off-cuts", "Stages", "Proof"]
+            ["מפרט", "שמשות", "לוחות", "ניצולת", "שאריות", "שלבים", "הוכחה"]
         )
         splitter.addWidget(self.summary)
         splitter.setStretchFactor(0, 3)
@@ -1295,7 +1362,7 @@ class GlassPage(Page):
         self.material = QComboBox()
         self.material.currentTextChanged.connect(self._show_material)
         picker = QHBoxLayout()
-        caption = QLabel("Build-up shown")
+        caption = QLabel("מפרט מוצג")
         caption.setObjectName("FieldLabel")
         picker.addWidget(caption)
         picker.addWidget(self.material, 1)
@@ -1307,9 +1374,9 @@ class GlassPage(Page):
             for build in self.session.builds
         )
         self.header.set_subtitle(
-            f"{panes} pane(s) from {len(self.session.builds)} element(s)"
+            f"{panes} שמשות מתוך {len(self.session.builds)} פתחים"
             if self.session.builds
-            else "Design an element first"
+            else "תכנן פתח קודם — בעמוד ״פתח״"
         )
 
     def _spec(self) -> Any:
@@ -1319,7 +1386,7 @@ class GlassPage(Page):
         return SheetSpec(
             kerf=self.kerf.value(),
             edge_trim=self.trim.value(),
-            stages=None if stages == "unlimited" else int(stages),
+            stages=None if stages == "ללא הגבלה" else int(stages),
         )
 
     def _stock(self) -> list[Any]:
@@ -1327,7 +1394,7 @@ class GlassPage(Page):
         from ..nesting.sheet import STANDARD_GLASS_STOCK
 
         text = self.stock.currentText().strip()
-        if not text or text == "all standard":
+        if not text or text == "כל הסטנדרטיים":
             return list(STANDARD_GLASS_STOCK)
         sheets: list[Any] = []
         for token in text.split(","):
@@ -1341,7 +1408,7 @@ class GlassPage(Page):
 
         if not self.session.builds:
             self.report(
-                ProfileOSError("No elements have been designed yet"), "Nothing to nest"
+                ProfileOSError("עדיין לא תוכננו פתחים. תכנן פתח בעמוד ״פתח״ ואז חזור לכאן."), "אין מה לשבץ"
             )
             return
 
@@ -1349,22 +1416,22 @@ class GlassPage(Page):
             stock = self._stock()
         except ValueError:
             self.report(
-                ProfileOSError("Sheet sizes must be written as WIDTHxHEIGHT"),
-                "Bad input",
+                ProfileOSError("מידות לוח נכתבות כרוחב×גובה, למשל 3210x2250"),
+                "קלט שגוי",
             )
             return
 
         parts = sheet_parts_from_builds(self.session.builds)
         if not parts:
             self.report(
-                ProfileOSError("These elements have no glass"), "Nothing to nest"
+                ProfileOSError("לפתחים האלה אין זכוכית"), "אין מה לשבץ"
             )
             return
 
         try:
             report = nest_project_glass(parts, stock=stock, spec=self._spec())
         except Exception as exc:  # noqa: BLE001
-            self.report(exc, "Glass nesting failed")
+            self.report(exc, "שיבוץ הזכוכית נכשל")
             return
 
         self.session.set_glass(report)
@@ -1376,20 +1443,20 @@ class GlassPage(Page):
         self.stats.update_many({
             "sheets": (str(report.sheet_count), f"{report.total_stock_area / 1e6:.1f} m²"),
             "panes": (str(sum(r.total_pieces for r in report.results.values())), ""),
-            "yield": (f"{report.yield_pct:.2f}%", f"{report.total_placed_area / 1e6:.1f} m² glazed"),
-            "offcuts": (str(offcuts), "back to the rack"),
-            "stages": (str(stages) if stages else "—", "cuts turn"),
+            "yield": (f"{report.yield_pct:.2f}%", f"\u2066{report.total_placed_area / 1e6:.1f} m²\u2069 זיגוג"),
+            "offcuts": (str(offcuts), "חוזרות למדף"),
+            "stages": (str(stages) if stages else "—", "פניות קו"),
         })
 
         colours: dict[tuple[int, int], str] = {}
         rows = []
         for index, (material, result) in enumerate(sorted(report.results.items())):
             if result.optimal:
-                proof = "optimal"
+                proof = "אופטימלי"
             elif result.metadata.get("optimal_within_stage_limit"):
-                proof = "optimal ≤3 stages"
+                proof = "אופטימלי עד 3 שלבים"
             else:
-                proof = f"bound {result.lower_bound}"
+                proof = f"חסם {result.lower_bound}"
             rows.append([
                 material, result.total_pieces, result.sheet_count,
                 f"{result.yield_pct:.2f}%", len(result.reusable_offcuts()),
@@ -1410,7 +1477,7 @@ class GlassPage(Page):
         for warning in report.warnings:
             self.status(warning)
         self.status(
-            f"{report.sheet_count} sheets at {report.yield_pct:.2f}% yield"
+            f"{report.sheet_count} לוחות בניצולת {report.yield_pct:.2f}%"
         )
 
     def _show_material(self, material: str) -> None:
@@ -1425,10 +1492,10 @@ class GlassPage(Page):
         report = self.session.glass_report
         if report is None:
             self.report(
-                ProfileOSError("Nest the glass first"), "Nothing to export"
+                ProfileOSError("שבץ את הזכוכית קודם"), "אין מה לייצא"
             )
             return
-        folder = QFileDialog.getExistingDirectory(self, "Where should the maps go?")
+        folder = QFileDialog.getExistingDirectory(self, "לאן לשמור את מפות החיתוך?")
         if not folder:
             return
         target = Path(folder)
@@ -1439,7 +1506,7 @@ class GlassPage(Page):
                 path = target / f"{safe}-sheet{layout.sheet_index + 1:02d}.svg"
                 path.write_text(render_layout_svg(layout), encoding="utf-8")
                 written += 1
-        self.status(f"Wrote {written} cutting map(s) to {target}")
+        self.status(f"נשמרו {written} מפות חיתוך אל {target}")
 
 
 # --------------------------------------------------------------------------- #
@@ -1450,39 +1517,40 @@ class CataloguePage(Page):
     """Build an owned profile library from what suppliers publish."""
 
     title = "Catalogue"
-    subtitle = "Read supplier drawings and tables into a library you own"
+    hebrew = "קטלוג"
+    subtitle = "קריאת שרטוטי יצרן וטבלאות לספרייה שבבעלותך"
 
     def build(self) -> None:
-        run = QPushButton("Ingest")
+        run = QPushButton("קליטה")
         run.setObjectName("Primary")
         run.clicked.connect(self.run)
         self.header.add_action(run)
 
-        export = QPushButton("Save as plugin")
+        export = QPushButton("שמירה כתוסף")
         export.clicked.connect(self.export_plugin)
         self.header.add_action(export)
 
         self.stats = StatRow([
-            ("articles", "Articles"), ("geometry", "With geometry"),
-            ("verified", "Verified"), ("conflicts", "Conflicts"),
-            ("unmatched", "Unmatched"),
+            ("articles", "פריטים"), ("geometry", "עם גאומטריה"),
+            ("verified", "מאומתים"), ("conflicts", "סתירות"),
+            ("unmatched", "ללא התאמה"),
         ])
         self.body.addWidget(self.stats)
 
-        sources = Card("Sources")
+        sources = Card("מקורות")
         grid = FieldGrid()
 
-        self.drawings_label = QLabel("no folder chosen")
+        self.drawings_label = QLabel("לא נבחרה תיקייה")
         self.drawings_label.setObjectName("FieldValue")
-        pick_drawings = QPushButton("Choose DXF folder…")
+        pick_drawings = QPushButton("בחירת תיקיית DXF…")
         pick_drawings.clicked.connect(self._pick_drawings)
         drawings_row = QHBoxLayout()
         drawings_row.addWidget(pick_drawings)
         drawings_row.addWidget(self.drawings_label, 1)
 
-        self.table_label = QLabel("no table chosen")
+        self.table_label = QLabel("לא נבחרה טבלה")
         self.table_label.setObjectName("FieldValue")
-        pick_table = QPushButton("Choose catalogue…")
+        pick_table = QPushButton("בחירת קטלוג…")
         pick_table.clicked.connect(self._pick_table)
         table_row = QHBoxLayout()
         table_row.addWidget(pick_table)
@@ -1495,7 +1563,7 @@ class CataloguePage(Page):
         sources.add_layout(drawings_row)
         sources.add_layout(table_row)
         series_row = QHBoxLayout()
-        caption = QLabel("System series")
+        caption = QLabel("סדרת מערכת")
         caption.setObjectName("FieldLabel")
         series_row.addWidget(caption)
         series_row.addWidget(self.series)
@@ -1505,11 +1573,9 @@ class CataloguePage(Page):
         self.body.addWidget(sources)
 
         note = QLabel(
-            "Every drawing is measured by the geometry and structural engines "
-            "and set against the supplier's published table. Agreement is "
-            "evidence; a disagreement is reported rather than resolved, and the "
-            "article is kept out of the library until somebody decides which "
-            "figure is right."
+            "כל שרטוט נמדד על ידי מנועי הגאומטריה והחוזק ומושווה מול הטבלה "
+            "שהיצרן פרסם. הסכמה היא ראיה; אי-הסכמה מדווחת ולא מוכרעת, "
+            "והפריט נשאר מחוץ לספרייה עד שמישהו מחליט איזה נתון נכון."
         )
         note.setObjectName("Hint")
         note.setWordWrap(True)
@@ -1517,7 +1583,8 @@ class CataloguePage(Page):
 
         splitter = QSplitter(Qt.Orientation.Vertical)
         self.entries = DataTable(
-            ["Article", "Name", "Status", "Checked", "Conflicts", "Drawing"]
+            ["פריט", "שם", "סטטוס", "נבדקו", "סתירות", "שרטוט"],
+            empty_text="בחר מקורות ולחץ ״קליטה״ כדי לבנות את הספרייה",
         )
         splitter.addWidget(self.entries)
         self.detail = QPlainTextEdit()
@@ -1534,14 +1601,14 @@ class CataloguePage(Page):
         self._table: Path | None = None
 
     def _pick_drawings(self) -> None:
-        folder = QFileDialog.getExistingDirectory(self, "Supplier DXF folder")
+        folder = QFileDialog.getExistingDirectory(self, "תיקיית DXF של היצרן")
         if folder:
             self._drawings = Path(folder)
             self.drawings_label.setText(str(self._drawings))
 
     def _pick_table(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
-            self, "Supplier catalogue", "", "Catalogues (*.pdf *.csv *.tsv *.txt)"
+            self, "קטלוג יצרן", "", "קטלוגים (*.pdf *.csv *.tsv *.txt)"
         )
         if path:
             self._table = Path(path)
@@ -1552,8 +1619,8 @@ class CataloguePage(Page):
 
         if self._drawings is None and self._table is None:
             self.report(
-                ProfileOSError("Choose a drawing folder, a catalogue table, or both"),
-                "Nothing to ingest",
+                ProfileOSError("בחר תיקיית שרטוטים, טבלת קטלוג, או שניהם"),
+                "אין מה לקלוט",
             )
             return
 
@@ -1564,19 +1631,19 @@ class CataloguePage(Page):
                 system_series=self.series.currentText() or "unknown",
             )
         except Exception as exc:  # noqa: BLE001
-            self.report(exc, "Ingestion failed")
+            self.report(exc, "הקליטה נכשלה")
             return
 
         self.session.set_catalogue(report)
         stats = report.summary()
         self.stats.update_many({
             "articles": (str(stats["entries"]), ""),
-            "geometry": (str(stats["with_geometry"]), "measured from DXF"),
-            "verified": (str(stats["verified"]), "table agrees"),
-            "conflicts": (str(stats["conflicts"]), "table disagrees"),
+            "geometry": (str(stats["with_geometry"]), "נמדדו מ-DXF"),
+            "verified": (str(stats["verified"]), "הטבלה מסכימה"),
+            "conflicts": (str(stats["conflicts"]), "הטבלה חולקת"),
             "unmatched": (
                 str(stats["unmatched_drawings"] + stats["unmatched_rows"]),
-                "no counterpart",
+                "בלי מקבילה",
             ),
         })
 
@@ -1587,10 +1654,14 @@ class CataloguePage(Page):
             "conflict": self.colours.danger,
             "unverified": self.colours.warning,
         }
+        status_hebrew = {
+            "verified": "מאומת", "conflict": "סתירה", "unverified": "לא מאומת",
+        }
         for index, entry in enumerate(report.entries):
             summary = entry.summary()
             rows.append([
-                entry.profile_id, (entry.name or "")[:40], entry.status,
+                entry.profile_id, (entry.name or "")[:40],
+                status_hebrew.get(entry.status, entry.status),
                 summary["checked"], summary["conflicts"] or "—",
                 Path(entry.dxf_path).name if entry.dxf_path else "—",
             ])
@@ -1601,8 +1672,8 @@ class CataloguePage(Page):
         for message in report.errors[:5]:
             self.status(message)
         self.status(
-            f"{stats['entries']} articles, {stats['verified']} verified, "
-            f"{stats['conflicts']} in conflict"
+            f"{stats['entries']} פריטים, {stats['verified']} מאומתים, "
+            f"{stats['conflicts']} בסתירה"
         )
 
     def _show_detail(self) -> None:
@@ -1615,25 +1686,28 @@ class CataloguePage(Page):
             return
         entry = report.entries[index]
 
-        lines = [f"{entry.profile_id}  —  {entry.name or 'unnamed'}", ""]
+        lines = [f"{entry.profile_id}  —  {entry.name or 'ללא שם'}", ""]
         if entry.dxf_path:
-            lines.append(f"drawing : {entry.dxf_path}")
+            lines.append(f"שרטוט : {entry.dxf_path}")
         if entry.pdf_page:
-            lines.append(f"page    : {entry.pdf_page}")
-        lines.append(f"status  : {entry.status}")
+            lines.append(f"עמוד  : {entry.pdf_page}")
+        status_hebrew = {
+            "verified": "מאומת", "conflict": "סתירה", "unverified": "לא מאומת",
+        }
+        lines.append(f"סטטוס : {status_hebrew.get(entry.status, entry.status)}")
         lines.append("")
         if entry.checks:
-            lines.append("published vs measured")
+            lines.append("מפורסם מול נמדד")
             for check in entry.checks:
-                mark = {"agree": "  ok", "disagree": "CONFLICT", "unchecked": "   -"}[
+                mark = {"agree": "תקין", "disagree": "סתירה", "unchecked": "  -"}[
                     str(check.status)
                 ]
                 lines.append(f"  {mark}  {check.describe()}")
         else:
-            lines.append("nothing was compared: only one source had figures")
+            lines.append("לא הושוו נתונים: רק מקור אחד סיפק מספרים")
         if entry.warnings:
             lines.append("")
-            lines.append("warnings")
+            lines.append("אזהרות")
             lines.extend(f"  - {warning}" for warning in entry.warnings)
         self.detail.setPlainText("\n".join(lines))
 
@@ -1642,10 +1716,10 @@ class CataloguePage(Page):
 
         report = self.session.catalogue_report
         if report is None:
-            self.report(ProfileOSError("Ingest a catalogue first"), "Nothing to save")
+            self.report(ProfileOSError("קלוט קטלוג קודם"), "אין מה לשמור")
             return
         path, _ = QFileDialog.getSaveFileName(
-            self, "Save profile library", "profile-library.json", "JSON (*.json)"
+            self, "שמירת ספריית פרופילים", "profile-library.json", "JSON (*.json)"
         )
         if not path:
             return
@@ -1659,8 +1733,8 @@ class CataloguePage(Page):
             json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8"
         )
         self.status(
-            f"Wrote {len(payload['profiles'])} profiles to {target}; "
-            f"{len(payload['excluded_for_conflict'])} withheld for conflict"
+            f"נשמרו {len(payload['profiles'])} פרופילים אל {target}; "
+            f"{len(payload['excluded_for_conflict'])} הושהו בגלל סתירה"
         )
 
 
@@ -1672,19 +1746,20 @@ class SystemPage(Page):
     """Updates, licence, brand, plugins and the capability comparison."""
 
     title = "System"
-    subtitle = "Updates, licence, plugins and what this suite covers"
+    hebrew = "מערכת"
+    subtitle = "עדכונים, רישוי, תוספים והיקף התוכנה"
 
     def build(self) -> None:
-        check = QPushButton("Check for updates")
+        check = QPushButton("בדיקת עדכונים")
         check.setObjectName("Primary")
         check.clicked.connect(self.check_updates)
         self.header.add_action(check)
 
         tabs = QTabWidget()
-        tabs.addTab(self._updates_tab(), "Updates")
-        tabs.addTab(self._licence_tab(), "Licence")
-        tabs.addTab(self._brand_tab(), "Operator")
-        tabs.addTab(self._plugins_tab(), "Plugins")
+        tabs.addTab(self._updates_tab(), "עדכונים")
+        tabs.addTab(self._licence_tab(), "רישיון")
+        tabs.addTab(self._brand_tab(), "מפעיל")
+        tabs.addTab(self._plugins_tab(), "תוספים")
 
         # The comparison verifies every capability claim, which means importing
         # every engine in the suite — OR-Tools, sectionproperties, FastAPI and
@@ -1696,7 +1771,7 @@ class SystemPage(Page):
         self._compare_layout.setContentsMargins(0, METRICS.space(3), 0, 0)
         self._compare_layout.setSpacing(METRICS.space(3))
         self._compare_built = False
-        self._compare_index = tabs.addTab(self._compare_page, "Comparison")
+        self._compare_index = tabs.addTab(self._compare_page, "השוואה")
         tabs.currentChanged.connect(self._tab_changed)
 
         self.tabs = tabs
@@ -1714,11 +1789,10 @@ class SystemPage(Page):
         layout.setSpacing(METRICS.space(3))
 
         note = QLabel(
-            "Content updates are signed manifests. Each package is downloaded, "
-            "its signature checked and its contents validated before anything "
-            "is installed; the batch is then installed atomically and rolled "
-            "back entire if any part of it fails. Profile systems, rules and "
-            "price lists go live without restarting."
+            "עדכוני תוכן הם מניפסטים חתומים. כל חבילה מורדת, החתימה שלה "
+            "נבדקת והתוכן מאומת לפני שמשהו מותקן; החבילות מותקנות באופן "
+            "אטומי ומוחזרות במלואן אם חלק כלשהו נכשל. מערכות פרופיל, כללים "
+            "ומחירונים נכנסים לתוקף בלי הפעלה מחדש."
         )
         note.setObjectName("Hint")
         note.setWordWrap(True)
@@ -1727,50 +1801,53 @@ class SystemPage(Page):
         source_row = QHBoxLayout()
         source_row.setSpacing(METRICS.space(3))
         self.update_source = QLineEdit()
-        self.update_source.setPlaceholderText("https://updates.example.com/ or a folder")
-        self.update_key_label = QLabel("no key chosen")
+        self.update_source.setPlaceholderText("https://updates.example.com/ או תיקייה")
+        self.update_key_label = QLabel("לא נבחר מפתח")
         self.update_key_label.setObjectName("FieldValue")
-        pick_key = QPushButton("Issuer key…")
+        pick_key = QPushButton("מפתח מנפיק…")
         pick_key.clicked.connect(self._pick_update_key)
         self.update_channel = QComboBox()
         self.update_channel.addItems(["stable", "beta", "canary"])
 
-        for label, widget in [("Source", self.update_source)]:
+        for label, widget in [("מקור", self.update_source)]:
             caption = QLabel(label)
             caption.setObjectName("FieldLabel")
             source_row.addWidget(caption)
             source_row.addWidget(widget, 1)
         source_row.addWidget(pick_key)
         source_row.addWidget(self.update_key_label)
-        channel_caption = QLabel("Channel")
+        channel_caption = QLabel("ערוץ")
         channel_caption.setObjectName("FieldLabel")
         source_row.addWidget(channel_caption)
         source_row.addWidget(self.update_channel)
         layout.addLayout(source_row)
 
         key_note = QLabel(
-            "Without the issuer's public key nothing can be installed: an "
-            "unsigned manifest is refused rather than trusted, which is the "
-            "whole point of the mechanism."
+            "בלי המפתח הציבורי של המנפיק אי אפשר להתקין דבר: מניפסט לא חתום "
+            "נדחה במקום להיות מהימן — וזו כל מטרת המנגנון."
         )
         key_note.setObjectName("Hint")
         key_note.setWordWrap(True)
         layout.addWidget(key_note)
 
         self.update_table = DataTable(
-            ["Package", "Version", "Kind", "Size", "Description"]
+            ["חבילה", "גרסה", "סוג", "גודל", "תיאור"],
+            empty_text="לחץ ״בדיקת עדכונים״ כדי לראות חבילות זמינות",
         )
         layout.addWidget(self.update_table, 1)
 
-        self.apply_button = QPushButton("Apply updates")
+        self.apply_button = QPushButton("החלת עדכונים")
         self.apply_button.setEnabled(False)
         self.apply_button.clicked.connect(self.apply_updates)
         layout.addWidget(self.apply_button)
 
-        installed_title = QLabel("INSTALLED CONTENT")
+        installed_title = QLabel("תוכן מותקן")
         installed_title.setObjectName("CardTitle")
         layout.addWidget(installed_title)
-        self.installed_table = DataTable(["Package", "Version", "Kind", "Installed"])
+        self.installed_table = DataTable(
+            ["חבילה", "גרסה", "סוג", "הותקן"],
+            empty_text="עדיין לא הותקן תוכן",
+        )
         layout.addWidget(self.installed_table, 1)
 
         self._update_key: Path | None = None
@@ -1780,7 +1857,7 @@ class SystemPage(Page):
 
     def _pick_update_key(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
-            self, "Issuer public key", "", "PEM keys (*.pem *.pub);;All files (*)"
+            self, "מפתח ציבורי של המנפיק", "", "מפתחות PEM (*.pem *.pub);;כל הקבצים (*)"
         )
         if path:
             self._update_key = Path(path)
@@ -1805,7 +1882,7 @@ class SystemPage(Page):
         if need_key:
             if self._update_key is None or not self._update_key.is_file():
                 raise ProfileOSError(
-                    "Choose the issuer's public key before checking for updates"
+                    "בחר את המפתח הציבורי של המנפיק לפני בדיקת עדכונים"
                 )
             verify_key = VerifyKey.from_pem(self._update_key.read_bytes())
         elif self._update_key is not None and self._update_key.is_file():
@@ -1833,7 +1910,7 @@ class SystemPage(Page):
             engine = self._engine(need_key=False)
             installed = engine.installed()
         except Exception as exc:  # noqa: BLE001
-            self.installed_table.set_rows([["error", "", "", str(exc)]])
+            self.installed_table.set_rows([["שגיאה", "", "", str(exc)]])
             return
         self.installed_table.set_rows(
             [
@@ -1847,7 +1924,7 @@ class SystemPage(Page):
             engine = self._engine(need_key=True)
             plan = engine.check()
         except Exception as exc:  # noqa: BLE001
-            self.report(exc, "Update check failed")
+            self.report(exc, "בדיקת העדכונים נכשלה")
             return
 
         self._update_plan = plan
@@ -1867,38 +1944,38 @@ class SystemPage(Page):
         self.apply_button.setEnabled(plan.has_updates)
         if plan.skipped:
             for package_id, reason in plan.skipped[:3]:
-                self.status(f"skipped {package_id}: {reason}")
+                self.status(f"דולג {package_id}: {reason}")
         self.status(
-            f"{len(plan.packages)} update(s), {plan.total_size / 1024:.0f} kB"
+            f"{len(plan.packages)} עדכונים, ⁦{plan.total_size / 1024:.0f} kB⁩"
             if plan.has_updates
-            else "Everything is up to date"
+            else "הכול מעודכן"
         )
 
     def apply_updates(self) -> None:
         if self._update_plan is None or not self._update_plan.has_updates:
-            self.report(ProfileOSError("Check for updates first"), "Nothing to apply")
+            self.report(ProfileOSError("בדוק עדכונים קודם"), "אין מה להחיל")
             return
         try:
             engine = self._engine(need_key=True)
             result = engine.apply(self._update_plan)
         except Exception as exc:  # noqa: BLE001
-            self.report(exc, "Update failed and was rolled back")
+            self.report(exc, "העדכון נכשל והוחזר לאחור")
             return
 
         if result.ok:
             self.status(
-                f"Applied {len(result.applied)} update(s) in "
-                f"{result.duration_s:.2f} s, {result.reloaded} reloaded live"
+                f"הוחלו {len(result.applied)} עדכונים תוך "
+                f"⁦{result.duration_s:.2f} ש׳⁩, {result.reloaded} נטענו חיים"
             )
         else:
             detail = "; ".join(f"{pid}: {why}" for pid, why in result.failed)
             self.report(
                 ProfileOSError(
-                    f"Update failed and was rolled back — {detail}"
+                    f"העדכון נכשל והוחזר לאחור — {detail}"
                     if result.rolled_back
-                    else f"Update partly failed — {detail}"
+                    else f"העדכון נכשל חלקית — {detail}"
                 ),
-                "Update failed",
+                "העדכון נכשל",
             )
         for warning in result.warnings[:3]:
             self.status(warning)
@@ -1920,11 +1997,11 @@ class SystemPage(Page):
 
             fingerprint = current_fingerprint()
             for label, text in [
-                ("Machine fingerprint", fingerprint.short),
-                ("Traits recorded", str(len(fingerprint.traits))),
+                ("טביעת אצבע של המחשב", fingerprint.short),
+                ("מאפיינים שנרשמו", str(len(fingerprint.traits))),
                 (
-                    "Traits",
-                    ", ".join(trait.name for trait in fingerprint.traits) or "none",
+                    "מאפיינים",
+                    ", ".join(trait.name for trait in fingerprint.traits) or "אין",
                 ),
             ]:
                 value = QLabel(text)
@@ -1932,19 +2009,18 @@ class SystemPage(Page):
                 value.setWordWrap(True)
                 grid.add(label, value)
         except Exception as exc:  # noqa: BLE001
-            value = QLabel(f"unavailable: {exc}")
+            value = QLabel(f"לא זמין: {exc}")
             value.setObjectName("FieldValue")
-            grid.add("Machine fingerprint", value)
+            grid.add("טביעת אצבע של המחשב", value)
         layout.addWidget(grid)
 
         note = QLabel(
-            "A licence is sealed to this machine's fingerprint with AES-256-GCM "
-            "and verified entirely offline. The fingerprint is a weighted set "
-            "of traits rather than one serial number, so replacing a disk does "
-            "not invalidate the licence, and only trait digests are stored — "
-            "the licence file never carries a MAC address or serial in the "
-            "clear. Past expiry the software degrades to read-only for the "
-            "grace period rather than locking the shop out mid-job."
+            "הרישיון נחתם לטביעת האצבע של המחשב הזה ב-AES-256-GCM ומאומת "
+            "כולו במנותק מהרשת. טביעת האצבע היא סט משוקלל של מאפיינים ולא "
+            "מספר סידורי אחד, כך שהחלפת דיסק לא מבטלת את הרישיון, ורק "
+            "תקצירי מאפיינים נשמרים — קובץ הרישיון לעולם לא נושא כתובת MAC "
+            "או מספר סידורי גלויים. אחרי פקיעה התוכנה עוברת לקריאה בלבד "
+            "לתקופת החסד במקום לנעול את המפעל באמצע עבודה."
         )
         note.setObjectName("Hint")
         note.setWordWrap(True)
@@ -1955,16 +2031,16 @@ class SystemPage(Page):
     # -- brand ---------------------------------------------------------------- #
     #: Field order on the operator tab, and where each value comes from.
     _BRAND_FIELDS: tuple[tuple[str, str], ...] = (
-        ("Name", "display_name"),
-        ("Legal name", "legal_name"),
-        ("Address", "address_line"),
-        ("City", "city"),
-        ("Postcode", "postcode"),
-        ("Country", "country"),
-        ("Telephone", "phone"),
-        ("Fax", "fax"),
-        ("Email", "email"),
-        ("Website", "website"),
+        ("שם", "display_name"),
+        ("שם משפטי", "legal_name"),
+        ("כתובת", "address_line"),
+        ("עיר", "city"),
+        ("מיקוד", "postcode"),
+        ("מדינה", "country"),
+        ("טלפון", "phone"),
+        ("פקס", "fax"),
+        ("דוא\"ל", "email"),
+        ("אתר", "website"),
     )
 
     def _brand_tab(self) -> QWidget:
@@ -1976,7 +2052,7 @@ class SystemPage(Page):
         layout.setSpacing(METRICS.space(3))
 
         chooser = QHBoxLayout()
-        caption = QLabel("Operator")
+        caption = QLabel("מפעיל")
         caption.setObjectName("FieldLabel")
         self.brand_picker = QComboBox()
         known = dict(BUILTIN_BRANDS)
@@ -2025,9 +2101,9 @@ class SystemPage(Page):
         layout.addWidget(self.brand_note)
 
         note = QLabel(
-            "These details appear on quotations, job cards and in the header of "
-            "every machine program. Add another operator, or correct these "
-            "details, with a brand plugin."
+            "הפרטים האלה מופיעים על הצעות מחיר, כרטיסי עבודה ובכותרת של כל "
+            "תוכנית מכונה. מוסיפים מפעיל נוסף, או מתקנים פרטים, באמצעות "
+            "תוסף מותג."
         )
         note.setObjectName("Hint")
         note.setWordWrap(True)
@@ -2043,7 +2119,7 @@ class SystemPage(Page):
         brand = active_brand()
         for label, attribute in self._BRAND_FIELDS:
             text = getattr(brand, attribute, None)
-            self._brand_values[label].setText(str(text) if text else "not set")
+            self._brand_values[label].setText(str(text) if text else "לא הוגדר")
         self.brand_note.setText(brand.notes or "")
         self.brand_note.setVisible(bool(brand.notes))
 
@@ -2056,15 +2132,15 @@ class SystemPage(Page):
         try:
             brand = set_active_brand(brand_id, persist=True)
         except Exception as exc:  # noqa: BLE001
-            self.report(exc, "Could not change the operator")
+            self.report(exc, "לא ניתן להחליף את המפעיל")
             return
         self._show_brand()
         window = self.window()
         if hasattr(window, "refresh_brand"):
             window.refresh_brand()
         self.status(
-            f"Operator set to {brand.display_name}; it will appear on documents "
-            "and machine-program headers from now on"
+            f"המפעיל הוגדר ל{brand.display_name}; מעכשיו הוא יופיע על מסמכים "
+            "ובכותרות תוכניות המכונה"
         )
 
     # -- plugins --------------------------------------------------------------- #
@@ -2074,7 +2150,7 @@ class SystemPage(Page):
         layout.setContentsMargins(0, METRICS.space(3), 0, 0)
         layout.setSpacing(METRICS.space(3))
 
-        table = DataTable(["Registry", "Entries", "Contents"])
+        table = DataTable(["רישום", "רשומות", "תוכן"])
         try:
             from ..core.registry import registry_report
 
@@ -2083,18 +2159,17 @@ class SystemPage(Page):
                 keys = sorted(entry.get("key", "?") for entry in entries)
                 shown = ", ".join(keys[:6])
                 if len(keys) > 6:
-                    shown += f", … {len(keys) - 6} more"
+                    shown += f", … ועוד {len(keys) - 6}"
                 rows.append([name, len(entries), shown])
         except Exception as exc:  # noqa: BLE001
-            rows = [["error", 0, str(exc)]]
+            rows = [["שגיאה", 0, str(exc)]]
         table.set_rows(rows, numeric_columns=(1,))
         layout.addWidget(table, 1)
 
         note = QLabel(
-            "A plugin's source is checked against an AST policy before it is "
-            "executed: no imports outside the allowed set, no file or network "
-            "access, no dynamic evaluation. Data plugins are validated against "
-            "their schema instead."
+            "קוד המקור של תוסף נבדק מול מדיניות AST לפני שהוא מורץ: בלי "
+            "ייבוא מחוץ לרשימה המותרת, בלי גישה לקבצים או לרשת, בלי הרצה "
+            "דינמית. תוספי נתונים מאומתים מול הסכימה שלהם במקום."
         )
         note.setObjectName("Hint")
         note.setWordWrap(True)
@@ -2114,34 +2189,34 @@ class SystemPage(Page):
         failures = cmp.verify_claims()
         stats = cmp.summary()
         header = QLabel(
-            f"{stats['profileos_implemented']} of {stats['capabilities']} "
-            f"capabilities implemented, {stats['not_documented_elsewhere']} that "
-            f"none of the {stats['packages_compared']} compared packages "
-            f"documents, {stats['profileos_gaps']} this suite does not have."
+            f"{stats['profileos_implemented']} מתוך {stats['capabilities']} "
+            f"יכולות ממומשות, {stats['not_documented_elsewhere']} שאף אחת "
+            f"מ-{stats['packages_compared']} התוכנות שהושוו לא מתעדת, "
+            f"{stats['profileos_gaps']} שאין בחבילה הזאת."
         )
         header.setObjectName("Hint")
         header.setWordWrap(True)
         layout.addWidget(header)
         if failures:
             broken = QLabel(
-                f"{len(failures)} capability claim(s) no longer resolve to code."
+                f"{len(failures)} הצהרות יכולת כבר לא מפנות לקוד."
             )
             broken.setObjectName("Hint")
             broken.setWordWrap(True)
             layout.addWidget(broken)
 
-        headers = ["Capability", "ProfileOS"] + [p.heading for p in cmp.PACKAGES]
+        headers = ["יכולת", "ProfileOS"] + [p.heading for p in cmp.PACKAGES]
         table = DataTable(headers)
         marks = {
-            cmp.Support.FULL: "yes",
-            cmp.Support.PARTIAL: "part",
-            cmp.Support.NOT_DOCUMENTED: "no",
+            cmp.Support.FULL: "כן",
+            cmp.Support.PARTIAL: "חלקי",
+            cmp.Support.NOT_DOCUMENTED: "לא",
             cmp.Support.UNKNOWN: "?",
         }
         colours: dict[tuple[int, int], str] = {}
         rows = []
         for index, capability in enumerate(cmp.CAPABILITIES):
-            name = capability.name_en + (" *" if capability.differentiator else "")
+            name = capability.name_he + (" *" if capability.differentiator else "")
             own = cmp.profileos_support(capability)
             rows.append(
                 [name, marks[own]]
@@ -2162,11 +2237,10 @@ class SystemPage(Page):
         layout.addWidget(table, 1)
 
         legend = QLabel(
-            "yes = documented, part = partial or a paid module, no = not found "
-            "in the vendor's public material, ? = not looked into. Nothing here "
-            "has been tested against a competitor's installation, and \"no\" "
-            "never means \"absent\".\n\n"
-            + "\n".join(f"• {limit}" for limit in cmp.STANDING_LIMITATIONS)
+            "כן = מתועד, חלקי = חלקי או מודול בתשלום, לא = לא נמצא בחומר "
+            "הפומבי של היצרן, ? = לא נבדק. שום דבר כאן לא נבחן מול התקנה "
+            "של מתחרה, ו\"לא\" לעולם אינו \"לא קיים\".\n\n"
+            + "\n".join(f"• {limit}" for limit in cmp.STANDING_LIMITATIONS_HE)
         )
         legend.setObjectName("Hint")
         legend.setWordWrap(True)
@@ -2182,40 +2256,41 @@ class ViewPage(Page):
     """See the element the way the customer will."""
 
     title = "3D view"
-    subtitle = "Presentation and technical views of the designed elements"
+    hebrew = "תלת-ממד"
+    subtitle = "מבטי הדמיה ומבטים טכניים של הפתחים"
 
     def build(self) -> None:
         from PySide6.QtSvgWidgets import QSvgWidget
 
-        render = QPushButton("Render")
+        render = QPushButton("הצג")
         render.setObjectName("Primary")
         render.clicked.connect(self.render_scene)
         self.header.add_action(render)
 
-        export = QPushButton("Export")
+        export = QPushButton("ייצא")
         export.clicked.connect(self.export_scene)
         self.header.add_action(export)
 
         self.stats = StatRow([
-            ("parts", "Parts"), ("triangles", "Triangles"),
-            ("metal", "Metal"), ("size", "Size"), ("panes", "Panes"),
+            ("parts", "חלקים"), ("triangles", "משולשים"),
+            ("metal", "מתכת"), ("size", "מידה"), ("panes", "שמשות"),
         ])
         self.body.addWidget(self.stats)
 
-        controls = Card("View")
+        controls = Card("מבט")
         row = QHBoxLayout()
         row.setSpacing(METRICS.space(4))
 
         self.element = QComboBox()
         self.view = QComboBox()
-        self.view.addItems(["presentation", "elevation"])
+        self.view.addItem("הדמיה", "presentation"); self.view.addItem("חזית", "elevation")
         self.finish = QComboBox()
-        self.finish.addItems(["natural", "bronze"])
+        self.finish.addItem("טבעי", "natural"); self.finish.addItem("ברונזה", "bronze")
         self.glass = QComboBox()
-        self.glass.addItems(["with glass", "frames only"])
+        self.glass.addItem("עם זכוכית", "with glass"); self.glass.addItem("מסגרות בלבד", "frames only")
 
-        for label, widget in [("Element", self.element), ("View", self.view),
-                              ("Finish", self.finish), ("Glazing", self.glass)]:
+        for label, widget in [("פתח", self.element), ("מבט", self.view),
+                              ("גמר", self.finish), ("זיגוג", self.glass)]:
             caption = QLabel(label)
             caption.setObjectName("FieldLabel")
             row.addWidget(caption)
@@ -2229,10 +2304,9 @@ class ViewPage(Page):
         self.body.addWidget(self.canvas, 1)
 
         note = QLabel(
-            "The model is swept from the same profile sections and placed by the "
-            "same system rules that produce the cut list, so what is drawn here "
-            "is what the shop will make. Export writes printable SVG, glTF for "
-            "any 3D tool, and a self-contained interactive viewer."
+            "המודל נבנה מאותם חתכי פרופיל ולפי אותם כללי מערכת שמייצרים את "
+            "רשימת החיתוך — מה שמצויר כאן הוא מה שהמפעל יבנה. הייצוא כותב SVG "
+            "להדפסה, glTF לכל כלי תלת-ממד, וצפיין אינטראקטיבי עצמאי."
         )
         note.setObjectName("Hint")
         note.setWordWrap(True)
@@ -2252,7 +2326,7 @@ class ViewPage(Page):
             self.element.setCurrentText(current)
         self.element.blockSignals(False)
         self.header.set_subtitle(
-            f"{len(ids)} element(s) designed" if ids else "Design an element first"
+            f"{len(ids)} פתחים מתוכננים" if ids else "תכנן פתח קודם"
         )
 
     def _build_for(self, element_id: str):
@@ -2278,26 +2352,26 @@ class ViewPage(Page):
         build = self._build_for(self.element.currentText())
         if build is None:
             self.report(
-                ProfileOSError("No elements have been designed yet"), "Nothing to render"
+                ProfileOSError("עדיין לא תוכננו פתחים. תכנן פתח בעמוד ״פתח״ ואז חזור לכאן."), "אין מה להציג"
             )
             return
         try:
             self._scene = build_element_scene(
                 build,
-                style=ViewStyle(show_glass=self.glass.currentText() == "with glass"),
+                style=ViewStyle(show_glass=self.glass.currentData() == "with glass"),
             )
         except Exception as exc:  # noqa: BLE001
-            self.report(exc, "Could not build the model")
+            self.report(exc, "לא ניתן לבנות את המודל")
             return
 
         scene = self._scene
         size = scene.size
         panes = sum(1 for mesh in scene.meshes if mesh.material == "glass")
         self.stats.update_many({
-            "parts": (str(len(scene.meshes)), "modelled solids"),
+            "parts": (str(len(scene.meshes)), "גופים"),
             "triangles": (f"{scene.triangle_count:,}", ""),
-            "metal": (f"{scene.aluminium_volume() * 2.70e-6:.1f} kg", "at 2.70 g/cm³"),
-            "size": (f"{size[0]:.0f}×{size[1]:.0f}", f"{size[2]:.0f} mm deep"),
+            "metal": (f"{scene.aluminium_volume() * 2.70e-6:.1f} ק\"ג", "לפי 2.70 גרם/סמ\"ק"),
+            "size": (f"{size[0]:.0f}×{size[1]:.0f}", f"עומק {size[2]:.0f} מ\"מ"),
             "panes": (str(panes), ""),
         })
         self._redraw()
@@ -2317,20 +2391,20 @@ class ViewPage(Page):
         options = RenderOptions(
             width=1200, height=760,
             materials=dict(
-                BRONZE_MATERIALS if self.finish.currentText() == "bronze"
+                BRONZE_MATERIALS if self.finish.currentData() == "bronze"
                 else DEFAULT_MATERIALS
             ),
             background=self.colours.surface_sunken,
         )
         camera = (
             elevation_camera(self._scene)
-            if self.view.currentText() == "elevation"
+            if self.view.currentData() == "elevation"
             else presentation_camera(self._scene)
         )
         try:
             svg = render_svg(self._scene, camera, options)
         except Exception as exc:  # noqa: BLE001
-            self.report(exc, "Could not render the view")
+            self.report(exc, "לא ניתן להציג את המבט")
             return
         self.canvas.load(svg.encode("utf-8"))
 
@@ -2338,9 +2412,9 @@ class ViewPage(Page):
         from ..viz3d import RenderOptions, render_viewer, render_views, write_gltf
 
         if self._scene is None:
-            self.report(ProfileOSError("Render the element first"), "Nothing to export")
+            self.report(ProfileOSError("הצג את הפתח קודם"), "אין מה לייצא")
             return
-        folder = QFileDialog.getExistingDirectory(self, "Where should the views go?")
+        folder = QFileDialog.getExistingDirectory(self, "לאן לייצא את המבטים?")
         if not folder:
             return
         target = Path(folder)
@@ -2356,7 +2430,7 @@ class ViewPage(Page):
         )
         write_gltf(self._scene, target / f"{stem}.gltf")
         write_gltf(self._scene, target / f"{stem}.glb")
-        self.status(f"Wrote {written + 3} file(s) to {target}")
+        self.status(f"נשמרו {written + 3} קבצים אל {target}")
 
 
 # --------------------------------------------------------------------------- #
@@ -2367,25 +2441,26 @@ class AccountsPage(Page):
     """Stock, purchasing, the ledger and the shop's capacity."""
 
     title = "Accounts"
-    subtitle = "Stock, purchasing, the ledger and what the shop can take on"
+    hebrew = "הנהלת חשבונות"
+    subtitle = "מלאי, רכש, ספר חשבונות ועומס המפעל"
 
     def build(self) -> None:
-        audit = QPushButton("Audit")
+        audit = QPushButton("ביקורת")
         audit.setObjectName("Primary")
         audit.clicked.connect(self.run_audit)
         self.header.add_action(audit)
 
         self.stats = StatRow([
-            ("stock", "Stock"), ("debtors", "Debtors"), ("creditors", "Creditors"),
-            ("result", "Result"), ("entries", "Entries"),
+            ("stock", "מלאי"), ("debtors", "חייבים"), ("creditors", "זכאים"),
+            ("result", "תוצאה"), ("entries", "פקודות יומן"),
         ])
         self.body.addWidget(self.stats)
 
         tabs = QTabWidget()
-        tabs.addTab(self._stock_tab(), "Stock")
-        tabs.addTab(self._purchasing_tab(), "Purchasing")
-        tabs.addTab(self._ledger_tab(), "Ledger")
-        tabs.addTab(self._planning_tab(), "Capacity")
+        tabs.addTab(self._stock_tab(), "מלאי")
+        tabs.addTab(self._purchasing_tab(), "רכש")
+        tabs.addTab(self._ledger_tab(), "ספר חשבונות")
+        tabs.addTab(self._planning_tab(), "קיבולת")
         self.body.addWidget(tabs, 1)
         self.tabs = tabs
 
@@ -2405,16 +2480,17 @@ class AccountsPage(Page):
         layout.setSpacing(METRICS.space(3))
 
         self.stock_table = DataTable(
-            ["Item", "Name", "On hand", "Allocated", "On order",
-             "Projected", "Unit cost", "Value", "Reorder"]
+            ["פריט", "שם", "במלאי", "משוריין", "בהזמנה",
+             "צפוי", "עלות ליחידה", "שווי", "להזמנה"],
+            empty_text="לחץ ״ביקורת״ כדי לרענן את תמונת המלאי",
         )
         layout.addWidget(self.stock_table, 1)
 
         note = QLabel(
-            "Value follows the physical movement: FIFO consumes the oldest "
-            "delivery first, so what a bar cost depends on which delivery it "
-            "came from. Issuing more than is on the rack is refused — a negative "
-            "balance is a missing goods receipt, not a quantity."
+            "השווי עוקב אחרי התנועה הפיזית: FIFO צורך את המשלוח הישן ביותר "
+            "קודם, כך שהעלות של מוט תלויה מאיזה משלוח הוא הגיע. ניפוק מעבר "
+            "למה שנמצא על המדף נדחה — יתרה שלילית היא קבלת סחורה חסרה, "
+            "לא כמות."
         )
         note.setObjectName("Hint")
         note.setWordWrap(True)
@@ -2434,7 +2510,7 @@ class AccountsPage(Page):
                 f"{row['projected']:.1f}",
                 format_money(int(row["unit_cost"]), company.currency),
                 format_money(row["value"], company.currency),
-                "yes" if row["below_reorder"] else "",
+                "כן" if row["below_reorder"] else "",
             ])
             if row["below_reorder"]:
                 colours[(index, 8)] = self.colours.warning
@@ -2447,23 +2523,26 @@ class AccountsPage(Page):
         layout.setContentsMargins(0, METRICS.space(3), 0, 0)
         layout.setSpacing(METRICS.space(3))
 
-        plan = QPushButton("Plan purchases for the designed elements")
+        plan = QPushButton("תכנון רכש לפתחים שתוכננו")
         plan.clicked.connect(self.plan_purchases)
         layout.addWidget(plan)
 
         self.requirements_table = DataTable(
-            ["Item", "Needed", "Free", "On order", "To buy", "Unit"]
+            ["פריט", "נדרש", "פנוי", "בהזמנה", "לרכישה", "יחידה"],
+            empty_text="לחץ ״תכנון רכש״ אחרי שתכננת פתחים",
         )
         layout.addWidget(self.requirements_table, 1)
 
-        self.orders_table = DataTable(["Order", "Supplier", "Lines", "Net", "Promised"])
+        self.orders_table = DataTable(
+            ["הזמנה", "ספק", "שורות", "נטו", "מועד אספקה"],
+            empty_text="הזמנות רכש יופיעו כאן אחרי התכנון",
+        )
         layout.addWidget(self.orders_table, 1)
 
         note = QLabel(
-            "Net requirement is what has to be bought: the gross, less what is "
-            "free on the rack, less what is already on order. Orders are grouped "
-            "one per supplier and rounded up to the stock length, because a "
-            "supplier does not sell 11.4 metres of a 6 metre bar."
+            "הדרישה נטו היא מה שצריך לקנות: הברוטו, פחות מה שפנוי על המדף, "
+            "פחות מה שכבר בהזמנה. ההזמנות מקובצות אחת לכל ספק ומעוגלות "
+            "כלפי מעלה לאורך המלאי, כי ספק לא מוכר 11.4 מטר ממוט של 6 מטר."
         )
         note.setObjectName("Hint")
         note.setWordWrap(True)
@@ -2475,7 +2554,7 @@ class AccountsPage(Page):
 
         if not self.session.builds:
             self.report(
-                ProfileOSError("No elements have been designed yet"), "Nothing to plan"
+                ProfileOSError("עדיין לא תוכננו פתחים"), "אין מה לתכנן"
             )
             return
 
@@ -2500,7 +2579,7 @@ class AccountsPage(Page):
         try:
             rows, orders = company.plan_purchases(demand, prices)
         except Exception as exc:  # noqa: BLE001
-            self.report(exc, "Could not plan the purchases")
+            self.report(exc, "לא ניתן לתכנן את הרכש")
             return
 
         self.requirements_table.set_rows(
@@ -2523,8 +2602,8 @@ class AccountsPage(Page):
             numeric_columns=(2, 3),
         )
         self.status(
-            f"{sum(1 for r in rows if r.must_order)} item(s) to buy across "
-            f"{len(orders)} order(s)"
+            f"{sum(1 for r in rows if r.must_order)} פריטים לרכישה "
+            f"ב־{len(orders)} הזמנות"
         )
         self._refresh_stock()
 
@@ -2535,14 +2614,14 @@ class AccountsPage(Page):
         layout.setContentsMargins(0, METRICS.space(3), 0, 0)
         layout.setSpacing(METRICS.space(3))
 
-        self.trial_table = DataTable(["Code", "Account", "Type", "Debit", "Credit"])
+        self.trial_table = DataTable(["קוד", "חשבון", "סוג", "חובה", "זכות"])
         layout.addWidget(self.trial_table, 1)
 
         self.position_grid = FieldGrid()
         layout.addWidget(self.position_grid)
         self._position_values: dict[str, QLabel] = {}
-        for label in ("Income", "Expense", "Result", "Assets", "Liabilities",
-                      "Equity", "Balance sheet difference"):
+        for label in ("הכנסות", "הוצאות", "תוצאה", "נכסים", "התחייבויות",
+                      "הון", "הפרש מאזן"):
             value = QLabel("—")
             value.setObjectName("FieldValue")
             value.setAlignment(
@@ -2552,10 +2631,10 @@ class AccountsPage(Page):
             self._position_values[label] = self.position_grid.add(label, value)
 
         note = QLabel(
-            "Double entry, in minor currency units. An entry that does not sum "
-            "to zero is refused at the point it is written, so the trial balance "
-            "cannot fail to balance — and Audit proves that rather than assuming "
-            "it, and checks the stock accounts against the stock book."
+            "הנהלת חשבונות כפולה, באגורות. פקודת יומן שאינה מתאזנת לאפס "
+            "נדחית ברגע הרישום, כך שמאזן הבוחן לא יכול שלא להתאזן — "
+            "והביקורת מוכיחה זאת במקום להניח, ובודקת את חשבונות המלאי "
+            "מול ספר המלאי."
         )
         note.setObjectName("Hint")
         note.setWordWrap(True)
@@ -2566,9 +2645,14 @@ class AccountsPage(Page):
         from ..erp import format_money
 
         company = self._company()
+        type_hebrew = {
+            "asset": "נכס", "liability": "התחייבות", "equity": "הון",
+            "income": "הכנסה", "expense": "הוצאה",
+        }
         self.trial_table.set_rows(
             [
-                [row.account.code, row.account.name, str(row.account.type),
+                [row.account.code, row.account.name,
+                 type_hebrew.get(str(row.account.type), str(row.account.type)),
                  format_money(row.debits, company.currency) if row.debits else "",
                  format_money(row.credits, company.currency) if row.credits else ""]
                 for row in company.ledger.trial_balance()
@@ -2578,10 +2662,10 @@ class AccountsPage(Page):
         profit = company.ledger.profit_and_loss()
         sheet = company.ledger.balance_sheet()
         for label, value in [
-            ("Income", profit["income"]), ("Expense", profit["expense"]),
-            ("Result", profit["result"]), ("Assets", sheet["assets"]),
-            ("Liabilities", sheet["liabilities"]), ("Equity", sheet["equity"]),
-            ("Balance sheet difference", sheet["difference"]),
+            ("הכנסות", profit["income"]), ("הוצאות", profit["expense"]),
+            ("תוצאה", profit["result"]), ("נכסים", sheet["assets"]),
+            ("התחייבויות", sheet["liabilities"]), ("הון", sheet["equity"]),
+            ("הפרש מאזן", sheet["difference"]),
         ]:
             self._position_values[label].setText(format_money(value, company.currency))
 
@@ -2592,25 +2676,26 @@ class AccountsPage(Page):
         layout.setContentsMargins(0, METRICS.space(3), 0, 0)
         layout.setSpacing(METRICS.space(3))
 
-        run = QPushButton("Schedule the designed elements")
+        run = QPushButton("שיבוץ הפתחים שתוכננו")
         run.clicked.connect(self.run_schedule)
         layout.addWidget(run)
 
         self.schedule_table = DataTable(
-            ["Operation", "Work centre", "Start", "Finish", "Hours"]
+            ["פעולה", "עמדת עבודה", "התחלה", "סיום", "שעות"],
+            empty_text="לחץ ״שיבוץ״ אחרי שתכננת פתחים",
         )
         layout.addWidget(self.schedule_table, 1)
         self.load_table = DataTable(
-            ["Code", "Work centre", "Hours", "Available", "Utilisation"]
+            ["קוד", "עמדת עבודה", "שעות", "זמין", "ניצולת"],
+            empty_text="עומס עמדות העבודה יופיע כאן אחרי השיבוץ",
         )
         layout.addWidget(self.load_table, 1)
 
         note = QLabel(
-            "Finite capacity: a saw already committed to three jobs pushes the "
-            "fourth out, which is what happens on the floor whether or not the "
-            "plan says so. The week runs Sunday to Thursday with Friday a half "
-            "day, and the glass lead time runs beside the shop work rather than "
-            "after it."
+            "קיבולת סופית: מסור שכבר משוריין לשלוש עבודות דוחה את הרביעית, "
+            "וזה מה שקורה ברצפת הייצור בין אם התוכנית אומרת זאת ובין אם לא. "
+            "שבוע העבודה ראשון–חמישי עם שישי חצי יום, וזמן האספקה של הזכוכית "
+            "רץ במקביל לעבודת המפעל ולא אחריה."
         )
         note.setObjectName("Hint")
         note.setWordWrap(True)
@@ -2622,14 +2707,19 @@ class AccountsPage(Page):
 
         if not self.session.builds:
             self.report(
-                ProfileOSError("No elements have been designed yet"), "Nothing to schedule"
+                ProfileOSError("עדיין לא תוכננו פתחים"), "אין מה לשבץ"
             )
             return
         demand = demand_from_builds(self.session.builds, "JOB")
         plan = Scheduler().schedule([demand])
+        operation_hebrew = {
+            "cutting": "חיתוך", "machining": "עיבוד", "glazing_order": "הזמנת זכוכית",
+            "assembly": "הרכבה", "glazing": "זיגוג", "packing": "אריזה",
+        }
         self.schedule_table.set_rows(
             [
-                [str(op.operation), op.work_centre, op.start.isoformat(),
+                [operation_hebrew.get(str(op.operation), str(op.operation)),
+                 op.work_centre, op.start.isoformat(),
                  op.finish.isoformat(), f"{op.hours:.2f}" if op.hours else "—"]
                 for op in sorted(plan.operations, key=lambda o: (o.start, o.operation))
             ],
@@ -2653,9 +2743,10 @@ class AccountsPage(Page):
         )
         finish = plan.completion[demand.job_id]
         bottleneck = plan.bottleneck(DEFAULT_WORK_CENTRES)
+        hebrew_days = ["שני", "שלישי", "רביעי", "חמישי", "שישי", "שבת", "ראשון"]
         self.status(
-            f"Complete {finish.isoformat()} ({finish.strftime('%A')})"
-            + (f" · bottleneck {bottleneck['name']}" if bottleneck else "")
+            f"סיום {finish.isoformat()} (יום {hebrew_days[finish.weekday()]})"
+            + (f" · צוואר בקבוק: {bottleneck['name']}" if bottleneck else "")
         )
 
     # -- audit -------------------------------------------------------------------- #
@@ -2666,22 +2757,22 @@ class AccountsPage(Page):
         try:
             report = company.audit()
         except Exception as exc:  # noqa: BLE001
-            self.report(exc, "The books and the racks disagree")
+            self.report(exc, "הספרים והמדפים לא מסכימים")
             return
 
         summary = company.summary()
         self.stats.update_many({
             "stock": (format_money(summary["stock_value"], company.currency), ""),
-            "debtors": (format_money(summary["debtors"], company.currency), "owed to us"),
-            "creditors": (format_money(summary["creditors"], company.currency), "we owe"),
-            "result": (format_money(summary["result"], company.currency), "this period"),
-            "entries": (str(report["entries"]), f"{report['movements']} movements"),
+            "debtors": (format_money(summary["debtors"], company.currency), "חייבים לנו"),
+            "creditors": (format_money(summary["creditors"], company.currency), "אנחנו חייבים"),
+            "result": (format_money(summary["result"], company.currency), "בתקופה הנוכחית"),
+            "entries": (str(report["entries"]), f"{report['movements']} תנועות"),
         })
         self._refresh_stock()
         self._refresh_ledger()
         self.status(
-            "Ledger balanced, stock reconciled against its movement history, "
-            "stock accounts agree with the stock book."
+            "הספר מאוזן, המלאי הותאם מול היסטוריית התנועות, "
+            "וחשבונות המלאי מסכימים עם ספר המלאי."
         )
 
     def refresh(self) -> None:
