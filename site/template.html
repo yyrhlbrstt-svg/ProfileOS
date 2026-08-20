@@ -16,42 +16,42 @@
    grey of mill-finish aluminium, on drawing-paper grey.
    ───────────────────────────────────────────────────────────────────────── */
 :root{
-  --paper:#EDEEEA; --surface:#FFFFFF; --sunken:#E2E4DF; --raised:#F7F8F5;
-  --ink:#141920; --body:#3C4550; --muted:#68737F; --faint:#8E98A3;
-  --rule:#D2D5CE; --rule-firm:#B4B9B0;
-  --bronze:#9A6520; --bronze-ink:#7C5119; --bronze-wash:#F0E5D4;
+  --paper:#FBF8F4; --surface:#FFFFFF; --sunken:#F4EEE6; --raised:#FFFFFF;
+  --ink:#241E17; --body:#463D31; --muted:#6E6252; --faint:#9C907D;
+  --rule:#E6DECF; --rule-firm:#C9BEA9;
+  --bronze:#B0671F; --bronze-ink:#8F5115; --bronze-wash:#F4E6D2;
   --steel:#4E6379;
   --ok:#2F7A4F; --ok-wash:#DFEDE4;
   --warn:#9A7318; --warn-wash:#F2E9D3;
   --bad:#A2413A; --bad-wash:#F5E1DE;
-  --shadow:0 1px 1px rgba(20,25,32,.04), 0 10px 30px -18px rgba(20,25,32,.28);
-  --web:#C9CDC5;
+  --shadow:0 1px 1px rgba(36,30,23,.04), 0 10px 30px -18px rgba(36,30,23,.28);
+  --web:#E4DCCC;
 }
 @media (prefers-color-scheme:dark){
   :root:not([data-theme="light"]){
-    --paper:#0F1319; --surface:#161B23; --sunken:#0A0D12; --raised:#1D242E;
-    --ink:#EAEDF1; --body:#BAC3CD; --muted:#8A96A3; --faint:#67727F;
-    --rule:#252C36; --rule-firm:#3A4450;
-    --bronze:#E0A552; --bronze-ink:#F0C88A; --bronze-wash:#2A1F12;
+    --paper:#0F0E0D; --surface:#151413; --sunken:#0A0908; --raised:#1C1A18;
+    --ink:#F4F2EF; --body:#C9C3BB; --muted:#A7A199; --faint:#6C6862;
+    --rule:#262320; --rule-firm:#383430;
+    --bronze:#E29A47; --bronze-ink:#F0B269; --bronze-wash:rgba(224,154,71,.13);
     --steel:#8FA6BC;
-    --ok:#5FBE85; --ok-wash:#12241A;
-    --warn:#DCB05A; --warn-wash:#26200F;
-    --bad:#E08076; --bad-wash:#2A1613;
+    --ok:#3FA672; --ok-wash:rgba(63,166,114,.15);
+    --warn:#D9B13B; --warn-wash:rgba(217,177,59,.15);
+    --bad:#DE5D5D; --bad-wash:rgba(222,93,93,.15);
     --shadow:0 1px 1px rgba(0,0,0,.5), 0 12px 34px -20px rgba(0,0,0,.9);
-    --web:#2C343E;
+    --web:#2A2723;
   }
 }
 :root[data-theme="dark"]{
-  --paper:#0F1319; --surface:#161B23; --sunken:#0A0D12; --raised:#1D242E;
-  --ink:#EAEDF1; --body:#BAC3CD; --muted:#8A96A3; --faint:#67727F;
-  --rule:#252C36; --rule-firm:#3A4450;
-  --bronze:#E0A552; --bronze-ink:#F0C88A; --bronze-wash:#2A1F12;
+  --paper:#0F0E0D; --surface:#151413; --sunken:#0A0908; --raised:#1C1A18;
+  --ink:#F4F2EF; --body:#C9C3BB; --muted:#A7A199; --faint:#6C6862;
+  --rule:#262320; --rule-firm:#383430;
+  --bronze:#E29A47; --bronze-ink:#F0B269; --bronze-wash:rgba(224,154,71,.13);
   --steel:#8FA6BC;
-  --ok:#5FBE85; --ok-wash:#12241A;
-  --warn:#DCB05A; --warn-wash:#26200F;
-  --bad:#E08076; --bad-wash:#2A1613;
+  --ok:#3FA672; --ok-wash:rgba(63,166,114,.15);
+  --warn:#D9B13B; --warn-wash:rgba(217,177,59,.15);
+  --bad:#DE5D5D; --bad-wash:rgba(222,93,93,.15);
   --shadow:0 1px 1px rgba(0,0,0,.5), 0 12px 34px -20px rgba(0,0,0,.9);
-  --web:#2C343E;
+  --web:#2A2723;
 }
 
 *,*::before,*::after{box-sizing:border-box;}
@@ -671,8 +671,8 @@ profileos compare --verify</pre>
     ["שאיש אחר לא מתעד", String(s.not_documented_elsewhere),
       "מתוך " + s.packages_compared + " חבילות שנבדקו"],
     ["יכולות שחסרות כאן", String(s.profileos_gaps), "רשומות בשמן למטה"],
-    ["בדיקות שעוברות", "571", "מול מקורות עצמאיים"],
-    ["שורות קוד", "37,311", "ב־17 מנועים"]
+    ["מנועים", "17", "קו ייצור אחד"],
+    ["שפות ממשק", "6", "עברית תחילה"]
   ];
   document.getElementById("claim").innerHTML = figures.map(function (f, i) {
     return '<div><dt>' + f[0] + '</dt><dd' + (i === 1 ? ' class="accent"' : '') +
@@ -688,12 +688,13 @@ profileos compare --verify</pre>
     ["פורמטי ה־CNC הקנייניים מעולם לא נחתכו על מכונה פיזית.",
       "Elumatec NCX/ECX/NCW/DGX, Schüco MCO ו־Kaban KBN נוצרים כאן לפי " +
       "המפרט, אך לא הורצו על מכונה. אמתו על גרוטאה לפני ייצור."],
-    ["אין כאן ERP.",
-      "אין הזמנות רכש, אין תנועות מלאי, אין חשבונאות. הצעות המחיר ובקשות " +
-      "המחיר לספקים נעצרות במסמך."],
-    ["אין תצוגת תלת־ממד ואין תכנון קיבולת.",
-      "האלמנטים משורטטים בחזית ובחתך בלבד, ולוח הזמנים של המפעל אינו מנוהל " +
-      "כאן."],
+    ["ספר החשבונות הוא הנהלת חשבונות, לא הנהלת חשבונות מאושרת.",
+      "החוק הישראלי קובע דרישות לניהול ספרים ממוחשב ולהפקת חשבוניות מס, " +
+      "ודבר כאן לא הוגש לאישור מולן. השתמשו בו כחשבונאות ניהולית, והמשיכו " +
+      "להפיק מסמכים סטטוטוריים ממה שכבר מאושר."],
+    ["זמני התקן של המתזמן הם ערכי התחלה.",
+      "תאריך שהובטח טוב רק כמו הדקות־לחיתוך שמאחוריו. מדדו כמה עבודות " +
+      "אמיתיות במפעל שלכם וקבעו את הזמנים."],
     ["ההשוואה מתעדת חומר פומבי בלבד.",
       "דבר ממנה לא נבדק מול התקנה של חבילה אחרת, ו״לא מתועד״ אינו ״לא קיים״."]
   ];

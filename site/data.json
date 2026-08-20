@@ -1,10 +1,10 @@
 {
  "summary": {
-  "capabilities": 45,
+  "capabilities": 48,
   "packages_compared": 9,
-  "profileos_implemented": 42,
-  "profileos_gaps": 3,
-  "not_documented_elsewhere": 12,
+  "profileos_implemented": 48,
+  "profileos_gaps": 0,
+  "not_documented_elsewhere": 13,
   "claims_verified": true,
   "standing_limitations": 5
  },
@@ -240,14 +240,32 @@
    "area": "elements",
    "name_en": "3D presentation views",
    "name_he": "תצוגת תלת-ממד",
-   "detail": "Photo-realistic 3D of the finished elevation for the customer.",
+   "detail": "The element modelled in three dimensions from the same sections and the same rules that cut it, shown as a printable vector drawing, as glTF for any 3D tool, and as an interactive viewer that needs nothing installed.",
    "differentiator": false,
-   "profileos": "not_documented",
+   "profileos": "full",
    "logikal": "full",
    "klaes": "full",
    "prefsuite": "unknown",
    "schucal": "partial",
    "reynapro": "full",
+   "elucad": "unknown",
+   "kaban": "unknown",
+   "shablul": "unknown",
+   "alkal": "unknown"
+  },
+  {
+   "id": "gltf_export",
+   "area": "elements",
+   "name_en": "glTF export of the model",
+   "name_he": "ייצוא glTF של המודל",
+   "detail": "The model itself, not a picture of it — so it drops into a visualiser, a BIM scene or an architect's own tool.",
+   "differentiator": true,
+   "profileos": "full",
+   "logikal": "unknown",
+   "klaes": "unknown",
+   "prefsuite": "unknown",
+   "schucal": "unknown",
+   "reynapro": "unknown",
    "elucad": "unknown",
    "kaban": "unknown",
    "shablul": "unknown",
@@ -832,11 +850,11 @@
   {
    "id": "erp",
    "area": "adjacent",
-   "name_en": "Full ERP: stock, purchasing, accounts",
-   "name_he": "ERP מלא: מלאי, רכש, הנהח״ש",
-   "detail": "Purchase orders, stock movements, invoicing and ledger integration.",
+   "name_en": "Stock, purchasing and the ledger",
+   "name_he": "מלאי, רכש והנהלת חשבונות",
+   "detail": "Purchase orders, goods receipts, stock movements valued FIFO or weighted average, sales invoicing with statutory VAT, and a double-entry general ledger every document posts to.",
    "differentiator": false,
-   "profileos": "not_documented",
+   "profileos": "full",
    "logikal": "partial",
    "klaes": "full",
    "prefsuite": "full",
@@ -848,13 +866,49 @@
    "alkal": "unknown"
   },
   {
+   "id": "three_way_match",
+   "area": "adjacent",
+   "name_en": "Three-way invoice matching",
+   "name_he": "התאמה משולשת של חשבוניות",
+   "detail": "A supplier invoice is set against the order and the goods actually received before it can be posted, and the leg that failed is named.",
+   "differentiator": true,
+   "profileos": "full",
+   "logikal": "unknown",
+   "klaes": "unknown",
+   "prefsuite": "unknown",
+   "schucal": "unknown",
+   "reynapro": "unknown",
+   "elucad": "unknown",
+   "kaban": "unknown",
+   "shablul": "unknown",
+   "alkal": "unknown"
+  },
+  {
+   "id": "books_audit",
+   "area": "adjacent",
+   "name_en": "Books reconciled to the racks",
+   "name_he": "התאמת ספרים למלאי בפועל",
+   "detail": "The stock value is re-derived from the movement history, the trial balance from the postings, and the stock accounts checked against the stock book — three records of the same facts, cross-checked.",
+   "differentiator": true,
+   "profileos": "full",
+   "logikal": "not_documented",
+   "klaes": "not_documented",
+   "prefsuite": "not_documented",
+   "schucal": "unknown",
+   "reynapro": "unknown",
+   "elucad": "unknown",
+   "kaban": "unknown",
+   "shablul": "unknown",
+   "alkal": "unknown"
+  },
+  {
    "id": "capacity_planning",
    "area": "adjacent",
    "name_en": "Capacity and delivery planning",
    "name_he": "תכנון קיבולת ומועדי אספקה",
-   "detail": "Schedule the shop's workload against promised delivery dates.",
+   "detail": "Finite-capacity scheduling across work centres on the shop's own working week, so a promised date is arithmetic rather than optimism, and a job that will be late says so.",
    "differentiator": false,
-   "profileos": "not_documented",
+   "profileos": "full",
    "logikal": "partial",
    "klaes": "full",
    "prefsuite": "full",
@@ -878,8 +932,8 @@
    "coverage": {
     "full": 21,
     "partial": 7,
-    "not_documented": 13,
-    "unknown": 4
+    "not_documented": 14,
+    "unknown": 6
    }
   },
   {
@@ -893,8 +947,8 @@
    "coverage": {
     "full": 19,
     "partial": 1,
-    "not_documented": 12,
-    "unknown": 13
+    "not_documented": 13,
+    "unknown": 15
    }
   },
   {
@@ -908,8 +962,8 @@
    "coverage": {
     "full": 15,
     "partial": 1,
-    "not_documented": 11,
-    "unknown": 18
+    "not_documented": 12,
+    "unknown": 20
    }
   },
   {
@@ -924,7 +978,7 @@
     "full": 9,
     "partial": 3,
     "not_documented": 10,
-    "unknown": 23
+    "unknown": 26
    }
   },
   {
@@ -939,7 +993,7 @@
     "full": 10,
     "partial": 0,
     "not_documented": 10,
-    "unknown": 25
+    "unknown": 28
    }
   },
   {
@@ -954,7 +1008,7 @@
     "full": 4,
     "partial": 4,
     "not_documented": 11,
-    "unknown": 26
+    "unknown": 29
    }
   },
   {
@@ -969,7 +1023,7 @@
     "full": 1,
     "partial": 3,
     "not_documented": 5,
-    "unknown": 36
+    "unknown": 39
    }
   },
   {
@@ -984,7 +1038,7 @@
     "full": 5,
     "partial": 1,
     "not_documented": 9,
-    "unknown": 30
+    "unknown": 33
    }
   },
   {
@@ -999,36 +1053,17 @@
     "full": 5,
     "partial": 1,
     "not_documented": 9,
-    "unknown": 30
+    "unknown": 33
    }
   }
  ],
  "profileos_coverage": {
-  "full": 42,
+  "full": 48,
   "partial": 0,
-  "not_documented": 3,
+  "not_documented": 0,
   "unknown": 0
  },
- "gaps": [
-  {
-   "id": "3d_view",
-   "en": "3D presentation views",
-   "he": "תצוגת תלת-ממד",
-   "detail": "Photo-realistic 3D of the finished elevation for the customer."
-  },
-  {
-   "id": "erp",
-   "en": "Full ERP: stock, purchasing, accounts",
-   "he": "ERP מלא: מלאי, רכש, הנהח״ש",
-   "detail": "Purchase orders, stock movements, invoicing and ledger integration."
-  },
-  {
-   "id": "capacity_planning",
-   "en": "Capacity and delivery planning",
-   "he": "תכנון קיבולת ומועדי אספקה",
-   "detail": "Schedule the shop's workload against promised delivery dates."
-  }
- ],
+ "gaps": [],
  "distinctive": [
   {
    "id": "wall_thickness",
@@ -1101,13 +1136,19 @@
    "en": "Pipework sizing",
    "he": "תכנון צנרת",
    "detail": "Darcy-Weisbach and Hazen-Williams pipe sizing with Hardy Cross loop balancing, for the plumbing that goes in alongside the aluminium."
+  },
+  {
+   "id": "books_audit",
+   "en": "Books reconciled to the racks",
+   "he": "התאמת ספרים למלאי בפועל",
+   "detail": "The stock value is re-derived from the movement history, the trial balance from the postings, and the stock accounts checked against the stock book — three records of the same facts, cross-checked."
   }
  ],
  "limitations": [
   "The bundled profile catalogues are examples. LogiKal ships around 700 suppliers' catalogues, verified and maintained over decades; the ingestion engine here lets a shop build its own library from what its suppliers publish, but the library still has to be built.",
   "The proprietary CNC formats — Elumatec NCX/ECX/NCW/DGX, Schüco MCO, Kaban KBN — have never been cut on a physical machine from this software. Prove them on scrap before production.",
-  "There is no ERP here: no purchase orders, no stock movements, no ledger. Quotations and supplier enquiries stop at the document.",
-  "There is no 3D presentation view, and no capacity or delivery planning.",
+  "The ledger is bookkeeping, not certified bookkeeping. Israeli law sets requirements for computerised accounting records and for issuing tax invoices, and nothing here has been submitted for approval against them. Treat it as the shop's own management accounts and keep issuing statutory documents from whatever is already approved, until it is.",
+  "The standard times the scheduler works from are starting values, not measurements of your shop. A promised date is only as good as the minutes-per-cut behind it, so time a few real jobs and set them.",
   "Nothing in this comparison has been tested against a competitor's installation. Competitor rows record public documentation only, and \"not documented\" never means \"absent\"."
  ]
 }
