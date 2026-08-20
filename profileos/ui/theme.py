@@ -175,6 +175,7 @@ class Metrics:
     unit: int = 4                       # space(2) == 8px: the grid step
     radius: int = RADIUS["md"]
     radius_small: int = RADIUS["sm"]
+    radius_large: int = RADIUS["lg"]
     border_width: int = 1
     sidebar_width: int = 232
     panel_width: int = 344
@@ -423,6 +424,79 @@ QCheckBox::indicator, QRadioButton::indicator {{
 }}
 QCheckBox::indicator:checked, QRadioButton::indicator:checked {{
     background: {p.accent}; border-color: {p.accent};
+}}
+
+/* ---------- home pipeline ---------- */
+QPushButton#PipeStep {{
+    background: {p.surface};
+    border: {m.border_width}px solid {p.border};
+    border-radius: {m.radius}px;
+    padding: {m.space(2)}px {m.space(3)}px;
+    min-height: 52px; text-align: right;
+    color: {p.text_muted}; font-weight: 500;
+}}
+QPushButton#PipeStep:hover {{ border-color: {p.border_strong}; color: {p.text}; }}
+QPushButton#PipeStep[state="done"] {{
+    color: {p.text};
+    border-color: {p.border_strong};
+}}
+QPushButton#PipeStep[state="active"] {{
+    background: {p.accent_subtle};
+    border: {m.border_width}px solid {p.accent};
+    color: {BRAND.x300}; font-weight: 600;
+}}
+#PipeArrow {{ color: {p.text_faint}; font-size: {m.font_size_large}px; }}
+#PipeCaption {{
+    color: {p.text_faint}; font-size: 10px; font-weight: 600;
+    letter-spacing: 0.08em;
+}}
+#HomeGreeting {{
+    font-size: 26px; font-weight: 700; color: {p.text};
+}}
+#HomeNext {{
+    color: {p.text_muted}; font-size: {m.font_size}px;
+}}
+
+/* ---------- toasts ---------- */
+#Toast {{
+    background: {p.surface_raised};
+    border: {m.border_width}px solid {p.border_strong};
+    border-radius: {m.radius}px;
+    color: {p.text}; font-weight: 500;
+    padding: {m.space(2)}px {m.space(4)}px;
+}}
+#Toast[kind="success"] {{ border-color: {p.success}; }}
+#Toast[kind="danger"] {{ border-color: {p.danger}; }}
+
+/* ---------- command palette ---------- */
+#Palette {{
+    background: {p.surface_raised};
+    border: {m.border_width}px solid {p.border_strong};
+    border-radius: {m.radius_large}px;
+}}
+#PaletteInput {{
+    background: transparent; border: none;
+    border-bottom: {m.border_width}px solid {p.border};
+    border-radius: 0;
+    font-size: {m.font_size_title}px;
+    padding: {m.space(3)}px {m.space(4)}px;
+}}
+#PaletteList {{
+    background: transparent; border: none; outline: none;
+    font-size: {m.font_size}px;
+}}
+#PaletteList::item {{
+    padding: {m.space(2)}px {m.space(4)}px;
+    border-radius: {m.radius_small}px;
+    margin: 1px {m.space(2)}px;
+    color: {p.text_muted};
+}}
+#PaletteList::item:selected {{
+    background: {p.accent_subtle}; color: {BRAND.x300};
+}}
+#PaletteHint {{
+    color: {p.text_faint}; font-size: {m.font_size_small}px;
+    padding: {m.space(1)}px {m.space(4)}px {m.space(2)}px;
 }}
 """
 

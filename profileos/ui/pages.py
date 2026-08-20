@@ -94,8 +94,186 @@ class Page(QWidget):
 
     def status(self, message: str) -> None:
         window = self.window()
-        if hasattr(window, "statusBar"):
+        if hasattr(window, "toast"):
+            window.toast(message)
+        elif hasattr(window, "statusBar"):
             window.statusBar().showMessage(message, 6000)
+
+
+class HomePage(Page):
+    """Where the day starts: what has been done, and what the next step is.
+
+    The competitors open on a form. Opening on the state of the work — with
+    the one next action a click away — is what makes the software feel like it
+    is working *with* the fabricator rather than waiting for them.
+    """
+
+    title = "Home"
+    hebrew = "דף הבית"
+    subtitle = ""
+
+    #: The production chain, in the order work moves: (page title, Hebrew
+    #: name, how to tell from the session that the step has been done).
+    STEPS: tuple[tuple[str, str, str], ...] = (
+        ("Profile", "פרופיל", "section_properties"),
+        ("Element", "פתחים", "builds"),
+        ("Nesting", "חיתוך", "nesting_report"),
+        ("Glass", "זכוכית", "glass_report"),
+        ("Machining", "CNC", "post_results"),
+        ("Quotation", "הצעת מחיר", "quote"),
+        ("Shop floor", "ייצור", "work_order"),
+    )
+
+    def build(self) -> None:
+        from ..branding import active_brand
+
+        palette_button = QPushButton("Ctrl+K — מעבר מהיר")
+        palette_button.setObjectName("Ghost")
+        palette_button.clicked.connect(self._open_palette)
+        self.header.add_action(palette_button)
+
+        self.greeting = QLabel()
+        self.greeting.setObjectName("HomeGreeting")
+        self.body.addWidget(self.greeting)
+
+        self.next_label = QLabel()
+        self.next_label.setObjectName("HomeNext")
+        self.next_label.setTextFormat(Qt.TextFormat.RichText)
+        self.body.addWidget(self.next_label)
+
+        # -- the pipeline ------------------------------------------------- #
+        pipeline = Card("קו הייצור")
+        row = QHBoxLayout()
+        row.setSpacing(METRICS.space(1))
+        self._step_buttons: list[QPushButton] = []
+        for position, (page_title, hebrew, _attr) in enumerate(self.STEPS):
+            if position:
+                arrow = QLabel("←")
+                arrow.setObjectName("PipeArrow")
+                row.addWidget(arrow)
+            button = QPushButton(hebrew)
+            button.setObjectName("PipeStep")
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
+            button.clicked.connect(
+                lambda _checked=False, t=page_title: self._go(t)
+            )
+            self._step_buttons.append(button)
+            row.addWidget(button, 1)
+        pipeline.add_layout(row)
+        self.body.addWidget(pipeline)
+
+        # -- the numbers -------------------------------------------------- #
+        self.stats = StatRow([
+            ("elements", "פתחים"), ("area", "שטח"),
+            ("quote", "הצעת מחיר"), ("floor", "בייצור"),
+        ])
+        self.body.addWidget(self.stats)
+
+        # -- quick actions ------------------------------------------------ #
+        actions = Card("פעולות מהירות")
+        buttons = QHBoxLayout()
+        buttons.setSpacing(METRICS.space(2))
+        for label, handler in (
+            ("טעינת פרופיל לדוגמה", self._load_sample),
+            ("תכנון פתח", lambda: self._go("Element")),
+            ("הצעת מחיר", lambda: self._go("Quotation")),
+            ("רצפת הייצור", lambda: self._go("Shop floor")),
+        ):
+            button = QPushButton(label)
+            button.clicked.connect(lambda _checked=False, h=handler: h())
+            buttons.addWidget(button)
+        buttons.addStretch(1)
+        actions.add_layout(buttons)
+        self.body.addWidget(actions)
+
+        note = QLabel(
+            "כל צעד בקו נשען על הקודם לו: הפרופיל שנמדד הוא זה שנבנה ממנו "
+            "הפתח, רשימת החיתוך שלו היא זו שמגיעה למסור, והמחיר מחושב מאותם "
+            "נתונים בדיוק. שינוי במקום אחד מתגלגל לכל השאר."
+        )
+        note.setObjectName("Hint")
+        note.setWordWrap(True)
+        self.body.addWidget(note)
+        self.body.addStretch(1)
+
+        brand = active_brand()
+        self._brand_name = brand.display_name
+
+    # -- behaviour -------------------------------------------------------- #
+    def _go(self, page_title: str) -> None:
+        window = self.window()
+        if hasattr(window, "go_to_page"):
+            window.go_to_page(page_title)
+
+    def _load_sample(self) -> None:
+        window = self.window()
+        if hasattr(window, "go_to_page"):
+            page = window.go_to_page("Profile")
+            if hasattr(page, "load_sample"):
+                page.load_sample()
+
+    def _open_palette(self) -> None:
+        window = self.window()
+        if hasattr(window, "open_palette"):
+            window.open_palette()
+
+    def refresh(self) -> None:
+        from datetime import datetime
+
+        now = datetime.now()
+        hebrew_days = ["שני", "שלישי", "רביעי", "חמישי", "שישי", "שבת", "ראשון"]
+        hebrew_months = [
+            "ינואר", "פברואר", "מרץ", "אפריל", "מאי", "יוני", "יולי",
+            "אוגוסט", "ספטמבר", "אוקטובר", "נובמבר", "דצמבר",
+        ]
+        part = "בוקר טוב" if 5 <= now.hour < 12 else (
+            "צהריים טובים" if 12 <= now.hour < 17 else "ערב טוב"
+        )
+        self.greeting.setText(f"{part}, {self._brand_name}")
+        self.header.set_subtitle(
+            f"יום {hebrew_days[now.weekday()]}, "
+            f"{now.day} ב{hebrew_months[now.month - 1]} {now.year}"
+        )
+
+        # Step states: everything the session holds is "done"; the first gap
+        # is the active step, and everything past it just waits its turn.
+        active_seen = False
+        active_hebrew = ""
+        for button, (page_title, hebrew, attribute) in zip(self._step_buttons, self.STEPS):
+            done = bool(getattr(self.session, attribute, None))
+            if done:
+                state = "done"
+                button.setText(f"✓ {hebrew}")
+            elif not active_seen:
+                state, active_seen, active_hebrew = "active", True, hebrew
+                button.setText(hebrew)
+            else:
+                state = "pending"
+                button.setText(hebrew)
+            button.setProperty("state", state)
+            button.style().unpolish(button)
+            button.style().polish(button)
+
+        if not active_seen:
+            self.next_label.setText("כל שלבי הקו הושלמו — העבודה בדרך למשלוח.")
+        else:
+            self.next_label.setText(f"הצעד הבא: <b>{active_hebrew}</b>")
+
+        area = self.session.total_area
+        self.stats.update_many({
+            "elements": (str(len(self.session.builds)) if self.session.builds else "—",
+                         "מתוכננים בפרויקט"),
+            "area": (f"⁦{area:.1f} m²⁩" if area else "—", ""),
+            "quote": (
+                f"⁦{self.session.quote.net_price:,.0f} ₪⁩"
+                if self.session.quote else "—",
+                "לפני מע\"מ" if self.session.quote else "טרם חושבה",
+            ),
+            "floor": (
+                str(len(self.session.work_order)) if self.session.work_order else "—",
+                "פריטים בעבודה" if self.session.work_order else "טרם שוחרר",
+            ),
+        })
 
 
 # --------------------------------------------------------------------------- #
@@ -2781,12 +2959,13 @@ class AccountsPage(Page):
 
 
 PAGES: list[type[Page]] = [
-    ProfilePage, ElementPage, ViewPage, NestingPage, GlassPage, MachiningPage,
-    QuotePage, AccountsPage, ShopFloorPage, CataloguePage, SystemPage,
+    HomePage, ProfilePage, ElementPage, ViewPage, NestingPage, GlassPage,
+    MachiningPage, QuotePage, AccountsPage, ShopFloorPage, CataloguePage,
+    SystemPage,
 ]
 
 __all__ = [
-    "Page", "ProfilePage", "ElementPage", "ViewPage", "NestingPage",
-    "GlassPage", "MachiningPage", "QuotePage", "AccountsPage",
+    "Page", "HomePage", "ProfilePage", "ElementPage", "ViewPage",
+    "NestingPage", "GlassPage", "MachiningPage", "QuotePage", "AccountsPage",
     "ShopFloorPage", "CataloguePage", "SystemPage", "PAGES",
 ]

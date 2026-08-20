@@ -74,8 +74,9 @@ class TestTheme:
 class TestWindow:
     def test_all_pages_are_present(self, window):
         assert [p.title for p in window.pages] == [
-            "Profile", "Element", "3D view", "Nesting", "Glass", "Machining",
-            "Quotation", "Accounts", "Shop floor", "Catalogue", "System",
+            "Home", "Profile", "Element", "3D view", "Nesting", "Glass",
+            "Machining", "Quotation", "Accounts", "Shop floor", "Catalogue",
+            "System",
         ]
 
     def test_every_page_is_reachable_from_the_sidebar(self, window):
@@ -694,3 +695,66 @@ class TestAccountsPage:
         window.session.clear_builds()
         page.plan_purchases()
         assert recorded
+
+
+class TestHomePage:
+    def test_pipeline_marks_done_steps_and_names_the_next(self, window):
+        window.page("Profile").load_sample()
+        window.page("Element").build_element()
+        home = window.go_to_page("Home")
+        pump()
+        states = [b.property("state") for b in home._step_buttons]
+        assert states[0] == "done" and states[1] == "done"
+        assert "active" in states
+        # The first not-done step is the one the label points at.
+        active = states.index("active")
+        assert home.STEPS[active][1] in home.next_label.text()
+
+    def test_empty_session_starts_at_the_first_step(self, window):
+        home = window.go_to_page("Home")
+        pump()
+        assert home._step_buttons[0].property("state") == "active"
+        assert all(
+            b.property("state") == "pending" for b in home._step_buttons[1:]
+        )
+
+    def test_pipeline_step_navigates(self, window):
+        home = window.go_to_page("Home")
+        home._step_buttons[0].click()
+        pump()
+        assert window.stack.currentWidget().title == "Profile"
+
+
+class TestCommandPalette:
+    def test_typing_filters_to_the_matching_page(self, window):
+        window.open_palette()
+        palette = window._palette_dialog
+        palette.search.setText("הצעת")
+        labels = [
+            palette.results.item(i).text()
+            for i in range(palette.results.count())
+        ]
+        assert labels == ["הצעת מחיר"]
+        palette.reject()
+
+    def test_enter_runs_the_selected_command(self, window):
+        window.open_palette()
+        palette = window._palette_dialog
+        palette.search.setText("תלת")
+        palette._run_item(palette.results.item(0))
+        pump()
+        assert window.stack.currentWidget().title == "3D view"
+
+
+class TestToasts:
+    def test_status_raises_a_toast(self, window):
+        window.page("Profile").status("נשמר")
+        pump()
+        toasts = getattr(window, "_toasts", [])
+        assert toasts and toasts[-1].text() == "נשמר"
+
+    def test_toasts_never_stack_beyond_three(self, window):
+        for index in range(5):
+            window.toast(f"הודעה {index}")
+        pump()
+        assert len(window._toasts) == 3

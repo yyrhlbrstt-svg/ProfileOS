@@ -413,3 +413,68 @@ class Skeleton(QWidget):
             painter.drawRoundedRect(QRectF(0, y, bar_width, row_height),
                                     METRICS.radius_small, METRICS.radius_small)
         painter.end()
+
+
+class Toast(QLabel):
+    """A short-lived notice that appears where the eye already is.
+
+    The status bar is honest but easy to miss; a toast slides in at the top of
+    the window, stays long enough to read, and removes itself. It never takes
+    focus and never blocks a click.
+    """
+
+    LIFETIME_MS = 2800
+
+    def __init__(self, window: QWidget, message: str, kind: str = "info") -> None:
+        super().__init__(message, window)
+        self.setObjectName("Toast")
+        self.setProperty("kind", kind)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.adjustSize()
+        self._window = window
+        self.show()
+        self.raise_()
+        QTimer.singleShot(self.LIFETIME_MS, self._dismiss)
+
+    def _dismiss(self) -> None:
+        from PySide6.QtCore import QPropertyAnimation
+        from PySide6.QtWidgets import QGraphicsOpacityEffect
+
+        effect = QGraphicsOpacityEffect(self)
+        self.setGraphicsEffect(effect)
+        animation = QPropertyAnimation(effect, b"opacity", self)
+        animation.setDuration(METRICS.motion_base_ms)
+        animation.setStartValue(1.0)
+        animation.setEndValue(0.0)
+        animation.finished.connect(self._remove)
+        animation.start(QPropertyAnimation.DeletionPolicy.DeleteWhenStopped)
+
+    def _remove(self) -> None:
+        toasts = getattr(self._window, "_toasts", None)
+        if toasts and self in toasts:
+            toasts.remove(self)
+            reposition_toasts(self._window)
+        self.deleteLater()
+
+
+def show_toast(window: QWidget, message: str, kind: str = "info") -> None:
+    """Show a toast on ``window``, stacking below any that are already up."""
+    toasts: list[Toast] = getattr(window, "_toasts", None) or []
+    # Three is the most anyone reads; older notices have had their moment.
+    while len(toasts) >= 3:
+        stale = toasts.pop(0)
+        stale.hide()
+        stale.deleteLater()
+    toast = Toast(window, message, kind)
+    toasts.append(toast)
+    window._toasts = toasts
+    reposition_toasts(window)
+
+
+def reposition_toasts(window: QWidget) -> None:
+    y = METRICS.space(3)
+    for toast in getattr(window, "_toasts", []):
+        toast.adjustSize()
+        toast.move((window.width() - toast.width()) // 2, y)
+        toast.raise_()
+        y += toast.height() + METRICS.space(1)

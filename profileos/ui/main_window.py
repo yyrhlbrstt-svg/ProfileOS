@@ -28,11 +28,12 @@ _log = get_logger("ui.window")
 
 #: Sidebar grouping. Navigation follows the order work moves through the shop.
 NAV_SECTIONS: list[tuple[str, list[int]]] = [
-    ("תכנון", [0, 1, 2]),
-    ("ייצור", [3, 4, 5]),
-    ("מסחרי", [6, 7]),
-    ("מפעל", [8]),
-    ("ספרייה", [9, 10]),
+    ("סקירה", [0]),
+    ("תכנון", [1, 2, 3]),
+    ("ייצור", [4, 5, 6]),
+    ("מסחרי", [7, 8]),
+    ("מפעל", [9]),
+    ("ספרייה", [10, 11]),
 ]
 
 
@@ -197,8 +198,8 @@ class MainWindow(QMainWindow):
         return page
 
     def _install_shortcuts(self) -> None:
-        """Ctrl+1..6 jump straight to a page; Ctrl+T toggles the theme."""
-        for index in range(len(self.pages)):
+        """Ctrl+1..9 jump to a page, Ctrl+T toggles the theme, Ctrl+K searches."""
+        for index in range(min(len(self.pages), 9)):
             action = QAction(self)
             action.setShortcut(QKeySequence(f"Ctrl+{index + 1}"))
             action.triggered.connect(lambda _checked=False, i=index: self.go_to(i))
@@ -208,6 +209,33 @@ class MainWindow(QMainWindow):
         theme_action.setShortcut(QKeySequence("Ctrl+T"))
         theme_action.triggered.connect(self.toggle_theme)
         self.addAction(theme_action)
+
+        palette_action = QAction(self)
+        palette_action.setShortcut(QKeySequence("Ctrl+K"))
+        palette_action.triggered.connect(self.open_palette)
+        self.addAction(palette_action)
+
+    def open_palette(self) -> None:
+        """The Ctrl+K search box: every page and common action, one keystroke."""
+        from .palette_search import CommandPalette
+
+        if getattr(self, "_palette_dialog", None) is None:
+            self._palette_dialog = CommandPalette(self)
+        self._palette_dialog.open_over()
+
+    # -- notifications -------------------------------------------------------- #
+    def toast(self, message: str, kind: str = "info") -> None:
+        """A short notice at the top of the window; also logged to the status bar."""
+        from .widgets import show_toast
+
+        show_toast(self, message, kind)
+        self.statusBar().showMessage(message, 6000)
+
+    def resizeEvent(self, event: Any) -> None:  # noqa: N802 - Qt naming
+        super().resizeEvent(event)
+        from .widgets import reposition_toasts
+
+        reposition_toasts(self)
 
     # -- appearance ----------------------------------------------------------- #
     def apply_palette(self, palette: Palette) -> None:
@@ -232,7 +260,10 @@ class MainWindow(QMainWindow):
 
     def toggle_theme(self) -> None:
         self.apply_palette(LIGHT if self.colours.mode.value == "dark" else DARK)
-        self.statusBar().showMessage(f"Switched to the {self.colours.mode.value} theme", 3000)
+        self.toast(
+            "עברת לערכה הבהירה" if self.colours.mode.value == "light"
+            else "עברת לערכה הכהה"
+        )
 
     def _update_status(self) -> None:
         self.statusBar().showMessage(self.session.describe())
