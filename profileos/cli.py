@@ -3013,6 +3013,131 @@ def jobs_pack(
     )
 
 
+@pipe_app.command("fixtures")
+def pipe_fixtures(
+    dwellings: int = typer.Option(1, "--dwellings", "-d", help="Typical dwellings."),
+    add: Optional[str] = typer.Option(
+        None, "--add", help="Extra fixtures, e.g. 'urinal=4,basin=2'."
+    ),
+    valves: bool = typer.Option(False, "--valves", help="Flush valves rather than cisterns."),
+) -> None:
+    """Count what is connected, and what it therefore demands."""
+    from .plumbing import FIXTURES, FixtureSchedule, SupplyKind, typical_dwelling
+
+    kind = SupplyKind.VALVE if valves else SupplyKind.TANK
+    schedule = typical_dwelling(dwellings, kind=kind) if dwellings else FixtureSchedule(kind=kind)
+    if add:
+        for pair in add.split(","):
+            if not pair.strip():
+                continue
+            name, _, count = pair.partition("=")
+            try:
+                schedule.add(name.strip(), int(count or 1))
+            except Exception as exc:  # noqa: BLE001
+                _fail(str(exc))
+
+    table = Table(title="Fixture schedule", header_style="dim")
+    table.add_column("Fixture", style="cyan")
+    table.add_column("Hebrew")
+    table.add_column("Qty", justify="right")
+    table.add_column("Cold LU", justify="right")
+    table.add_column("Hot LU", justify="right")
+    table.add_column("DFU", justify="right")
+    for fixture_id, hebrew, quantity, cold, hot, dfu in schedule.rows():
+        table.add_row(fixture_id, hebrew, str(quantity), f"{cold:g}", f"{hot:g}", f"{dfu:g}")
+    console.print(table)
+
+    summary = schedule.summary()
+    console.print(
+        _kv_table(
+            "Demand",
+            [
+                ("Fixtures", summary["fixtures"]),
+                ("Loading units", f"{summary['cold_lu']:g} cold / {summary['hot_lu']:g} hot"),
+                ("Cold demand", f"{summary['cold_lps']:.2f} l/s"),
+                ("Hot demand", f"{summary['hot_lps']:.2f} l/s"),
+                ("Combined main", f"{summary['total_lps']:.2f} l/s"),
+                ("Drainage units", f"{summary['dfu']:g}"),
+                ("Largest trap", f"{summary['largest_trap_mm']:.0f} mm"),
+            ],
+        )
+    )
+    console.print(f"[dim]Available fixtures: {', '.join(f.id for f in FIXTURES)}[/dim]")
+
+
+@pipe_app.command("drainage")
+def pipe_drainage(
+    dwellings: int = typer.Option(8, "--dwellings", "-d"),
+    floors: int = typer.Option(4, "--floors", "-f"),
+    fall: float = typer.Option(0.02, "--fall", help="Branch fall, e.g. 0.02 for 1:50."),
+    vent_length: float = typer.Option(25.0, "--vent-length", help="Developed vent run [m]."),
+) -> None:
+    """Size the branch, the stack, its vent and the house drain."""
+    from .plumbing import design_drainage, typical_dwelling
+
+    try:
+        design = design_drainage(
+            typical_dwelling(dwellings), floors=floors, fall=fall,
+            vent_length_m=vent_length,
+        )
+    except Exception as exc:  # noqa: BLE001
+        _fail(str(exc))
+
+    table = Table(title="Drainage", header_style="dim")
+    table.add_column("Part", style="cyan")
+    table.add_column("Size", justify="right")
+    table.add_column("Reasoning")
+    for part, size, reason in design.rows():
+        table.add_row(part, size, reason)
+    console.print(table)
+    for note in design.notes():
+        console.print(f"[yellow]{note}[/yellow]")
+    if not design.ok:
+        raise typer.Exit(code=1)
+
+
+@pipe_app.command("circulation")
+def pipe_circulation(
+    length: float = typer.Option(120.0, "--length", "-l", help="Loop length [m]."),
+    diameter: float = typer.Option(28.0, "--diameter", help="Flow pipe outside diameter [mm]."),
+    insulation: float = typer.Option(25.0, "--insulation", help="Insulation thickness [mm]."),
+    material: str = typer.Option("elastomeric", "--insulation-type"),
+    catalogue: str = typer.Option("copper-en1057", "--catalogue", "-c"),
+    dead_leg: float = typer.Option(5.0, "--dead-leg", help="Longest uncirculated tail [m]."),
+) -> None:
+    """Size a hot water circulation loop: flow, return, pump and dead legs."""
+    from .plumbing import DeadLeg, design_circulation, get_catalogue
+
+    try:
+        design = design_circulation(
+            length, diameter, get_catalogue(catalogue),
+            insulation_mm=insulation, material=material,
+            dead_legs=[DeadLeg("longest tail", dead_leg, 16.0)],
+        )
+    except Exception as exc:  # noqa: BLE001
+        _fail(str(exc))
+
+    summary = design.summary()
+    console.print(
+        _kv_table(
+            "Hot water circulation",
+            [
+                ("Loss per metre", f"{summary['loss_per_metre_w']:.1f} W/m"),
+                ("Loop loss", f"{summary['total_watts']:.0f} W"),
+                ("Circulation flow", f"{summary['flow_lps']:.3f} l/s"),
+                ("Return pipe", summary["return"]),
+                ("Pump head", f"{summary['pump_head_kpa']:.1f} kPa"),
+                ("Pump power", f"{summary['pump_watts']:.1f} W"),
+                ("Standing loss", f"{summary['annual_kwh']:,.0f} kWh/year"),
+            ],
+        )
+    )
+    for leg in design.dead_legs:
+        console.print(("[green]" if leg.ok else "[red]") + leg.describe())
+    for note in design.notes:
+        console.print(f"[yellow]{note}[/yellow]")
+
+
 def main() -> None:
     """Console-script entry point."""
     try:

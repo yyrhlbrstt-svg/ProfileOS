@@ -62,6 +62,14 @@ _PATHS: dict[str, str] = {
     "books": "<path d='M4 20V5.2a1 1 0 0 1 1-1h3.2a1 1 0 0 1 1 1V20z'/>"
              "<path d='M9.2 20V6.5a1 1 0 0 1 1-1h3a1 1 0 0 1 1 1V20z'/>"
              "<path d='m14.9 20 2.4-12.6a1 1 0 0 1 1.2-.8l1.6.3L18 20z'/>",
+    # A sheet with a corner fold and a dimension line: the drawing set.
+    "sheet": "<path d='M5.5 3.5h9L18.5 7.5v13h-13z'/><path d='M14.2 3.6v4.1h4.2'/>"
+             "<path d='M8 12.5h7.5'/><path d='M8 11.4v2.2M15.5 11.4v2.2'/>"
+             "<path d='M8 16.5h5'/>",
+    # A pipe with a valve on it: the plumbing side of the job.
+    "pipe": "<path d='M3 9.5h6.2v5H3zM14.8 9.5H21v5h-6.2z'/>"
+            "<path d='M9.2 8h5.6v8H9.2z'/><path d='M12 8V4.5'/>"
+            "<path d='M9.6 4.5h4.8'/>",
     # A gear, drawn as an octagon with a hub so it stays legible at 18 px.
     "gear": "<path d='M9.6 3.6h4.8l1.4 2.4 2.8.4 1.4 2.4-1.4 2.4 1.4 2.4-1.4 2.4"
             "-2.8.4-1.4 2.4H9.6l-1.4-2.4-2.8-.4L4 15.6 5.4 13.2 4 10.8l1.4-2.4"
@@ -75,12 +83,14 @@ PAGE_ICONS: dict[str, str] = {
     "Profile": "section",
     "Element": "window",
     "3D view": "cube",
+    "Drawings": "sheet",
     "Nesting": "bars",
     "Glass": "glass",
     "Machining": "tool",
     "Quotation": "document",
     "Accounts": "ledger",
     "Shop floor": "barcode",
+    "Plumbing": "pipe",
     "Catalogue": "books",
     "System": "gear",
 }

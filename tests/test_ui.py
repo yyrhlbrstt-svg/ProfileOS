@@ -74,9 +74,9 @@ class TestTheme:
 class TestWindow:
     def test_all_pages_are_present(self, window):
         assert [p.title for p in window.pages] == [
-            "Home", "Projects", "Profile", "Element", "3D view", "Nesting",
-            "Glass", "Machining", "Quotation", "Accounts", "Shop floor",
-            "Catalogue", "System",
+            "Home", "Projects", "Profile", "Element", "3D view", "Drawings",
+            "Nesting", "Glass", "Machining", "Quotation", "Accounts",
+            "Shop floor", "Plumbing", "Catalogue", "System",
         ]
 
     def test_every_page_is_reachable_from_the_sidebar(self, window):
@@ -971,3 +971,61 @@ class TestDroppedFiles:
 
     def test_only_known_suffixes_are_accepted(self, window):
         assert set(window.DROP_SUFFIXES) == {".dxf", ".dwg", ".json"}
+
+
+class TestPlumbingPage:
+    def test_the_demand_follows_the_counts_without_a_button(self, window):
+        page = window.go_to_page("Plumbing")
+        page.counts["basin"].setValue(40)
+        pump()
+        assert "יחידות עומס" in page.demand_label.text()
+
+    def test_designing_sizes_supply_drainage_hot_water_and_the_list(self, window):
+        page = window.go_to_page("Plumbing")
+        page.run_design()
+        pump()
+        assert page.supply_table.rowCount() == 3
+        assert page.drainage_table.rowCount() == 4
+        assert page._takeoff is not None and page.takeoff_table.rowCount() > 5
+        assert page._hot_values["קו חוזר"].text() != "—"
+
+    def test_an_empty_schedule_is_reported_not_crashed(self, window, monkeypatch):
+        recorded: list[str] = []
+        monkeypatch.setattr(
+            type(window.page("Plumbing")), "report",
+            lambda self, exc, context="": recorded.append(str(exc)),
+        )
+        page = window.go_to_page("Plumbing")
+        for box in page.counts.values():
+            box.setValue(0)
+        page.run_design()
+        assert recorded and "כלי סניטרי" in recorded[0]
+
+    def test_flush_valves_demand_more_than_cisterns(self, window):
+        page = window.go_to_page("Plumbing")
+        page.supply_kind.setCurrentIndex(page.supply_kind.findData("tank"))
+        page.run_design()
+        pump()
+        with_tanks = page._schedule.total_demand()
+
+        page.supply_kind.setCurrentIndex(page.supply_kind.findData("valve"))
+        page.run_design()
+        pump()
+        assert page._schedule.total_demand() > with_tanks
+
+    def test_the_takeoff_exports_a_readable_csv(self, window, tmp_path, monkeypatch):
+        import csv
+
+        from PySide6.QtWidgets import QFileDialog
+
+        page = window.go_to_page("Plumbing")
+        page.run_design()
+        target = tmp_path / "takeoff.csv"
+        monkeypatch.setattr(
+            QFileDialog, "getSaveFileName",
+            staticmethod(lambda *args, **kwargs: (str(target), "")),
+        )
+        page.export_takeoff()
+        rows = list(csv.reader(target.read_text(encoding="utf-8-sig").splitlines()))
+        assert rows[0] == ["סוג", "תיאור", "כמות", "יחידה", "הערה"]
+        assert len(rows) > 5

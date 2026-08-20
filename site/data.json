@@ -1,8 +1,8 @@
 {
  "summary": {
-  "capabilities": 48,
+  "capabilities": 52,
   "packages_compared": 9,
-  "profileos_implemented": 48,
+  "profileos_implemented": 52,
   "profileos_gaps": 0,
   "not_documented_elsewhere": 13,
   "claims_verified": true,
@@ -848,6 +848,78 @@
    "alkal": "not_documented"
   },
   {
+   "id": "plumbing_fixtures",
+   "area": "adjacent",
+   "name_en": "Fixture units and simultaneous demand",
+   "name_he": "יחידות עומס וספיקה בו-זמנית",
+   "detail": "Count what is connected and size the main from it: loading units through the Hunter demand curve for the supply, drainage fixture units for the waste, with cistern and flush-valve buildings on separate curves.",
+   "differentiator": true,
+   "profileos": "full",
+   "logikal": "unknown",
+   "klaes": "unknown",
+   "prefsuite": "unknown",
+   "schucal": "unknown",
+   "reynapro": "unknown",
+   "elucad": "unknown",
+   "kaban": "unknown",
+   "shablul": "unknown",
+   "alkal": "unknown"
+  },
+  {
+   "id": "plumbing_drainage",
+   "area": "adjacent",
+   "name_en": "Drainage and vent sizing",
+   "name_he": "תכנון דלוחין ואוורור",
+   "detail": "Branch, stack, vent and house drain sized from fixture units against fall, with the rules that beat the tables enforced: never reduce downstream, never below the largest trap, and a WC gets 100 mm.",
+   "differentiator": true,
+   "profileos": "full",
+   "logikal": "unknown",
+   "klaes": "unknown",
+   "prefsuite": "unknown",
+   "schucal": "unknown",
+   "reynapro": "unknown",
+   "elucad": "unknown",
+   "kaban": "unknown",
+   "shablul": "unknown",
+   "alkal": "unknown"
+  },
+  {
+   "id": "plumbing_hot_water",
+   "area": "adjacent",
+   "name_en": "Hot water circulation and dead legs",
+   "name_he": "מחזור מים חמים וזנבות",
+   "detail": "Heat loss through the insulation, the circulation flow that carries it, the return pipe and pump duty that follow, and the uncirculated tail checked against how long somebody waits at the tap.",
+   "differentiator": true,
+   "profileos": "full",
+   "logikal": "unknown",
+   "klaes": "unknown",
+   "prefsuite": "unknown",
+   "schucal": "unknown",
+   "reynapro": "unknown",
+   "elucad": "unknown",
+   "kaban": "unknown",
+   "shablul": "unknown",
+   "alkal": "unknown"
+  },
+  {
+   "id": "plumbing_takeoff",
+   "area": "adjacent",
+   "name_en": "Plumbing materials take-off",
+   "name_he": "כתב כמויות לאינסטלציה",
+   "detail": "Pipe counted in stock lengths rather than metres, insulation counted per run, fittings and valves gathered by size, and the waste allowance stated as its own line rather than folded into a quantity.",
+   "differentiator": true,
+   "profileos": "full",
+   "logikal": "unknown",
+   "klaes": "unknown",
+   "prefsuite": "unknown",
+   "schucal": "unknown",
+   "reynapro": "unknown",
+   "elucad": "unknown",
+   "kaban": "unknown",
+   "shablul": "unknown",
+   "alkal": "unknown"
+  },
+  {
    "id": "erp",
    "area": "adjacent",
    "name_en": "Stock, purchasing and the ledger",
@@ -933,7 +1005,7 @@
     "full": 21,
     "partial": 7,
     "not_documented": 14,
-    "unknown": 6
+    "unknown": 10
    }
   },
   {
@@ -948,7 +1020,7 @@
     "full": 19,
     "partial": 1,
     "not_documented": 13,
-    "unknown": 15
+    "unknown": 19
    }
   },
   {
@@ -963,7 +1035,7 @@
     "full": 15,
     "partial": 1,
     "not_documented": 12,
-    "unknown": 20
+    "unknown": 24
    }
   },
   {
@@ -978,7 +1050,7 @@
     "full": 9,
     "partial": 3,
     "not_documented": 10,
-    "unknown": 26
+    "unknown": 30
    }
   },
   {
@@ -993,7 +1065,7 @@
     "full": 10,
     "partial": 0,
     "not_documented": 10,
-    "unknown": 28
+    "unknown": 32
    }
   },
   {
@@ -1008,7 +1080,7 @@
     "full": 4,
     "partial": 4,
     "not_documented": 11,
-    "unknown": 29
+    "unknown": 33
    }
   },
   {
@@ -1023,7 +1095,7 @@
     "full": 1,
     "partial": 3,
     "not_documented": 5,
-    "unknown": 39
+    "unknown": 43
    }
   },
   {
@@ -1038,7 +1110,7 @@
     "full": 5,
     "partial": 1,
     "not_documented": 9,
-    "unknown": 33
+    "unknown": 37
    }
   },
   {
@@ -1053,12 +1125,12 @@
     "full": 5,
     "partial": 1,
     "not_documented": 9,
-    "unknown": 33
+    "unknown": 37
    }
   }
  ],
  "profileos_coverage": {
-  "full": 48,
+  "full": 52,
   "partial": 0,
   "not_documented": 0,
   "unknown": 0

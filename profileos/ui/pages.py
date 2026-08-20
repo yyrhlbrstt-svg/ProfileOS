@@ -16,6 +16,7 @@ from typing import Any
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDialog,
     QHeaderView,
@@ -851,7 +852,18 @@ class ProfilePage(Page):
             self.report(exc, "לא ניתן לנתח את השרטוט")
             return
 
-        self.session.set_section(properties, section, path)
+        # The same drawing, also as a catalogue profile, so a wall detail can be
+        # cut against the real outline rather than a schematic box. A failure
+        # here costs the detail its outline, never the analysis on screen.
+        profile = None
+        try:
+            from ..geometry import profile_from_dxf
+
+            profile, _ = profile_from_dxf(str(path), path.stem, "ui")
+        except Exception:  # noqa: BLE001 - the section itself is what matters
+            _log.warning("Could not derive a profile definition from %s", path)
+
+        self.session.set_section(properties, section, path, profile)
         self.view.set_section(section.polygon, properties, section.validation)
         self.properties.set_rows(properties.summary_rows(), numeric_columns=(1,))
 
@@ -1193,6 +1205,241 @@ class ElementPage(Page):
             first = report.blockers[0]
             self.verdict.setText(f"לא ניתן לייצור: {self._finding_text(first)}")
             self.verdict.setStyleSheet(f"color: {self.colours.danger};")
+
+
+# --------------------------------------------------------------------------- #
+# Drawings
+# --------------------------------------------------------------------------- #
+
+class DrawingsPage(Page):
+    """Shop drawings: elevations and the wall sections that go with them.
+
+    The drawing engine has always been here; this is the screen that drives it.
+    A set is assembled from the elements as they will actually be built, so the
+    sheet in the site folder and the bar on the saw come from one calculation —
+    which is the whole argument for drawing inside the software that cuts.
+    """
+
+    title = "Drawings"
+    hebrew = "שרטוטים"
+    subtitle = "חזיתות, חתכי קיר וסט מוכן להפצה"
+
+    #: The junctions a set may include, in the order they are drawn.
+    DETAILS: tuple[tuple[str, str], ...] = (
+        ("head", "משקוף עליון"),
+        ("jamb", "מזוזה"),
+        ("sill", "סף תחתון"),
+        ("mullion", "אומנה"),
+        ("transom", "משקוף רוחב"),
+    )
+
+    def build(self) -> None:
+        from PySide6.QtSvgWidgets import QSvgWidget
+
+        produce = QPushButton("הפקת סט")
+        produce.setObjectName("Primary")
+        produce.clicked.connect(self.produce)
+        self.header.add_action(produce)
+
+        export = QPushButton("ייצוא")
+        export.clicked.connect(self.export_package)
+        self.header.add_action(export)
+
+        self.stats = StatRow([
+            ("sheets", "גיליונות"), ("details", "חתכים"),
+            ("scale", "קנה מידה"), ("revision", "מהדורה"),
+        ])
+        self.body.addWidget(self.stats)
+
+        controls = Card("הגדרות הסט")
+        row = QHBoxLayout()
+        row.setSpacing(METRICS.space(4))
+
+        self.wall = QComboBox()
+        self.wall.addItem("בטון, בידוד, חיפוי אבן", "stone")
+        self.wall.addItem("קיר בלוקים בטיח", "block")
+
+        self.size = QComboBox()
+        for label in ("A4", "A3", "A2", "A1"):
+            self.size.addItem(label, label)
+        self.size.setCurrentText("A3")
+
+        self.elevation_scale = QComboBox()
+        for scale in (10, 20, 25, 50):
+            self.elevation_scale.addItem(f"1:{scale}", scale)
+        self.elevation_scale.setCurrentText("1:20")
+
+        self.detail_scale = QComboBox()
+        for scale in (2, 5, 10):
+            self.detail_scale.addItem(f"1:{scale}", scale)
+        self.detail_scale.setCurrentText("1:5")
+
+        for label, widget in (
+            ("קיר", self.wall), ("גיליון", self.size),
+            ("חזיתות", self.elevation_scale), ("חתכים", self.detail_scale),
+        ):
+            caption = QLabel(label)
+            caption.setObjectName("FieldLabel")
+            row.addWidget(caption)
+            row.addWidget(widget)
+        row.addStretch(1)
+        controls.add_layout(row)
+
+        # Which junctions to cut. A set with no details is a set of elevations,
+        # which is a legitimate thing to issue, so none of these is compulsory.
+        details_row = QHBoxLayout()
+        details_row.setSpacing(METRICS.space(3))
+        caption = QLabel("חתכים לכלול")
+        caption.setObjectName("FieldLabel")
+        details_row.addWidget(caption)
+        self.detail_boxes: dict[str, QCheckBox] = {}
+        for key, label in self.DETAILS:
+            box = QCheckBox(label)
+            box.setChecked(key in ("head", "jamb", "sill", "mullion"))
+            self.detail_boxes[key] = box
+            details_row.addWidget(box)
+        details_row.addStretch(1)
+        controls.add_layout(details_row)
+        self.body.addWidget(controls)
+
+        # -- the sheet itself ---------------------------------------------- #
+        picker = QHBoxLayout()
+        picker.setSpacing(METRICS.space(2))
+        caption = QLabel("גיליון")
+        caption.setObjectName("FieldLabel")
+        picker.addWidget(caption)
+        self.sheet_picker = QComboBox()
+        self.sheet_picker.currentIndexChanged.connect(self._show_sheet)
+        picker.addWidget(self.sheet_picker, 1)
+        self.body.addLayout(picker)
+
+        self.canvas = QSvgWidget()
+        self.canvas.setMinimumHeight(420)
+        self.body.addWidget(self.canvas, 1)
+
+        self.stamp = QLabel()
+        self.stamp.setObjectName("Hint")
+        self.stamp.setWordWrap(True)
+        self.body.addWidget(self.stamp)
+
+        note = QLabel(
+            "החתכים נחתכים במפגש שבין האלומיניום לבניין: משקוף עליון, מזוזה, "
+            "סף ואומנה. אם נטען פרופיל אמיתי מהקטלוג, החתך מצויר לפי המתאר "
+            "שלו; אחרת הוא סכמטי ואומר זאת על הגיליון."
+        )
+        note.setObjectName("Hint")
+        note.setWordWrap(True)
+        self.body.addWidget(note)
+
+        self._package = None
+
+    # -- production --------------------------------------------------------- #
+    def _details(self) -> list[Any]:
+        from ..drawing.section import Detail
+
+        return [
+            Detail(key) for key, _label in self.DETAILS
+            if self.detail_boxes[key].isChecked()
+        ]
+
+    def produce(self) -> None:
+        from datetime import date
+
+        from ..branding import active_brand
+        from ..drawing import PackageInfo, Revision, SheetSize, build_package
+        from ..drawing.section import RENDERED_BLOCK, STONE_CLAD_CONCRETE
+
+        if not self.session.builds:
+            self.report(
+                ProfileOSError("עדיין לא תוכננו פתחים. תכנן פתח ואז חזור לכאן."),
+                "אין מה לשרטט",
+            )
+            return
+
+        job = self.session.job
+        brand = active_brand()
+        name = job.name if job is not None else "פרויקט"
+        info = PackageInfo(
+            project=name,
+            client=job.customer_name if job is not None else "",
+            company=brand.display_name,
+            company_line=brand.tagline or "",
+            number_prefix=f"{(job.job_id if job is not None else 'A')}-",
+            drawn_by=brand.display_name,
+            size=SheetSize(self.size.currentData()),
+            language=self.session.language,
+            wall=RENDERED_BLOCK if self.wall.currentData() == "block" else STONE_CLAD_CONCRETE,
+            revisions=[Revision("A", date.today(), "הופק לאישור", "")],
+        )
+        try:
+            self._package = build_package(
+                self.session.builds,
+                info,
+                elevation_scale=self.elevation_scale.currentData(),
+                detail_scale=self.detail_scale.currentData(),
+                profile=self.session.profile,
+                details=self._details(),
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "לא ניתן להפיק את הסט")
+            return
+
+        package = self._package
+        self.sheet_picker.blockSignals(True)
+        self.sheet_picker.clear()
+        for sheet in package.sheets:
+            block = sheet.title_block
+            self.sheet_picker.addItem(f"{block.number} — {block.title}")
+        self.sheet_picker.blockSignals(False)
+        if package.sheets:
+            self.sheet_picker.setCurrentIndex(0)
+            self._show_sheet()
+
+        self.stats.update_many({
+            "sheets": (str(len(package.sheets)), "בסט"),
+            "details": (str(len(self._details())), "מפגשים נחתכו"),
+            "scale": (f"1:{self.elevation_scale.currentData()}", "חזיתות"),
+            "revision": (info.revision, "לאישור"),
+        })
+        self.stamp.setText("  ·  ".join(package.stamps) if package.stamps else "")
+        self.status(f"הופקו {len(package.sheets)} גיליונות")
+
+    def _show_sheet(self) -> None:
+        """Render the chosen sheet into the preview."""
+        if self._package is None:
+            return
+        index = self.sheet_picker.currentIndex()
+        if not (0 <= index < len(self._package.sheets)):
+            return
+        try:
+            svg = self._package.sheets[index].to_svg()
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "לא ניתן להציג את הגיליון")
+            return
+        self.canvas.load(svg.encode("utf-8"))
+
+    def export_package(self) -> None:
+        if self._package is None:
+            self.report(ProfileOSError("הפק את הסט קודם"), "אין מה לייצא")
+            return
+        folder = QFileDialog.getExistingDirectory(self, "לאן לשמור את סט השרטוטים?")
+        if not folder:
+            return
+        try:
+            written = self._package.write(folder, formats=("pdf", "dxf", "svg"))
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "הייצוא נכשל")
+            return
+        self.status(f"נשמרו {len(written)} קבצים אל {folder}")
+
+    def refresh(self) -> None:
+        count = len(self.session.builds)
+        job = self.session.job
+        self.header.set_subtitle(
+            f"{job.job_id} — {count} פתחים מוכנים לשרטוט" if job is not None
+            else (f"{count} פתחים מוכנים לשרטוט" if count
+                  else "תכנן פתחים כדי להפיק סט שרטוטים")
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -2172,6 +2419,527 @@ class GlassPage(Page):
                 path.write_text(render_layout_svg(layout), encoding="utf-8")
                 written += 1
         self.status(f"נשמרו {written} מפות חיתוך אל {target}")
+
+
+# --------------------------------------------------------------------------- #
+# Plumbing
+# --------------------------------------------------------------------------- #
+
+class PlumbingPage(Page):
+    """Installation: the plumbing side of the same building.
+
+    A fabricator who also runs the plumbing — and in Israel that is most of
+    them — should not need a second program, a second licence and a second
+    place to lose the job. The five stages of a plumbing design sit on one
+    screen in the order the office works through them: count the fixtures,
+    size the supply, size the waste, keep the hot water hot, then price it.
+    """
+
+    title = "Plumbing"
+    hebrew = "אינסטלציה"
+    subtitle = "כלים סניטריים, אספקה, דלוחין, מים חמים וכתב כמויות"
+
+    def build(self) -> None:
+        design = QPushButton("חשב הכול")
+        design.setObjectName("Primary")
+        design.clicked.connect(self.run_design)
+        self.header.add_action(design)
+
+        export = QPushButton("ייצוא כתב כמויות")
+        export.clicked.connect(self.export_takeoff)
+        self.header.add_action(export)
+
+        self.stats = StatRow([
+            ("fixtures", "כלים"), ("demand", "ספיקה"),
+            ("dfu", "יחידות ניקוז"), ("stack", "מפל"), ("loss", "איבוד חום"),
+        ])
+        self.body.addWidget(self.stats)
+
+        tabs = QTabWidget()
+        tabs.addTab(self._fixtures_tab(), "כלים סניטריים")
+        tabs.addTab(self._supply_tab(), "אספקה")
+        tabs.addTab(self._drainage_tab(), "דלוחין ואוורור")
+        tabs.addTab(self._hot_tab(), "מים חמים")
+        tabs.addTab(self._takeoff_tab(), "כתב כמויות")
+        self.body.addWidget(tabs, 1)
+        self.tabs = tabs
+
+        self._takeoff = None
+        self._schedule = None
+
+    # -- fixtures ----------------------------------------------------------- #
+    def _fixtures_tab(self) -> QWidget:
+        from ..plumbing import FIXTURES, TYPICAL_DWELLING
+
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, METRICS.space(3), 0, 0)
+        layout.setSpacing(METRICS.space(3))
+
+        row = QHBoxLayout()
+        row.setSpacing(METRICS.space(4))
+        self.dwellings = QSpinBox()
+        self.dwellings.setRange(1, 500)
+        self.dwellings.setValue(8)
+        self.dwellings.setSuffix(" דירות")
+        self.dwellings.valueChanged.connect(self._apply_dwellings)
+
+        self.supply_kind = QComboBox()
+        self.supply_kind.addItem("מיכל הדחה", "tank")
+        self.supply_kind.addItem("מדיח לחץ", "valve")
+
+        for label, widget in (("כפל דירה טיפוסית", self.dwellings),
+                              ("סוג הדחה", self.supply_kind)):
+            caption = QLabel(label)
+            caption.setObjectName("FieldLabel")
+            row.addWidget(caption)
+            row.addWidget(widget)
+        row.addStretch(1)
+        layout.addLayout(row)
+
+        # One spin box per fixture: a schedule is a count, and typing counts is
+        # faster than any dialog that adds them one at a time.
+        grid = FieldGrid()
+        self.counts: dict[str, QSpinBox] = {}
+        for item in FIXTURES:
+            box = QSpinBox()
+            box.setRange(0, 9999)
+            box.setValue(TYPICAL_DWELLING.get(item.id, 0) * 8)
+            box.valueChanged.connect(self._recount)
+            self.counts[item.id] = box
+            grid.add(item.hebrew, box)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(grid)
+        layout.addWidget(scroll, 1)
+
+        self.demand_label = QLabel()
+        self.demand_label.setObjectName("Hint")
+        self.demand_label.setWordWrap(True)
+        layout.addWidget(self.demand_label)
+        return page
+
+    def _apply_dwellings(self) -> None:
+        """Refill the counts from the typical dwelling, times the number given."""
+        from ..plumbing import TYPICAL_DWELLING
+
+        count = self.dwellings.value()
+        for fixture_id, box in self.counts.items():
+            box.blockSignals(True)
+            box.setValue(TYPICAL_DWELLING.get(fixture_id, 0) * count)
+            box.blockSignals(False)
+        self._recount()
+
+    def _build_schedule(self) -> Any:
+        from ..plumbing import FixtureSchedule, SupplyKind
+
+        counts = {key: box.value() for key, box in self.counts.items() if box.value()}
+        return FixtureSchedule.of(
+            counts,
+            kind=SupplyKind(self.supply_kind.currentData()),
+            name="אינסטלציה",
+        )
+
+    def _recount(self) -> None:
+        """The demand follows the counts as they are typed, not on a button."""
+        schedule = self._build_schedule()
+        self._schedule = schedule
+        if not schedule.lines:
+            self.demand_label.setText("הזן כמויות כדי לראות את הספיקה הנדרשת.")
+            return
+        self.demand_label.setText(
+            f"⁦{schedule.cold_lu:g}⁩ יחידות עומס קרים ו־⁦{schedule.hot_lu:g}⁩ חמות · "
+            f"ספיקה בו-זמנית ⁦{schedule.cold_demand():.2f}⁩ ו־⁦{schedule.hot_demand():.2f}⁩ "
+            f"ל'/שנ' · קו משותף ⁦{schedule.total_demand():.2f}⁩ ל'/שנ' · "
+            f"⁦{schedule.dfu:g}⁩ יחידות ניקוז"
+        )
+        self.stats.set("fixtures", str(schedule.fixture_count), "מחוברים")
+        self.stats.set("demand", f"⁦{schedule.total_demand():.2f}⁩", "ל'/שנ' בו-זמנית")
+        self.stats.set("dfu", f"{schedule.dfu:g}", "יחידות ניקוז")
+
+    # -- supply -------------------------------------------------------------- #
+    def _supply_tab(self) -> QWidget:
+        from ..plumbing import BUILTIN_CATALOGUES
+
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, METRICS.space(3), 0, 0)
+        layout.setSpacing(METRICS.space(3))
+
+        controls = QHBoxLayout()
+        controls.setSpacing(METRICS.space(4))
+        self.material = QComboBox()
+        for key, catalogue in sorted(BUILTIN_CATALOGUES.items()):
+            self.material.addItem(catalogue.name, key)
+
+        self.run_length = QDoubleSpinBox()
+        self.run_length.setRange(1.0, 2000.0)
+        self.run_length.setValue(45.0)
+        self.run_length.setSuffix(" מ'")
+
+        self.height_gain = QDoubleSpinBox()
+        self.height_gain.setRange(-100.0, 300.0)
+        self.height_gain.setValue(12.0)
+        self.height_gain.setSuffix(" מ'")
+
+        self.available = QDoubleSpinBox()
+        self.available.setRange(50.0, 1600.0)
+        self.available.setValue(350.0)
+        self.available.setSuffix(" קפ\"א")
+
+        for label, widget in (
+            ("חומר", self.material), ("אורך קו", self.run_length),
+            ("הפרש גובה", self.height_gain), ("לחץ זמין", self.available),
+        ):
+            caption = QLabel(label)
+            caption.setObjectName("FieldLabel")
+            controls.addWidget(caption)
+            controls.addWidget(widget)
+        controls.addStretch(1)
+        layout.addLayout(controls)
+
+        self.supply_table = DataTable(
+            ["קו", "ספיקה", "קוטר", "מהירות", "איבוד/מ'", "איבוד כולל", "מצב"],
+            empty_text="לחץ ״חשב הכול״ כדי לתכנן את קווי האספקה",
+        )
+        layout.addWidget(self.supply_table, 1)
+
+        note = QLabel(
+            "כל קו נבדק מול שלושה גבולות: מהירות מרבית, איבוד לחץ למטר, והלחץ "
+            "שבאמת זמין בקצה. קוטר שנפסל נרשם עם הסיבה — מהירות גבוהה מדי היא "
+            "רעש ובלאי, ואיבוד גבוה מדי הוא ברז שלא נותן מים בקומה העליונה."
+        )
+        note.setObjectName("Hint")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        return page
+
+    # -- drainage ------------------------------------------------------------- #
+    def _drainage_tab(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, METRICS.space(3), 0, 0)
+        layout.setSpacing(METRICS.space(3))
+
+        controls = QHBoxLayout()
+        controls.setSpacing(METRICS.space(4))
+        self.floors = QSpinBox()
+        self.floors.setRange(1, 60)
+        self.floors.setValue(4)
+        self.floors.setSuffix(" קומות")
+
+        self.fall = QComboBox()
+        for value, label in ((0.01, "1% (1:100)"), (0.02, "2% (1:50)"), (0.04, "4% (1:25)")):
+            self.fall.addItem(label, value)
+        self.fall.setCurrentIndex(1)
+
+        self.vent_length = QDoubleSpinBox()
+        self.vent_length.setRange(1.0, 300.0)
+        self.vent_length.setValue(25.0)
+        self.vent_length.setSuffix(" מ'")
+
+        for label, widget in (("קומות", self.floors), ("שיפוע ענף", self.fall),
+                              ("אורך אוורור", self.vent_length)):
+            caption = QLabel(label)
+            caption.setObjectName("FieldLabel")
+            controls.addWidget(caption)
+            controls.addWidget(widget)
+        controls.addStretch(1)
+        layout.addLayout(controls)
+
+        self.drainage_table = DataTable(
+            ["חלק", "קוטר", "נימוק"],
+            empty_text="לחץ ״חשב הכול״ כדי לתכנן את מערכת הדלוחין",
+        )
+        layout.addWidget(self.drainage_table, 1)
+
+        self.drainage_notes = QLabel()
+        self.drainage_notes.setObjectName("Hint")
+        self.drainage_notes.setWordWrap(True)
+        layout.addWidget(self.drainage_notes)
+
+        note = QLabel(
+            "שלושה כללים גוברים על הטבלאות: קו ניקוז לא קטן בכיוון הזרימה, ענף "
+            "אינו קטן מהמחסום הגדול ביותר שמתחבר אליו, ואסלה מתחברת ל־100 מ\"מ. "
+            "הקיבולות הן ערכי הטבלאות המקובלים; הרשות המאשרת היא הקובעת."
+        )
+        note.setObjectName("Hint")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        return page
+
+    # -- hot water -------------------------------------------------------------- #
+    def _hot_tab(self) -> QWidget:
+        from ..plumbing import INSULATION
+
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, METRICS.space(3), 0, 0)
+        layout.setSpacing(METRICS.space(3))
+
+        controls = QHBoxLayout()
+        controls.setSpacing(METRICS.space(4))
+        self.loop_length = QDoubleSpinBox()
+        self.loop_length.setRange(1.0, 2000.0)
+        self.loop_length.setValue(120.0)
+        self.loop_length.setSuffix(" מ'")
+
+        self.insulation = QDoubleSpinBox()
+        self.insulation.setRange(0.0, 100.0)
+        self.insulation.setValue(25.0)
+        self.insulation.setSuffix(" מ\"מ")
+
+        self.insulation_kind = QComboBox()
+        for key, (label, _lambda) in INSULATION.items():
+            self.insulation_kind.addItem(label, key)
+
+        self.dead_leg = QDoubleSpinBox()
+        self.dead_leg.setRange(0.0, 60.0)
+        self.dead_leg.setValue(5.0)
+        self.dead_leg.setSuffix(" מ'")
+
+        for label, widget in (
+            ("אורך לולאה", self.loop_length), ("עובי בידוד", self.insulation),
+            ("סוג בידוד", self.insulation_kind), ("זנב ארוך ביותר", self.dead_leg),
+        ):
+            caption = QLabel(label)
+            caption.setObjectName("FieldLabel")
+            controls.addWidget(caption)
+            controls.addWidget(widget)
+        controls.addStretch(1)
+        layout.addLayout(controls)
+
+        self.hot_grid = FieldGrid()
+        self._hot_values: dict[str, QLabel] = {}
+        for label in ("איבוד למטר", "איבוד כולל", "ספיקת מחזור", "קו חוזר",
+                      "עומד משאבה", "הספק משאבה", "צריכה שנתית", "המתנה בזנב"):
+            value = QLabel("—")
+            value.setObjectName("FieldValue")
+            value.setAlignment(
+                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignAbsolute
+                | Qt.AlignmentFlag.AlignVCenter
+            )
+            self._hot_values[label] = self.hot_grid.add(label, value)
+        layout.addWidget(self.hot_grid)
+
+        self.hot_notes = QLabel()
+        self.hot_notes.setObjectName("Hint")
+        self.hot_notes.setWordWrap(True)
+        layout.addWidget(self.hot_notes)
+
+        note = QLabel(
+            "ת\"י 1205 מחייב בידוד קווי מים חמים, וקו שאינו מבודד מאבד פי שלושה "
+            "עד ארבעה. הזנב שאינו במחזור הוא מה שמכתיב כמה שניות ממתינים בברז — "
+            "מחזור לא מתקן זנב ארוך."
+        )
+        note.setObjectName("Hint")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        layout.addStretch(1)
+        return page
+
+    # -- take-off ----------------------------------------------------------------- #
+    def _takeoff_tab(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, METRICS.space(3), 0, 0)
+        layout.setSpacing(METRICS.space(3))
+
+        controls = QHBoxLayout()
+        controls.setSpacing(METRICS.space(4))
+        self.waste = QDoubleSpinBox()
+        self.waste.setRange(0.0, 40.0)
+        self.waste.setValue(10.0)
+        self.waste.setSuffix("%")
+        caption = QLabel("פחת")
+        caption.setObjectName("FieldLabel")
+        controls.addWidget(caption)
+        controls.addWidget(self.waste)
+        controls.addStretch(1)
+        layout.addLayout(controls)
+
+        self.takeoff_table = DataTable(
+            ["סוג", "תיאור", "כמות", "יחידה", "הערה"],
+            empty_text="לחץ ״חשב הכול״ כדי להפיק כתב כמויות",
+        )
+        layout.addWidget(self.takeoff_table, 1)
+
+        note = QLabel(
+            "הצנרת נספרת באורכי מלאי ולא במטרים: 46 מ' של 28 מ\"מ נחושת הם 11 "
+            "מוטות של 5 מ' ושארית. הפחת נרשם כשורה נפרדת כדי שאפשר יהיה להתווכח "
+            "איתו, ולא מוסתר בתוך הכמות."
+        )
+        note.setObjectName("Hint")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        return page
+
+    # -- the calculation ------------------------------------------------------------ #
+    def run_design(self) -> None:
+        """Run all five stages from the counts on screen."""
+        from ..plumbing import (
+            DeadLeg,
+            PipeRun,
+            ServiceType,
+            design_circulation,
+            design_drainage,
+            get_catalogue,
+            size_pipe,
+            take_off,
+        )
+
+        schedule = self._build_schedule()
+        if not schedule.lines:
+            self.report(
+                ProfileOSError("הזן לפחות כלי סניטרי אחד"), "אין מה לחשב"
+            )
+            return
+        self._schedule = schedule
+        self._recount()
+
+        catalogue = get_catalogue(self.material.currentData())
+        material = self.material.currentData().split("-")[0]
+        length = self.run_length.value()
+        available = self.available.value() * 1000.0
+
+        # -- supply ------------------------------------------------------- #
+        runs: list[Any] = []
+        rows: list[list[str]] = []
+        colours: dict[tuple[int, int], str] = {}
+        services = (
+            ("קו ראשי משותף", schedule.total_demand(), ServiceType.COLD_WATER, 0.0),
+            ("קו מים קרים", schedule.cold_demand(), ServiceType.COLD_WATER, 0.0),
+            ("קו מים חמים", schedule.hot_demand(), ServiceType.HOT_WATER, 25.0),
+        )
+        for index, (name, flow, service, insulation) in enumerate(services):
+            if flow <= 0:
+                continue
+            try:
+                sized = size_pipe(
+                    flow, length, catalogue, service=service,
+                    fittings={"elbow_90_long": 12, "tee_through": 6,
+                              "gate_valve_open": 2, "water_meter": 1},
+                    height_gain_m=self.height_gain.value(),
+                    available_pressure=available,
+                )
+            except Exception as exc:  # noqa: BLE001
+                self.report(exc, "לא ניתן לתכנן את קו האספקה")
+                return
+            designation = sized.size.designation if sized.size else "—"
+            rows.append([
+                name, f"{flow:.2f}", designation,
+                f"{sized.velocity:.2f}" if sized.size else "—",
+                f"{sized.loss_per_metre:.0f}" if sized.size else "—",
+                f"{sized.total_loss / 1000.0:.1f}" if sized.size else "—",
+                "תקין" if sized.ok else "אין קוטר מתאים",
+            ])
+            colours[(index, 6)] = (
+                self.colours.success if sized.ok else self.colours.danger
+            )
+            if sized.size is not None:
+                runs.append(PipeRun(
+                    service, designation, length, material,
+                    insulation_mm=insulation,
+                    fittings={"elbow_90_long": 12, "tee_through": 6},
+                    valves=2, name=name,
+                ))
+        self.supply_table.set_rows(rows, numeric_columns=(1, 3, 4, 5), colours=colours)
+
+        # -- drainage ------------------------------------------------------ #
+        try:
+            drainage = design_drainage(
+                schedule,
+                floors=self.floors.value(),
+                fall=self.fall.currentData(),
+                vent_length_m=self.vent_length.value(),
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "לא ניתן לתכנן את מערכת הדלוחין")
+            return
+        self.drainage_table.set_rows([list(row) for row in drainage.rows()])
+        self.drainage_notes.setText("  ·  ".join(drainage.notes()))
+        if drainage.stack.size_mm:
+            self.stats.set("stack", f"⌀{drainage.stack.size_mm:.0f}", "מ\"מ")
+            runs.append(PipeRun(
+                ServiceType.DRAINAGE, f"{drainage.stack.size_mm:.0f} mm",
+                self.floors.value() * 3.0, "pvc",
+                fittings={"elbow_45": self.floors.value() * 2}, name="מפל",
+            ))
+
+        # -- hot water ------------------------------------------------------ #
+        flow_bore = 28.0
+        for run in runs:
+            if run.service is ServiceType.HOT_WATER:
+                size = catalogue.by_designation(run.designation)
+                if size is not None:
+                    flow_bore = size.outer_diameter
+                break
+        try:
+            circulation = design_circulation(
+                self.loop_length.value(), flow_bore, catalogue,
+                insulation_mm=self.insulation.value(),
+                material=self.insulation_kind.currentData(),
+                dead_legs=[DeadLeg("הזנב הארוך ביותר", self.dead_leg.value(), 16.0)],
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "לא ניתן לתכנן את מחזור המים החמים")
+            return
+
+        leg = circulation.dead_legs[0] if circulation.dead_legs else None
+        for label, value in (
+            ("איבוד למטר", f"⁦{circulation.loss_per_metre:.1f}⁩ ואט/מ'"),
+            ("איבוד כולל", f"⁦{circulation.total_watts:.0f}⁩ ואט"),
+            ("ספיקת מחזור", f"⁦{circulation.flow_lps:.3f}⁩ ל'/שנ'"),
+            ("קו חוזר", getattr(circulation.return_size, "designation", "—")),
+            ("עומד משאבה", f"⁦{circulation.pump_head_kpa:.1f}⁩ קפ\"א"),
+            ("הספק משאבה", f"⁦{circulation.pump_watts:.1f}⁩ ואט"),
+            ("צריכה שנתית", f"⁦{circulation.annual_kwh:,.0f}⁩ קוט\"ש"),
+            ("המתנה בזנב", f"⁦{leg.wait_seconds:.0f}⁩ שנ׳" if leg else "—"),
+        ):
+            self._hot_values[label].setText(value)
+        self.hot_notes.setText("  ·  ".join(circulation.notes))
+        self.stats.set("loss", f"⁦{circulation.total_watts:.0f}⁩", "ואט בלולאה")
+        if circulation.return_size is not None:
+            runs.append(PipeRun(
+                ServiceType.HOT_WATER, circulation.return_size.designation,
+                self.loop_length.value(), material,
+                insulation_mm=self.insulation.value(), name="קו חוזר",
+            ))
+
+        # -- take-off -------------------------------------------------------- #
+        self._takeoff = take_off(runs, schedule=schedule, waste_pct=self.waste.value())
+        self.takeoff_table.set_rows(
+            [list(row) for row in self._takeoff.rows()], numeric_columns=(2,)
+        )
+        self.status(
+            f"תוכננו {len(rows)} קווי אספקה, מפל ⌀{drainage.stack.size_mm or 0:.0f} "
+            f"ולולאת מחזור של ⁦{circulation.total_watts:.0f}⁩ ואט"
+        )
+
+    def export_takeoff(self) -> None:
+        """Write the merchant's list as a CSV anybody can open."""
+        import csv
+
+        if self._takeoff is None:
+            self.report(ProfileOSError("חשב קודם"), "אין מה לייצא")
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "שמירת כתב הכמויות", "plumbing-takeoff.csv", "CSV (*.csv)"
+        )
+        if not path:
+            return
+        try:
+            with open(path, "w", encoding="utf-8-sig", newline="") as handle:
+                writer = csv.writer(handle)
+                writer.writerow(["סוג", "תיאור", "כמות", "יחידה", "הערה"])
+                writer.writerows(self._takeoff.rows())
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "הייצוא נכשל")
+            return
+        self.status(f"כתב הכמויות נשמר: {path}")
+
+    def refresh(self) -> None:
+        self._recount()
 
 
 # --------------------------------------------------------------------------- #
@@ -3446,13 +4214,15 @@ class AccountsPage(Page):
 
 
 PAGES: list[type[Page]] = [
-    HomePage, ProjectsPage, ProfilePage, ElementPage, ViewPage, NestingPage, GlassPage,
-    MachiningPage, QuotePage, AccountsPage, ShopFloorPage, CataloguePage,
+    HomePage, ProjectsPage, ProfilePage, ElementPage, ViewPage, DrawingsPage,
+    NestingPage, GlassPage,
+    MachiningPage, QuotePage, AccountsPage, ShopFloorPage, PlumbingPage,
+    CataloguePage,
     SystemPage,
 ]
 
 __all__ = [
     "Page", "HomePage", "ProjectsPage", "ProfilePage", "ElementPage", "ViewPage",
-    "NestingPage", "GlassPage", "MachiningPage", "QuotePage", "AccountsPage",
-    "ShopFloorPage", "CataloguePage", "SystemPage", "PAGES",
+    "DrawingsPage", "NestingPage", "GlassPage", "MachiningPage", "QuotePage", "AccountsPage",
+    "ShopFloorPage", "PlumbingPage", "CataloguePage", "SystemPage", "PAGES",
 ]

@@ -25,6 +25,11 @@ class Session:
     section_properties: Any = None
     loaded_section: Any = None
     section_path: Path | None = None
+    #: The same section as a catalogue profile definition — what the drawing
+    #: engine cuts a wall detail against. It is derived, not re-imported: a
+    #: detail drawn from a different read of the file than the one on screen
+    #: would be a different profile wearing the same name.
+    profile: Any = None
 
     # Elements
     builds: list[Any] = field(default_factory=list)
@@ -79,10 +84,14 @@ class Session:
                 _log.exception("Session listener failed for %s", what)
 
     # -- mutations ------------------------------------------------------------ #
-    def set_section(self, properties: Any, section: Any, path: Path | None = None) -> None:
+    def set_section(
+        self, properties: Any, section: Any, path: Path | None = None,
+        profile: Any = None,
+    ) -> None:
         self.section_properties = properties
         self.loaded_section = section
         self.section_path = path
+        self.profile = profile
         self._notify("section")
 
     def set_features(self, report: Any) -> None:

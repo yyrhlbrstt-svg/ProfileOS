@@ -432,6 +432,43 @@ CAPABILITIES: tuple[Capability, ...] = (
         differentiator=True,
     ),
     Capability(
+        "plumbing_fixtures", Area.ADJACENT,
+        "Fixture units and simultaneous demand", "יחידות עומס וספיקה בו-זמנית",
+        "Count what is connected and size the main from it: loading units "
+        "through the Hunter demand curve for the supply, drainage fixture "
+        "units for the waste, with cistern and flush-valve buildings on "
+        "separate curves.",
+        probe="profileos.plumbing.fixtures:FixtureSchedule",
+        differentiator=True,
+    ),
+    Capability(
+        "plumbing_drainage", Area.ADJACENT,
+        "Drainage and vent sizing", "תכנון דלוחין ואוורור",
+        "Branch, stack, vent and house drain sized from fixture units against "
+        "fall, with the rules that beat the tables enforced: never reduce "
+        "downstream, never below the largest trap, and a WC gets 100 mm.",
+        probe="profileos.plumbing.drainage:design_drainage",
+        differentiator=True,
+    ),
+    Capability(
+        "plumbing_hot_water", Area.ADJACENT,
+        "Hot water circulation and dead legs", "מחזור מים חמים וזנבות",
+        "Heat loss through the insulation, the circulation flow that carries "
+        "it, the return pipe and pump duty that follow, and the uncirculated "
+        "tail checked against how long somebody waits at the tap.",
+        probe="profileos.plumbing.hotwater:design_circulation",
+        differentiator=True,
+    ),
+    Capability(
+        "plumbing_takeoff", Area.ADJACENT,
+        "Plumbing materials take-off", "כתב כמויות לאינסטלציה",
+        "Pipe counted in stock lengths rather than metres, insulation counted "
+        "per run, fittings and valves gathered by size, and the waste "
+        "allowance stated as its own line rather than folded into a quantity.",
+        probe="profileos.plumbing.takeoff:take_off",
+        differentiator=True,
+    ),
+    Capability(
         "erp", Area.ADJACENT,
         "Stock, purchasing and the ledger", "מלאי, רכש והנהלת חשבונות",
         "Purchase orders, goods receipts, stock movements valued FIFO or "

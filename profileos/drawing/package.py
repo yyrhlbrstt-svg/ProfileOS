@@ -164,7 +164,8 @@ def detail_sheet(
         result = wall_section(
             detail,
             build_up=info.wall,
-            style=SectionStyle(scale=scale, language=info.language),
+            # The viewport labels the view; the drawing must not label it again.
+            style=SectionStyle(scale=scale, language=info.language, show_title=False),
             profile=profile,
         )
         notes.extend(result.notes)

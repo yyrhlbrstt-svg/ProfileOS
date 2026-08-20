@@ -181,6 +181,11 @@ class SectionStyle:
     perimeter_joint: float = 10.0
     show_annotation: bool = True
     show_dimensions: bool = True
+    #: Whether the detail titles itself. A detail issued on its own needs the
+    #: title inside the drawing; one placed on a sheet is already labelled by
+    #: the viewport under it, and two titles in the same place read as a fault
+    #: in the drawing rather than a caption.
+    show_title: bool = True
     text_height: float = 2.2
     #: The language the labels and the title are written in.
     language: Any = "he"
@@ -355,6 +360,8 @@ def _schematic_note(language: Any) -> str:
 
 
 def _add_title(drawing: Drawing, detail: Detail, style: SectionStyle, label: str) -> None:
+    if not style.show_title:
+        return
     left, bottom, right, _ = drawing.bounds()
     drawing.add(
         Text(
