@@ -22,7 +22,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from .core.config import PROJECT_ROOT
+from .core.config import samples_dir
 from .core.errors import ProfileOSError
 from .core.logging_setup import get_logger
 
@@ -52,7 +52,7 @@ def run_demo(output: Path, console: Any = None) -> dict[str, Any]:
     output.mkdir(parents=True, exist_ok=True)
     results: dict[str, Any] = {}
 
-    sample_dir = PROJECT_ROOT / "data" / "samples"
+    sample_dir = samples_dir()
     mullion_dxf = sample_dir / "mullion_mb70.dxf"
     if not mullion_dxf.is_file():
         raise ProfileOSError(

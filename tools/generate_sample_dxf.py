@@ -10,7 +10,7 @@ The drawings deliberately exercise the awkward parts of real profile drawings:
 * a thermally broken section that imports as two disconnected shells,
 * a small solid section with no chambers at all (``glazing_bead``).
 
-Run ``python tools/generate_sample_dxf.py`` to (re)create ``data/samples``.
+Run ``python tools/generate_sample_dxf.py`` to (re)create ``profileos/data/samples``.
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ from pathlib import Path
 import ezdxf
 from ezdxf.document import Drawing
 
-OUTPUT_DIR = Path(__file__).resolve().parent.parent / "data" / "samples"
+OUTPUT_DIR = Path(__file__).resolve().parent.parent / "profileos" / "data" / "samples"
 
 PROFILE_LAYER = "PROFILE"
 DIM_LAYER = "DIM"

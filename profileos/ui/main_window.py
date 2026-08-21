@@ -74,6 +74,18 @@ class NavButton(QPushButton):
 
         self.toggled.connect(lambda _checked: self._paint())
         self.restyle(colour, active)
+        self._full_text = text
+
+    def set_collapsed(self, collapsed: bool) -> None:
+        """Show the glyph alone, with the name as the tooltip.
+
+        On a narrow screen the sidebar is the cheapest hundred and sixty pixels
+        in the window: the icons carry the navigation on their own once
+        somebody has used the software for a day, and the tooltip carries it
+        until then.
+        """
+        self.label.setVisible(not collapsed)
+        self.setToolTip(self._full_text if collapsed else "")
 
     def restyle(self, colour: str, active: str) -> None:
         self._colour, self._active = colour, active
@@ -117,8 +129,10 @@ class Sidebar(QWidget):
 
         self.group = QButtonGroup(self)
         self.group.setExclusive(True)
-        self.buttons: list[QPushButton] = []
+        self.buttons: list[NavButton] = []
         self._titles: list[str] = []
+        self._section_labels: list[QLabel] = []
+        self._collapsed = False
         # Painted icons cannot read the stylesheet, so the sidebar keeps the two
         # colours it draws them in and re-renders them when the theme changes.
         self._icon_colour = DARK.text_muted
@@ -137,6 +151,7 @@ class Sidebar(QWidget):
         label = QLabel(title)
         label.setObjectName("SidebarSection")
         self._layout.addWidget(label)
+        self._section_labels.append(label)
 
     def add_button(self, index: int, text: str, page_title: str = "") -> QPushButton:
         button = NavButton(text, page_title, self._icon_colour, self._icon_active)
@@ -155,6 +170,19 @@ class Sidebar(QWidget):
     def finish(self) -> None:
         self._layout.addStretch(1)
 
+    def set_collapsed(self, collapsed: bool) -> None:
+        """Narrow the sidebar to its glyphs, or give the names back."""
+        if collapsed == self._collapsed:
+            return
+        self._collapsed = collapsed
+        self.setFixedWidth(56 if collapsed else METRICS.sidebar_width)
+        self.logo.setVisible(not collapsed)
+        self.version.setVisible(not collapsed)
+        for label in self._section_labels:
+            label.setVisible(not collapsed)
+        for button in self.buttons:
+            button.set_collapsed(collapsed)
+
 
 class MainWindow(QMainWindow):
     """The main application window."""
@@ -167,8 +195,7 @@ class MainWindow(QMainWindow):
         from ..branding import active_brand
 
         self.setWindowTitle(active_brand().window_title())
-        self.resize(1560, 980)
-        self.setMinimumSize(1120, 720)
+        self._size_to_screen()
 
         central = QWidget()
         layout = QHBoxLayout(central)
@@ -372,8 +399,53 @@ class MainWindow(QMainWindow):
         page.refresh()
         self.toast(f"נפתח פרויקט {job.job_id} — {job.name}", "success")
 
+    def _size_to_screen(self) -> None:
+        """Open at the size this screen can actually show.
+
+        A fixed 1560x980 is a good window on the office monitor and a window
+        with its bottom edge under the taskbar on the shop laptop. The
+        available geometry already excludes the taskbar, so filling most of it
+        — and never claiming more than it — is the one rule that holds on both.
+        The minimum is set low enough that the window can be halved on a small
+        screen without Qt refusing to shrink it.
+        """
+        from PySide6.QtGui import QGuiApplication
+
+        screen = QGuiApplication.primaryScreen()
+        if screen is None:  # pragma: no cover - headless
+            self.resize(1280, 820)
+            self.setMinimumSize(900, 600)
+            return
+        available = screen.availableGeometry()
+        width = min(1560, available.width())
+        height = min(980, available.height())
+        self.setMinimumSize(min(900, width), min(600, height))
+        self.resize(width, height)
+        self.move(
+            available.x() + (available.width() - width) // 2,
+            available.y() + (available.height() - height) // 2,
+        )
+
+    def apply_responsive_layout(self) -> None:
+        """Fold the sidebar to its glyphs once the names stop earning space.
+
+        Two thresholds rather than one, so a window dragged slowly across the
+        boundary settles instead of flickering between the two layouts.
+        """
+        if self.width() < 1080:
+            self.sidebar.set_collapsed(True)
+        elif self.width() > 1160:
+            self.sidebar.set_collapsed(False)
+
+    def showEvent(self, event: Any) -> None:  # noqa: N802 - Qt naming
+        # Qt holds back resize events until a window is shown, so the first
+        # layout decision has to be taken here rather than waiting for one.
+        super().showEvent(event)
+        self.apply_responsive_layout()
+
     def resizeEvent(self, event: Any) -> None:  # noqa: N802 - Qt naming
         super().resizeEvent(event)
+        self.apply_responsive_layout()
         from .widgets import reposition_toasts
 
         reposition_toasts(self)

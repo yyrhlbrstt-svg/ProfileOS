@@ -176,9 +176,9 @@ class HomePage(Page):
         buttons = QHBoxLayout()
         buttons.setSpacing(METRICS.space(2))
         for label, handler in (
-            ("פרויקטים", lambda: self._go("Projects")),
-            ("טעינת פרופיל לדוגמה", self._load_sample),
-            ("תכנון פתח", lambda: self._go("Element")),
+            ("פרויקט חדש", lambda: self._go("Projects")),
+            ("חפש פתח", self._find_opening),
+            ("חפש פרופיל", self._find_profile),
             ("הצעת מחיר", lambda: self._go("Quotation")),
             ("רצפת הייצור", lambda: self._go("Shop floor")),
         ):
@@ -243,6 +243,21 @@ class HomePage(Page):
             page = window.go_to_page("Profile")
             if hasattr(page, "load_sample"):
                 page.load_sample()
+
+    def _find_opening(self) -> None:
+        """Straight from the front door to a built window."""
+        window = self.window()
+        if hasattr(window, "go_to_page"):
+            page = window.go_to_page("Element")
+            if hasattr(page, "find_opening"):
+                page.find_opening()
+
+    def _find_profile(self) -> None:
+        window = self.window()
+        if hasattr(window, "go_to_page"):
+            page = window.go_to_page("Profile")
+            if hasattr(page, "find_profile"):
+                page.find_profile()
 
     def _open_palette(self) -> None:
         window = self.window()
@@ -750,14 +765,17 @@ class ProfilePage(Page):
     subtitle = "ייבוא חתך מקטלוג היצרן וחישוב תכונות הנדסיות"
 
     def build(self) -> None:
+        # The library first, the file dialog second. A fabricator looking for
+        # a mullion knows what a mullion is called; they do not know which
+        # folder the supplier's DXF was saved into three months ago.
+        self.find_button = QPushButton("חפש פרופיל")
+        self.find_button.setObjectName("Primary")
+        self.find_button.clicked.connect(self.find_profile)
+        self.header.add_action(self.find_button)
+
         self.open_button = QPushButton("פתח שרטוט...")
-        self.open_button.setObjectName("Primary")
         self.open_button.clicked.connect(self.open_dxf)
         self.header.add_action(self.open_button)
-
-        self.sample_button = QPushButton("טען דוגמה")
-        self.sample_button.clicked.connect(self.load_sample)
-        self.header.add_action(self.sample_button)
 
         self.stats = StatRow(
             [("area", "שטח מ״מ²"), ("ix", "Iₓ מ״מ⁴"), ("iy", "I_y מ״מ⁴"),
@@ -823,14 +841,22 @@ class ProfilePage(Page):
         splitter.setStretchFactor(1, 2)
         self.body.addWidget(splitter, 1)
 
-    def load_sample(self) -> None:
-        from ..core.config import PROJECT_ROOT
+    def find_profile(self) -> None:
+        """Search the library — the shop's own drawings and the examples."""
+        from .finder import find_profile
 
-        sample = PROJECT_ROOT / "data" / "samples" / "mullion_mb70.dxf"
-        if not sample.is_file():
-            self.report(ProfileOSError("שרטוטי הדוגמה עדיין לא נוצרו"), "אין דוגמה")
+        chosen = find_profile(self)
+        if chosen is not None:
+            self.load(chosen.path)
+
+    def load_sample(self) -> None:
+        from ..library import sample_profiles
+
+        samples = sample_profiles()
+        if not samples:
+            self.report(ProfileOSError("שרטוטי הדוגמה לא נמצאו בהתקנה"), "אין דוגמה")
             return
-        self.load(sample)
+        self.load(samples[0].path)
 
     def open_dxf(self) -> None:
         """A DWG is accepted too; it is converted on the way in."""
@@ -985,8 +1011,16 @@ class ElementPage(Page):
     subtitle = "תכנון פתח וגזירת רשימת חיתוך, זכוכית ופרזול"
 
     def build(self) -> None:
+        # Searching the library is the first action on this screen, because
+        # nobody's day starts by typing twelve numbers for a window they have
+        # made four hundred times. The form stays exactly where it was for the
+        # one that is genuinely new.
+        find_button = QPushButton("חפש פתח")
+        find_button.setObjectName("Primary")
+        find_button.clicked.connect(self.find_opening)
+        self.header.add_action(find_button)
+
         build_button = QPushButton("בנה פתח")
-        build_button.setObjectName("Primary")
         build_button.clicked.connect(self.build_element)
         self.header.add_action(build_button)
 
@@ -1080,8 +1114,67 @@ class ElementPage(Page):
         right_layout.addWidget(inner, 1)
 
         splitter.addWidget(right)
+        splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
+        # Give the two panes their proportions outright. Left to itself a
+        # splitter halves the space, and a form capped at its panel width
+        # leaves the remainder as a hole in the middle of the screen.
+        splitter.setSizes([METRICS.panel_width, METRICS.panel_width * 3])
         self.body.addWidget(splitter, 1)
+
+    #: Mark prefixes, so a picked preset arrives named the way the shop names
+    #: things rather than as "sliding_3".
+    MARK_PREFIX = {
+        "window": "W", "door": "D", "curtain_wall": "CW",
+        "shopfront": "SF", "sliding_unit": "S",
+    }
+
+    def find_opening(self) -> None:
+        """Pick a ready-made opening and build it, in two clicks."""
+        from .finder import find_opening
+
+        preset = find_opening(self)
+        if preset is not None:
+            self.apply_preset(preset)
+
+    def next_mark(self, kind: str) -> str:
+        """The next free mark for this kind of opening in this job."""
+        prefix = self.MARK_PREFIX.get(kind, "E")
+        used = {build.opening.name for build in self.session.builds}
+        for number in range(1, 1000):
+            mark = f"{prefix}-{number:02d}"
+            if mark not in used:
+                return mark
+        return f"{prefix}-999"
+
+    def apply_preset(self, preset: Any) -> None:
+        """Fill the form from a library opening, then make it.
+
+        Everything the preset sets is a field the operator can still change —
+        it is a starting point, not a lock. Building straight away is the
+        point of the exercise: the screen answers with a drawing, a cut list
+        and a verdict before anybody has typed anything.
+        """
+        self.name.setCurrentText(self.next_mark(preset.kind))
+        index = self.kind.findData(preset.kind)
+        if index >= 0:
+            self.kind.setCurrentIndex(index)
+        self.width.setValue(preset.width)
+        self.height.setValue(preset.height)
+        self.quantity.setValue(preset.quantity)
+        self.columns.setValue(preset.columns)
+        self.rows.setValue(preset.rows)
+        self.sash_column.setValue(preset.sash_column)
+        self.sash_row.setValue(preset.sash_row)
+        sash_index = self.sash_type.findData(preset.sash_type)
+        if sash_index >= 0:
+            self.sash_type.setCurrentIndex(sash_index)
+        self.sill.setValue(preset.sill)
+        glass_index = self.glass.findData(preset.glass)
+        if glass_index >= 0:
+            self.glass.setCurrentIndex(glass_index)
+        self.build_element()
+        self.status(f"{preset.hebrew} · {preset.describe()}")
 
     def build_element(self) -> None:
         from ..elements import Cell, ElementBuilder, ElementKind, Opening, OpeningType, Sash

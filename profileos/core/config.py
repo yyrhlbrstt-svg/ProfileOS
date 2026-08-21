@@ -34,6 +34,27 @@ PACKAGE_ROOT = Path(__file__).resolve().parent.parent
 PROJECT_ROOT = PACKAGE_ROOT.parent
 
 
+def bundled_data_dir() -> Path:
+    """Where the read-only data shipped with the software actually is.
+
+    Installed, it is inside the package. In a source checkout it is inside the
+    package too — but a copy that predates the move, or an unpacked archive
+    laid out differently, still works because the repository root is tried
+    next. The first directory that exists wins; if none does, the packaged
+    location is returned so that error messages name the right place.
+    """
+    packaged = PACKAGE_ROOT / "data"
+    for candidate in (packaged, PROJECT_ROOT / "data", Path.cwd() / "data"):
+        if candidate.is_dir():
+            return candidate
+    return packaged
+
+
+def samples_dir() -> Path:
+    """The sample cross-sections that ship with the software."""
+    return bundled_data_dir() / "samples"
+
+
 def default_config_dir() -> Path:
     """Per-user configuration directory, honouring XDG on Linux."""
     if os.name == "nt":  # pragma: no cover - platform specific
@@ -167,8 +188,14 @@ class Settings(BaseModel):
 
     @property
     def bundled_data_dir(self) -> Path:
-        """Read-only catalogues shipped with the application."""
-        return PROJECT_ROOT / "data"
+        """Read-only catalogues and sample drawings shipped with the software.
+
+        They live inside the package so that an installed copy carries them:
+        a wheel installed into ``site-packages`` has no repository root, and a
+        shop that clicks *load a sample* on a fresh machine must not be told
+        the samples were never made.
+        """
+        return bundled_data_dir()
 
     @property
     def machines_dir(self) -> Path:
@@ -368,6 +395,8 @@ __all__ = [
     "SecurityDefaults",
     "PACKAGE_ROOT",
     "PROJECT_ROOT",
+    "bundled_data_dir",
+    "samples_dir",
     "default_config_dir",
     "default_data_dir",
     "load_settings",

@@ -13,7 +13,7 @@ from profileos.core.logging_setup import configure_logging
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-SAMPLE_DIR = PROJECT_ROOT / "data" / "samples"
+SAMPLE_DIR = PROJECT_ROOT / "profileos" / "data" / "samples"
 
 
 @pytest.fixture(scope="session", autouse=True)

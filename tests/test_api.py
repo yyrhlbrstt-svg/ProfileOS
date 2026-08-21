@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 from profileos.api.server import app  # noqa: E402
 
-SAMPLE = "data/samples/mullion_mb70.dxf"
+SAMPLE = "profileos/data/samples/mullion_mb70.dxf"
 
 
 @pytest.fixture(scope="module")

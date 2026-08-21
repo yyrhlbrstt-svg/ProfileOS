@@ -26,7 +26,7 @@ from profileos.mes import Stage  # noqa: E402
 from profileos.ui.main_window import MainWindow  # noqa: E402
 from profileos.ui.theme import DARK, LIGHT, stylesheet  # noqa: E402
 
-SAMPLES = Path(__file__).resolve().parents[1] / "data" / "samples"
+SAMPLES = Path(__file__).resolve().parents[1] / "profileos" / "data" / "samples"
 
 
 @pytest.fixture(scope="module")
@@ -1072,3 +1072,129 @@ class TestSystemsLibrary:
         page = window.go_to_page("Catalogue")
         pump()
         assert "ללא נתוני היצרן" in page.systems_status.text()
+
+
+class TestDensity:
+    """The interface has to fit the laptop the shop already owns."""
+
+    def test_a_small_screen_gets_a_tighter_grid(self):
+        from profileos.ui.theme import DENSITIES, density_for
+
+        assert density_for(1920, 1080) == "comfortable"
+        assert density_for(1366, 768) == "compact"
+        assert density_for(1280, 700) == "tight"
+        assert DENSITIES["compact"]["unit"] < DENSITIES["comfortable"]["unit"]
+
+    def test_applying_a_density_moves_every_derived_number(self):
+        from profileos.ui.theme import METRICS, set_density
+
+        try:
+            set_density("compact")
+            assert METRICS.space(6) < 24
+            assert METRICS.row_height == 26
+            assert METRICS.sidebar_width == 200
+        finally:
+            set_density("comfortable")
+        assert METRICS.space(6) == 24
+
+    def test_the_window_never_asks_for_more_than_the_screen_has(self, window):
+        from PySide6.QtGui import QGuiApplication
+
+        available = QGuiApplication.primaryScreen().availableGeometry()
+        window._size_to_screen()
+        assert window.width() <= available.width()
+        assert window.height() <= available.height()
+        assert window.minimumWidth() <= 900
+
+    def test_a_narrow_window_folds_the_sidebar_to_its_icons(self, window):
+        window.resize(1000, 700)
+        window.apply_responsive_layout()
+        pump()
+        assert window.sidebar.width() < 100
+        assert window.sidebar.buttons[0].label.isHidden()
+        # The name is still reachable, as a tooltip.
+        assert window.sidebar.buttons[0].toolTip()
+
+        window.resize(1400, 900)
+        window.apply_responsive_layout()
+        pump()
+        assert not window.sidebar.buttons[0].label.isHidden()
+
+
+class TestFindingThings:
+    """Two screens used to start blank. Now both start with a search."""
+
+    def test_a_profile_is_chosen_from_the_library_and_loads(self, window, monkeypatch):
+        from profileos.library import sample_profiles
+
+        chosen = sample_profiles()[0]
+        monkeypatch.setattr("profileos.ui.finder.find_profile", lambda parent: chosen)
+        page = window.go_to_page("Profile")
+        page.find_profile()
+        pump()
+
+        assert window.session.section_properties is not None
+        assert window.session.section_path == chosen.path
+
+    def test_cancelling_the_search_changes_nothing(self, window, monkeypatch):
+        monkeypatch.setattr("profileos.ui.finder.find_profile", lambda parent: None)
+        page = window.go_to_page("Profile")
+        page.find_profile()
+        pump()
+        assert window.session.section_properties is None
+
+    def test_a_picked_opening_is_built_without_typing_anything(self, window):
+        from profileos.library import opening
+
+        page = window.go_to_page("Element")
+        page.apply_preset(opening("sliding_3"))
+        pump()
+
+        assert window.session.builds
+        build = window.session.builds[-1]
+        assert build.opening.width == 2700
+        assert build.opening.column_count == 3
+        assert page.cuts.rowCount() > 0
+
+    def test_a_preset_arrives_marked_the_way_the_shop_marks_things(self, window):
+        from profileos.library import opening
+
+        page = window.go_to_page("Element")
+        page.apply_preset(opening("sliding_2"))
+        page.apply_preset(opening("entry_door"))
+        pump()
+
+        marks = {build.opening.name for build in window.session.builds}
+        assert marks == {"S-01", "D-01"}
+
+    def test_the_finder_lists_and_filters(self, qt_app):
+        from profileos.ui.finder import FinderDialog, _opening_rows
+
+        dialog = FinderDialog(
+            None, title="ספריית פתחים", placeholder="", fetch=_opening_rows
+        )
+        everything = dialog.results.count()
+        assert everything > 10
+        dialog.search.setText("דלת")
+        pump()
+        assert 0 < dialog.results.count() < everything
+        dialog.search.setText("קורקינט")
+        pump()
+        assert dialog.results.count() == 0
+        assert "נסה" in dialog.hint.text()
+        dialog.deleteLater()
+
+    def test_the_palette_finds_an_opening_by_name(self, window):
+        from profileos.ui.palette_search import CommandPalette
+
+        palette = CommandPalette(window)
+        palette._filter("מטבח")
+        assert palette.results.count() >= 1
+        item = palette.results.item(0)
+        from PySide6.QtCore import Qt
+
+        item.data(Qt.ItemDataRole.UserRole).run()
+        pump()
+        assert window.session.builds
+        assert window.stack.currentWidget().title == "Element"
+        palette.deleteLater()

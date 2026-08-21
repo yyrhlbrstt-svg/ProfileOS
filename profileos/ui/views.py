@@ -343,7 +343,7 @@ class SectionView(CanvasView):
 
     def paint_world(self, painter: QPainter) -> None:
         if not self._rings:
-            self._paint_placeholder(painter, "Open a DXF to see the cross-section")
+            self._paint_placeholder(painter, "לחץ ״חפש פרופיל״ ובחר חתך מהספרייה")
             return
 
         palette = self.palette_colours
@@ -432,7 +432,7 @@ class ElevationView(CanvasView):
             painter.setPen(QPen(_colour(self.palette_colours.text_faint)))
             painter.setFont(QFont("Heebo", 12))
             painter.drawText(
-                self.rect(), Qt.AlignmentFlag.AlignCenter, "תכנן פתח כדי לראות את החזית"
+                self.rect(), Qt.AlignmentFlag.AlignCenter, "לחץ ״חפש פתח״ ובחר מהספרייה — או מלא את הטופס"
             )
             return
 

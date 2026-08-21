@@ -45,7 +45,7 @@ if errorlevel 1 (
 )
 
 echo   [3/3] מכין נתוני התחלה ויוצר קיצור דרך...
-python -m profileos.cli seed --quiet 2>nul
+python -m profileos.cli seed --quiet
 call "%~dp0קיצור-דרך.bat" >nul 2>&1
 
 color 0A

@@ -18,7 +18,7 @@ def run(argv: Sequence[str] | None = None, *, theme: str = "dark") -> int:
     from PySide6.QtWidgets import QApplication
 
     from .main_window import MainWindow
-    from .theme import DARK, LIGHT, UI_FONTS, load_fonts, stylesheet
+    from .theme import DARK, LIGHT, METRICS, UI_FONTS, fit_to_screen, load_fonts, stylesheet
 
     configure_logging(get_settings().log_level, use_rich=True)
 
@@ -45,9 +45,24 @@ def run(argv: Sequence[str] | None = None, *, theme: str = "dark") -> int:
     application.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
 
     load_fonts()
+
+    # The interface is sized for the screen it landed on before a single
+    # widget is built. A shop laptop is usually a 14-inch 1366x768 panel, and
+    # the spacing that reads well on the office monitor arrives there squeezed;
+    # dropping the grid step a notch gives every screen its air back. This has
+    # to happen first, because margins, row heights and type are all derived
+    # from these numbers at the moment each widget is constructed.
+    screen = application.primaryScreen()
+    if screen is not None:
+        available = screen.availableGeometry()
+        density = fit_to_screen(available.width(), available.height())
+        _log.info(
+            "Screen %dx%d, running %s", available.width(), available.height(), density
+        )
+
     font = QFont()
     font.setFamilies(list(UI_FONTS))
-    font.setPointSize(10)
+    font.setPointSize(10 if METRICS.density == "comfortable" else 9)
     application.setFont(font)
 
     palette = LIGHT if theme == "light" else DARK

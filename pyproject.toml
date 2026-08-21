@@ -50,7 +50,16 @@ profileos = "profileos.cli:main"
 include = ["profileos*"]
 
 [tool.setuptools.package-data]
-profileos = ["**/*.j2", "**/*.json", "**/*.qss"]
+profileos = [
+    "**/*.j2",
+    "**/*.json",
+    "**/*.qss",
+    "**/*.ttf",
+    "**/*.woff2",
+    "**/*.txt",
+    "**/*.dxf",
+    "**/*.csv",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -168,7 +168,7 @@ LIGHT = Palette(
 )
 
 
-@dataclass(frozen=True)
+@dataclass
 class Metrics:
     """Spacing on the 8-point grid; radii and type from the tokens."""
 
@@ -187,6 +187,9 @@ class Metrics:
     font_size_large: int = TYPE_SCALE["heading"]
     font_size_title: int = 18
 
+    #: Which of :data:`DENSITIES` is in force, for code that wants to ask.
+    density: str = "comfortable"
+
     #: Motion, for the code that animates (QSS cannot).
     motion_fast_ms: int = MOTION["fast_ms"]
     motion_base_ms: int = MOTION["base_ms"]
@@ -196,6 +199,60 @@ class Metrics:
 
 
 METRICS = Metrics()
+
+#: The three densities the shell runs at, chosen from the screen it opens on.
+#: A laptop the shop already owns is a 14-inch panel at 1366×768; the same
+#: layout that breathes on the office monitor arrives there squeezed, with
+#: table rows clipped and cards fighting for the last hundred pixels. Rather
+#: than design twice, the grid step and the control heights come down a notch
+#: and everything built on them follows, because every margin, row and font in
+#: this interface is derived from these numbers.
+DENSITIES: dict[str, dict[str, int]] = {
+    "comfortable": {
+        "unit": 4, "sidebar_width": 232, "panel_width": 344,
+        "row_height": 30, "control_height": 30,
+        "font_size": 13, "font_size_small": 11, "font_size_title": 18,
+    },
+    "compact": {
+        "unit": 3, "sidebar_width": 200, "panel_width": 300,
+        "row_height": 26, "control_height": 26,
+        "font_size": 12, "font_size_small": 10, "font_size_title": 16,
+    },
+    "tight": {
+        "unit": 3, "sidebar_width": 176, "panel_width": 268,
+        "row_height": 24, "control_height": 24,
+        "font_size": 11, "font_size_small": 10, "font_size_title": 15,
+    },
+}
+
+
+def density_for(width: int, height: int) -> str:
+    """Which density a screen of this size should run at.
+
+    The height decides it. Width can be given back by collapsing the sidebar;
+    vertical space cannot be given back at all, and it is the axis a header, a
+    row of figures, a drawing and a table have to share.
+    """
+    if height < 800 or width < 1280:
+        return "tight" if height < 720 or width < 1100 else "compact"
+    return "comfortable"
+
+
+def set_density(name: str) -> str:
+    """Apply a density to the shared metrics. Call before building the window."""
+    values = DENSITIES.get(name)
+    if values is None:
+        return METRICS.density
+    for key, value in values.items():
+        setattr(METRICS, key, value)
+    METRICS.font_size_large = max(METRICS.font_size + 2, TYPE_SCALE["heading"] - 2)
+    METRICS.density = name
+    return name
+
+
+def fit_to_screen(width: int, height: int) -> str:
+    """Pick and apply the density for a screen of this size."""
+    return set_density(density_for(width, height))
 
 #: Heebo first — it ships with the software; the fallbacks carry Hebrew too.
 UI_FONTS = ("Heebo", "Segoe UI", "Noto Sans Hebrew", "DejaVu Sans", "sans-serif")
@@ -497,6 +554,20 @@ QPushButton#PipeStep[state="active"] {{
 #PaletteHint {{
     color: {p.text_faint}; font-size: {m.font_size_small}px;
     padding: {m.space(1)}px {m.space(4)}px {m.space(2)}px;
+}}
+
+/* ---------- finder ---------- */
+#FinderTitle {{
+    color: {p.text_faint}; font-size: {m.font_size_small}px;
+    font-weight: 600; letter-spacing: 0.6px;
+    padding: {m.space(3)}px {m.space(4)}px 0;
+}}
+#FinderName {{ color: {p.text}; font-size: {m.font_size}px; font-weight: 600; }}
+#FinderNote {{ color: {p.text_muted}; font-size: {m.font_size_small}px; }}
+#FinderMeta {{
+    color: {BRAND.x300}; font-size: {m.font_size_small}px;
+    background: {p.accent_subtle}; border-radius: {m.radius_small}px;
+    padding: {m.space(1)}px {m.space(2)}px;
 }}
 """
 

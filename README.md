@@ -47,7 +47,7 @@ python -m profileos.cli demo            # run the whole chain end to end
 Then explore:
 
 ```bash
-profileos section analyse data/samples/mullion_mb70.dxf
+profileos section analyse profileos/data/samples/mullion_mb70.dxf
 profileos element build 2400 1800 --mullions 800,1600 --sash 1,0 --sash-type tilt_turn
 profileos pipe size 1.2 45 --lift 12 --available 250
 profileos cnc drivers

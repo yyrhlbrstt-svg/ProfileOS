@@ -33,7 +33,7 @@ from profileos.catalogue import (
 )
 from profileos.catalogue.ingest import analyse_drawing, measured_values
 
-SAMPLES = Path(__file__).resolve().parents[1] / "data" / "samples"
+SAMPLES = Path(__file__).resolve().parents[1] / "profileos" / "data" / "samples"
 
 EU_TABLE = """Klil 4300 series - frame profiles
 Code    Description        kg/m    A cm2   Ix cm4   Iy cm4   b mm   h mm

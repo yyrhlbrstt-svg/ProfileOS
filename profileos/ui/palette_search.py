@@ -95,6 +95,23 @@ class CommandPalette(QDialog):
             keywords="sample דוגמה פרופיל טען",
             run=self._load_sample,
         ))
+
+        # The library is in the palette too, so a name typed here goes
+        # straight to the thing rather than to the screen that holds it.
+        from ..library import opening_library, profile_library
+
+        for preset in opening_library():
+            commands.append(Command(
+                label=f"פתח: {preset.hebrew}  ⁦{preset.width:.0f}×{preset.height:.0f}⁩",
+                keywords=" ".join(preset.search_terms()).lower(),
+                run=lambda p=preset: self._build_opening(p),
+            ))
+        for profile in profile_library():
+            commands.append(Command(
+                label=f"פרופיל: {profile.hebrew}",
+                keywords=" ".join(profile.search_terms()).lower(),
+                run=lambda p=profile: self._load_profile(p),
+            ))
         return commands
 
     def _load_sample(self) -> None:
@@ -102,12 +119,25 @@ class CommandPalette(QDialog):
         if hasattr(page, "load_sample"):
             page.load_sample()
 
+    def _load_profile(self, profile: Any) -> None:
+        page = self._window.go_to_page("Profile")
+        if hasattr(page, "load"):
+            page.load(profile.path)
+
+    def _build_opening(self, preset: Any) -> None:
+        page = self._window.go_to_page("Element")
+        if hasattr(page, "apply_preset"):
+            page.apply_preset(preset)
+
     # -- behaviour --------------------------------------------------------- #
     def _filter(self, text: str) -> None:
-        needle = text.strip().lower()
+        # Every word has to appear somewhere, in any order: "הזזה 3" finds the
+        # three-leaf slider whichever half was typed first.
+        words = [word for word in text.strip().lower().split() if word]
         self.results.clear()
         for command in self._commands:
-            if not needle or needle in command.keywords or needle in command.label.lower():
+            haystack = f"{command.keywords} {command.label.lower()}"
+            if all(word in haystack for word in words):
                 item = QListWidgetItem(command.label)
                 item.setData(Qt.ItemDataRole.UserRole, command)
                 self.results.addItem(item)
