@@ -14,11 +14,12 @@ from .glass import (
     make_laminated,
     make_monolithic,
     make_triple_glazing,
+    area_weighted_u,
     window_u_value,
 )
 
 __all__ = [
     "GasType", "GAS_PROPERTIES", "SpacerType", "Pane", "Cavity", "GlassBuildUp",
-    "window_u_value", "make_double_glazing", "make_triple_glazing",
+    "window_u_value", "area_weighted_u", "make_double_glazing", "make_triple_glazing",
     "make_laminated", "make_monolithic", "STANDARD_BUILDUPS",
 ]

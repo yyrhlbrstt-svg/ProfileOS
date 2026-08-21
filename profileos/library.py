@@ -167,6 +167,11 @@ class OpeningFamily:
     glass: str = "dgu-6-16-6"
     note: str = ""
     tags: tuple[str, ...] = ()
+    #: What this type is ordinarily fitted with in Israel. A bedroom window
+    #: without a shutter is not a cheaper window, it is an unfinished one, and
+    #: a quote that leaves it off is one that gets revised in front of the
+    #: customer. ``""`` means nothing is fitted by default.
+    fittings: str = ""
     #: Outside these the type is the wrong choice, not merely a large one.
     min_width: float = 300.0
     max_width: float = 12000.0
@@ -203,6 +208,7 @@ FAMILIES: tuple[OpeningFamily, ...] = (
         leaves=(2, 3, 4, 6), sash_position="first",
         widths=_SLIDING_W, heights=_SLIDING_H, sill=900,
         note="הזזה על מסילות — הפתח הנפוץ ביותר בארץ",
+        fittings="dwelling",
         tags=("הזזה", "sliding", "מסילה", "בלגי הזזה"),
         min_width=900, max_width=12000,
     ),
@@ -211,6 +217,7 @@ FAMILIES: tuple[OpeningFamily, ...] = (
         leaves=(2, 3, 4), sash_position="first",
         widths=_SLIDING_W, heights=_SLIDING_H, sill=900,
         note="כנף נעה אחת מול זיגוג קבוע",
+        fittings="dwelling",
         tags=("הזזה", "קבוע", "משולב"),
         min_width=1200, max_width=12000,
     ),
@@ -220,6 +227,7 @@ FAMILIES: tuple[OpeningFamily, ...] = (
         widths=(2400, 3000, 3600, 4200, 4800, 5400, 6000, 7200),
         heights=(2100, 2200, 2400, 2700), sill=0,
         note="כנף כבדה עם מנגנון הרמה — מפתחים גדולים",
+        fittings="pleated_screen",
         tags=("הרמה", "לפט", "lift", "כבד", "מרפסת"),
         min_width=1800, max_width=12000, min_height=1500,
     ),
@@ -229,6 +237,7 @@ FAMILIES: tuple[OpeningFamily, ...] = (
         widths=(2400, 2700, 3000, 3600, 4200, 4800, 6000),
         heights=(2100, 2200, 2400), sill=0,
         note="יציאה למרפסת, סף נמוך",
+        fittings="dwelling",
         tags=("מרפסת", "דלת", "הזזה", "יציאה"),
         min_width=1400, max_width=12000, min_height=1600,
     ),
@@ -237,6 +246,7 @@ FAMILIES: tuple[OpeningFamily, ...] = (
         leaves=(1, 2, 3), sash_position="first",
         widths=_CASEMENT_W, heights=_CASEMENT_H, sill=900,
         note="פתיחה על ציר צד",
+        fittings="dwelling",
         tags=("בלגי", "ציר", "casement", "כנף"),
         min_width=400, max_width=3000,
     ),
@@ -245,6 +255,7 @@ FAMILIES: tuple[OpeningFamily, ...] = (
         leaves=(1, 2), sash_position="first",
         widths=_CASEMENT_W, heights=_CASEMENT_H, sill=900,
         note="פתיחה כפולה — ציר צד ונטייה",
+        fittings="dwelling",
         tags=("נטוי", "קיפ", "tilt", "turn", "אירופאי"),
         min_width=500, max_width=1600, min_height=600,
     ),
@@ -253,6 +264,7 @@ FAMILIES: tuple[OpeningFamily, ...] = (
         leaves=(1, 2), sash_position="first",
         widths=(600, 800, 900, 1000, 1200), heights=(400, 500, 600, 800),
         sill=1700, note="ציר עליון — שירותים, אמבטיה, אוורור",
+        fittings="wet_room",
         tags=("מתהפך", "אוורור", "אמבטיה", "שירותים"),
         min_width=300, max_width=2000, max_height=1200,
     ),
@@ -260,6 +272,7 @@ FAMILIES: tuple[OpeningFamily, ...] = (
         "bottom_hung", "חלון מתהפך תחתון", "window", "bottom_hung",
         leaves=(1,), widths=(600, 800, 1000, 1200), heights=(400, 500, 600),
         sill=1700, note="ציר תחתון, נפתח פנימה",
+        fittings="wet_room",
         tags=("קיפ", "מתהפך", "אוורור"),
         min_width=300, max_width=1600, max_height=1000,
     ),
@@ -276,6 +289,7 @@ FAMILIES: tuple[OpeningFamily, ...] = (
         widths=(800, 1000, 1200, 1500, 1800, 2400, 3000),
         heights=(600, 900, 1200, 1400, 1800, 2200), sill=900,
         note="זיגוג קבוע ללא כנף",
+        fittings="sill_only",
         tags=("קבוע", "fixed", "אטום", "ויטרינה"),
         max_width=4000,
     ),
@@ -284,6 +298,7 @@ FAMILIES: tuple[OpeningFamily, ...] = (
         leaves=(1, 2), rows=2, sash_position="first",
         widths=(1000, 1200, 1400, 1800), heights=(1800, 2100, 2400),
         sill=600, note="כנף למטה, קבוע מעליה",
+        fittings="dwelling",
         tags=("אור עליון", "פנלייט", "fanlight"),
         min_height=1200,
     ),
@@ -331,6 +346,7 @@ FAMILIES: tuple[OpeningFamily, ...] = (
         leaves=(3, 4, 5), rows=3, sash_position="middle",
         widths=_WALL_W, heights=_WALL_H, sill=0,
         note="רשת עם כנף מתהפכת אחת",
+        fittings="screen_only",
         tags=("מסך", "אוורור", "curtain"),
         min_width=2000, max_width=12000, min_height=1800, max_height=6000,
     ),
@@ -355,6 +371,7 @@ FAMILIES: tuple[OpeningFamily, ...] = (
         leaves=(1,), widths=(800, 1000, 1200), heights=(800, 1000, 1200),
         sill=1100,
         note="הזיגוג והפרזול לפי דרישת פיקוד העורף — לא נגזר כאן",
+        fittings="screen_only",
         tags=("ממד", "מיגון", "ביטחון", "הדף"),
         min_width=600, max_width=1600, max_height=1600,
     ),
@@ -370,6 +387,7 @@ FAMILIES: tuple[OpeningFamily, ...] = (
         "skylight", "חלון גג", "window", "top_hung",
         leaves=(1,), widths=(800, 1000, 1200, 1500), heights=(800, 1000, 1200),
         sill=0, note="פתח בגג או ברביד — נדרשת אטימה נפרדת",
+        fittings="screen_only",
         tags=("גג", "רביד", "skylight", "אור"),
         min_width=500, max_width=3000,
     ),
@@ -396,6 +414,8 @@ class LibraryOpening:
     note: str = ""
     tags: tuple[str, ...] = field(default_factory=tuple)
     family_id: str = ""
+    #: The accessories fitted to it, as the specification a job file keeps.
+    fittings: dict = field(default_factory=dict)
     #: The series this is to be made in, when one was asked for. ``generic``
     #: keeps the family's typical rules and says so.
     system_id: str = "generic"
@@ -416,6 +436,38 @@ class LibraryOpening:
         if self.system_hebrew:
             parts.append(self.system_hebrew)
         return " · ".join(parts)
+
+
+#: The ways an opening is ordinarily fitted out. Named rather than spelled
+#: out on every family, because "a bedroom window" means the same three things
+#: whichever type it is, and because a shop that changes its default shutter
+#: should change it in one place.
+FITTINGS: dict[str, dict] = {
+    "dwelling": {
+        "shutter": {"slat_id": "alu_45", "drive": "motor", "box": "built_in"},
+        "screen": {"kind": "sliding", "mesh": "fibreglass"},
+        "sill": "aluminium",
+    },
+    "dwelling_manual": {
+        "shutter": {"slat_id": "pvc_45", "drive": "strap", "box": "built_in"},
+        "screen": {"kind": "sliding", "mesh": "fibreglass"},
+        "sill": "aluminium",
+    },
+    "wet_room": {
+        "screen": {"kind": "hinged", "mesh": "aluminium"},
+        "sill": "aluminium",
+    },
+    "screen_only": {"screen": {"kind": "sliding", "mesh": "fibreglass"}},
+    "pleated_screen": {"screen": {"kind": "pleated", "mesh": "pet"}},
+    "sill_only": {"sill": "aluminium"},
+}
+
+
+def fittings(name: str) -> dict:
+    """One named fit-out, as a specification a job file can keep."""
+    from copy import deepcopy
+
+    return deepcopy(FITTINGS.get(name, {}))
 
 
 def _make(
@@ -457,6 +509,7 @@ def _make(
         note=family.note,
         tags=family.tags,
         family_id=family.family_id,
+        fittings=fittings(family.fittings),
         system_id=system_id or "generic",
         system_hebrew=system_hebrew,
     )

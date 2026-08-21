@@ -57,6 +57,8 @@ mobile_app = typer.Typer(help="Phones and tablets paired to this machine.")
 quote_app = typer.Typer(help="Quotations: price, negotiate, issue.")
 jobs_app = typer.Typer(help="Job files: the shop's own record of the work it has taken on.")
 library_app = typer.Typer(help="The type library: every opening the shop can make.")
+fit_app = typer.Typer(help="Shutters, screens, sills — what is fitted to an opening.")
+spec_app = typer.Typer(help="Performance and the standards a window is judged against.")
 
 app.add_typer(geometry_app, name="section")
 app.add_typer(nest_app, name="nest")
@@ -78,6 +80,8 @@ app.add_typer(mobile_app, name="mobile")
 app.add_typer(quote_app, name="quote")
 app.add_typer(jobs_app, name="jobs")
 app.add_typer(library_app, name="library")
+app.add_typer(fit_app, name="fit")
+app.add_typer(spec_app, name="spec")
 
 
 # --------------------------------------------------------------------------- #
@@ -2823,6 +2827,292 @@ def access_rotate(
 # --------------------------------------------------------------------------- #
 # Jobs
 # --------------------------------------------------------------------------- #
+@erp_app.command("terms")
+def erp_terms(
+    issued: str = typer.Option("", "--on", help="Invoice date YYYY-MM-DD; default today."),
+) -> None:
+    """What each payment term actually means for when the money arrives."""
+    from datetime import date as _date
+
+    from .erp.israel import PaymentTerms
+
+    on = _date.fromisoformat(issued) if issued else _date.today()
+    table = Table(title=f"Payment terms on {on:%d/%m/%Y}", header_style="dim")
+    table.add_column("Term", style="cyan")
+    table.add_column("Hebrew")
+    table.add_column("Money due")
+    table.add_column("Days", justify="right")
+    for term in PaymentTerms:
+        due = term.due(on)
+        table.add_row(term.value, term.hebrew, f"{due:%d/%m/%Y}", str((due - on).days))
+    console.print(table)
+
+
+@erp_app.command("tax-document")
+def erp_tax_document(
+    number: str = typer.Argument(..., help="Document number."),
+    customer: str = typer.Argument(..., help="Customer name."),
+    net: float = typer.Argument(..., help="Net amount in shekels."),
+    kind: str = typer.Option("invoice", "--kind", "-k"),
+    allocation: str = typer.Option("", "--allocation", help="מספר הקצאה."),
+    terms: str = typer.Option("eom_30", "--terms"),
+    out: Optional[Path] = typer.Option(None, "--out", "-o", help="Write the HTML here."),
+) -> None:
+    """Draft an Israeli tax document and check it before it is issued."""
+    from datetime import date as _date
+
+    from .branding import active_brand
+    from .erp.israel import (
+        DocumentKind, PaymentTerms, TaxDocument, TaxIdentity, render_document,
+    )
+
+    brand = active_brand()
+    document = TaxDocument(
+        kind=DocumentKind(kind),
+        number=number,
+        issued=_date.today(),
+        issuer=TaxIdentity(
+            name=brand.display_name,
+            # Not invented: the brand carries the registration number only once
+            # somebody has entered it, and an invoice without it is flagged.
+            vat_number=brand.registration_number or "",
+            address=", ".join(
+                part for part in (brand.address_line, brand.city) if part
+            ),
+            phone=brand.phone or "",
+            email=brand.email or "",
+        ),
+        customer_name=customer,
+        lines=[{
+            "description": "עבודות אלומיניום",
+            "quantity": 1, "unit": "יח", "unit_price": net, "net": net,
+        }],
+        net=net,
+        terms=PaymentTerms(terms),
+        allocation_number=allocation,
+    )
+
+    table = Table(header_style="dim")
+    table.add_column("What", style="cyan")
+    table.add_column("Value")
+    for label, value in document.summary_rows():
+        table.add_row(label, value)
+    console.print(table)
+
+    problems = document.problems()
+    for problem in problems:
+        console.print(f"[yellow]{problem}[/yellow]")
+    if not problems:
+        console.print("[green]אפשר להוציא[/green]")
+
+    if out is not None:
+        out.write_text(render_document(document), encoding="utf-8")
+        console.print(f"[dim]Written to {out}[/dim]")
+
+
+@spec_app.command("standards")
+def spec_standards(
+    topic: str = typer.Argument("", help="Search, e.g. רוח or glazing."),
+) -> None:
+    """The standards a window is judged against, and what we can say to each."""
+    from .compliance import standards_for
+
+    found = standards_for(topic)
+    if not found:
+        _fail(f"No standard matches {topic!r}.")
+    for entry in found:
+        console.print(f"[cyan]{entry.number}[/cyan] {entry.hebrew} — {entry.english}")
+        console.print(f"  {entry.scope}")
+        if entry.covered:
+            console.print(f"  [green]covered:[/green] {entry.covered}")
+        if entry.not_covered:
+            console.print(f"  [yellow]not covered:[/yellow] {entry.not_covered}")
+        console.print(f"  [dim]{entry.confidence.hebrew}[/dim]\n")
+
+
+@spec_app.command("wind")
+def spec_wind(
+    velocity: float = typer.Argument(..., help="Basic wind velocity [m/s], from the map."),
+    height: float = typer.Option(10.0, "--height", "-h", help="Height above ground [m]."),
+    terrain: str = typer.Option("suburban", "--terrain", "-t"),
+    zone: str = typer.Option("field", "--zone", "-z"),
+    source: str = typer.Option("", "--source", help="Where the velocity was read."),
+) -> None:
+    """Design wind pressure on a facade element, and the classes it calls for."""
+    from .compliance import FacadeZone, Terrain, design_pressure, required_classes
+
+    try:
+        case = design_pressure(
+            velocity, height=height, terrain=Terrain(terrain),
+            zone=FacadeZone(zone), source=source,
+        )
+    except Exception as exc:  # noqa: BLE001
+        _fail(str(exc))
+
+    table = Table(title="Wind", header_style="dim")
+    table.add_column("What", style="cyan")
+    table.add_column("Value")
+    for label, value in case.summary_rows():
+        table.add_row(label, value)
+    console.print(table)
+
+    classes = required_classes(case)
+    console.print(
+        f"[cyan]Ask the supplier for:[/cyan] {classes.wind} wind, "
+        f"{classes.water} water, {classes.air} air"
+    )
+    for note in [*case.notes, *classes.notes]:
+        console.print(f"[yellow]{note}[/yellow]")
+
+
+@spec_app.command("window")
+def spec_window(
+    width: float = typer.Argument(..., help="Width [mm]."),
+    height: float = typer.Argument(..., help="Height [mm]."),
+    glass: str = typer.Option("dgu-6-16-6", "--glass", "-g"),
+    columns: int = typer.Option(1, "--columns", "-c"),
+    frame: str = typer.Option("thermal_break", "--frame", "-f"),
+    velocity: float = typer.Option(30.0, "--wind", help="Basic wind velocity [m/s]."),
+) -> None:
+    """Uw, Rw and the wind case for one window, from end to end."""
+    from .compliance import FrameClass, Site, check_compliance
+    from .elements import ElementBuilder, Opening
+
+    opening = Opening(name="SPEC", width=width, height=height, glass_spec_id=glass)
+    opening.divide_evenly(columns, 1)
+    build = ElementBuilder().build(opening, sill_height=900)
+    report = check_compliance(
+        build, Site(basic_velocity=velocity), frame_class=FrameClass(frame)
+    )
+
+    table = Table(title=f"{width:,.0f} x {height:,.0f} mm", header_style="dim")
+    table.add_column("What", style="cyan")
+    table.add_column("Value")
+    for section in (report.thermal, report.acoustic, report.wind, report.classes):
+        if section is not None:
+            for label, value in section.summary_rows():
+                table.add_row(label, value)
+    console.print(table)
+
+    console.print(f"[cyan]{report.verdict()}[/cyan]")
+    for finding in report.findings:
+        colour = {"pass": "green", "check": "yellow", "fail": "red"}[finding.verdict.value]
+        citation = f"[dim]{finding.citation}[/dim] " if finding.citation else ""
+        console.print(f"[{colour}]{finding.verdict.hebrew}[/{colour}] {citation}{finding.text}")
+
+
+@fit_app.command("shutter")
+def fit_shutter(
+    width: float = typer.Argument(..., help="Window width [mm]."),
+    height: float = typer.Argument(..., help="Window height [mm]."),
+    slat: str = typer.Option("alu_45", "--slat", "-s", help="Curtain profile."),
+    drive: str = typer.Option("motor", "--drive", "-d"),
+    box: str = typer.Option("built_in", "--box"),
+) -> None:
+    """Size a rolling shutter: the box, the shaft, the motor, the cut list."""
+    from .accessories import BoxPosition, Drive, ShutterSpec, size_shutter
+
+    try:
+        fitted = size_shutter(
+            width, height,
+            ShutterSpec(slat_id=slat, drive=Drive(drive), box=BoxPosition(box)),
+        )
+    except Exception as exc:  # noqa: BLE001 - the reason is the answer
+        _fail(str(exc))
+
+    meta = fitted.metadata
+    table = Table(title=fitted.hebrew, header_style="dim")
+    table.add_column("What", style="cyan")
+    table.add_column("Value", justify="right")
+    for label, value in (
+        ("Curtain", f"{fitted.width:,.0f} x {fitted.height:,.0f} mm"),
+        ("Curtain length on roll", f"{meta['curtain_length_mm']:,.0f} mm"),
+        ("Slats", f"{meta['slat_count']}"),
+        ("Coil diameter", f"{meta['coil_diameter_mm']:,.1f} mm"),
+        ("Shaft", f"{meta['shaft_mm']:,.0f} mm octagonal"),
+        ("Box", f"{meta['box_mm']:,.0f} mm"),
+        ("Curtain weight", f"{meta['mass_kg']:,.1f} kg"),
+        ("Structural opening", "{:,.0f} x {:,.0f} mm".format(
+            *fitted.structural_opening(width, height))),
+    ):
+        table.add_row(label, value)
+    console.print(table)
+
+    cuts = Table(title="Cut list", header_style="dim")
+    cuts.add_column("Part", style="cyan")
+    cuts.add_column("Profile")
+    cuts.add_column("Length", justify="right")
+    cuts.add_column("Qty", justify="right")
+    for cut in fitted.cuts:
+        cuts.add_row(cut.role, cut.profile_id, f"{cut.length:,.1f}", str(cut.quantity))
+    console.print(cuts)
+
+    for part in fitted.parts:
+        console.print(f"[dim]- {part.code}: {part.quantity} {part.unit}[/dim]")
+    for note in fitted.notes:
+        console.print(f"[cyan]{note}[/cyan]")
+    for warning in fitted.warnings:
+        console.print(f"[yellow]{warning}[/yellow]")
+
+
+@fit_app.command("screen")
+def fit_screen(
+    width: float = typer.Argument(..., help="Window width [mm]."),
+    height: float = typer.Argument(..., help="Window height [mm]."),
+    kind: str = typer.Option("sliding", "--kind", "-k"),
+    mesh: str = typer.Option("fibreglass", "--mesh", "-m"),
+) -> None:
+    """Size an insect screen, splitting it into leaves if it is too wide."""
+    from .accessories import MeshKind, ScreenKind, ScreenSpec, size_screen
+
+    try:
+        fitted = size_screen(
+            width, height,
+            ScreenSpec(kind=ScreenKind(kind), mesh=MeshKind(mesh)),
+        )
+    except Exception as exc:  # noqa: BLE001
+        _fail(str(exc))
+
+    console.print(f"[cyan]{fitted.hebrew}[/cyan]")
+    console.print(
+        f"[dim]{fitted.metadata['leaves']} leaf(s) of "
+        f"{fitted.metadata['leaf_width_mm']:,.0f} mm, "
+        f"{fitted.metadata['mesh_area_m2']:.2f} m2 mesh[/dim]"
+    )
+    table = Table(header_style="dim")
+    table.add_column("Part", style="cyan")
+    table.add_column("Length", justify="right")
+    table.add_column("Qty", justify="right")
+    for cut in fitted.cuts:
+        table.add_row(cut.hebrew, f"{cut.length:,.1f}", str(cut.quantity))
+    console.print(table)
+    for warning in fitted.warnings:
+        console.print(f"[yellow]{warning}[/yellow]")
+
+
+@fit_app.command("slats")
+def fit_slats() -> None:
+    """Every curtain profile stocked, and what each one weighs."""
+    from .accessories import SLATS
+
+    table = Table(title="Shutter curtains", header_style="dim")
+    table.add_column("Id", style="cyan")
+    table.add_column("Hebrew")
+    table.add_column("Pitch", justify="right")
+    table.add_column("Rolled", justify="right")
+    table.add_column("kg/m2", justify="right")
+    table.add_column("Max width", justify="right")
+    table.add_column("Source")
+    for slat_profile in SLATS:
+        table.add_row(
+            slat_profile.slat_id, slat_profile.hebrew,
+            f"{slat_profile.pitch:,.0f}", f"{slat_profile.thickness:,.1f}",
+            f"{slat_profile.mass:,.1f}", f"{slat_profile.max_width:,.0f}",
+            slat_profile.source,
+        )
+    console.print(table)
+
+
 @library_app.command("types")
 def library_types() -> None:
     """Every opening type this shop makes, and the sizes each is made at."""

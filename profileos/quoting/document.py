@@ -95,7 +95,14 @@ th,td{text-align:start}
 .internal{background:var(--soft);border:1px solid var(--line-strong);border-radius:8px;
           padding:2px 14px 10px;margin-top:26px}
 .internal h2{margin-top:12px}
-footer{margin-top:34px;font-size:11px;color:var(--muted);text-align:center}
+.muted{color:var(--muted);font-size:12px}
+.parties{display:flex;justify-content:space-between;gap:24px;margin:18px 0 8px;
+         font-size:13px;line-height:1.6}
+.issuer{text-align:end;font-size:12px;line-height:1.6;color:var(--muted)}
+.issuer strong{color:var(--ink);font-size:14px}
+.totals tr.grand td{border-top:2px solid var(--ink);font-weight:700;font-size:15px}
+footer{margin-top:34px;font-size:11px;color:var(--muted);text-align:center;
+       display:flex;justify-content:space-between}
 @media print{
   .page{max-width:none;padding:0}
   @page{size:A4;margin:16mm 14mm}

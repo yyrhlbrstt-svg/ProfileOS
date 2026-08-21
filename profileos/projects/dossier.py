@@ -137,6 +137,33 @@ def _hardware_rows(builds: Iterable[Any]) -> list[tuple[str, str, int, str]]:
     return rows
 
 
+def _accessory_rows(builds: Iterable[Any]) -> list[tuple[str, str, str, int, str]]:
+    """Every fitting on every opening, with the hole in the wall it needs."""
+    from ..accessories import accessories_for
+
+    rows: list[tuple[str, str, str, int, str]] = []
+    for build in builds:
+        opening = build.opening
+        try:
+            fitted = accessories_for(opening)
+        except Exception:  # noqa: BLE001 - a pack is worth more than a fitting
+            continue
+        if not len(fitted):
+            continue
+        width, height = fitted.structural_opening(opening.width, opening.height)
+        structural = f"⁦{width:.0f} × {height:.0f}⁩ מ״מ"
+        for accessory in fitted:
+            rows.append((
+                opening.name,
+                accessory.hebrew,
+                f"⁦{accessory.width:.0f} × {accessory.height:.0f}⁩",
+                accessory.quantity,
+                structural,
+            ))
+            structural = ""
+    return rows
+
+
 def render_dossier(job: Any, builds: list[Any], *, today: date | None = None) -> str:
     """The whole job as one printable page."""
     from ..branding import active_brand
@@ -262,6 +289,26 @@ def render_dossier(job: Any, builds: list[Any], *, today: date | None = None) ->
             parts.append(
                 f"<tr><td>{_esc(code)}</td><td>{_esc(name)}</td>"
                 f"<td class='n'>{quantity}</td><td>{_esc(unit)}</td></tr>"
+            )
+        parts.append("</tbody></table>")
+
+    # -- accessories and the hole in the wall --------------------------------- #
+    # The builder reads one number off this pack and casts a lintel to it. It
+    # is the last thing anybody can still change for free, so it gets a
+    # section of its own rather than a column somewhere.
+    fitted_rows = _accessory_rows(builds)
+    if fitted_rows:
+        parts.append(
+            "<h2>אביזרים ופתחי בנייה</h2><table><thead><tr>"
+            "<th>פתח</th><th>אביזר</th><th>מידה</th><th class='n'>כמות</th>"
+            "<th>פתח בנייה נדרש</th>"
+            "</tr></thead><tbody>"
+        )
+        for name, hebrew, size, quantity, structural in fitted_rows:
+            parts.append(
+                f"<tr><td>{_esc(name)}</td><td>{_esc(hebrew)}</td>"
+                f"<td>{_esc(size)}</td><td class='n'>{quantity}</td>"
+                f"<td>{_esc(structural)}</td></tr>"
             )
         parts.append("</tbody></table>")
 

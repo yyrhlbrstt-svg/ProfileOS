@@ -30,6 +30,9 @@ class BomCategory(StrEnum):
     CONSUMABLE = "consumable"
     FINISH = "finish"
     LABOUR = "labour"
+    #: Shutters, screens, sills and trims — bought as assemblies, not as the
+    #: aluminium they are made of, and quoted per opening.
+    ACCESSORY = "accessory"
 
     @property
     def label(self) -> str:
@@ -41,6 +44,7 @@ class BomCategory(StrEnum):
             "consumable": "Consumables",
             "finish": "Surface finish",
             "labour": "Labour",
+            "accessory": "Shutters, screens and sills",
         }[self.value]
 
 
@@ -276,6 +280,71 @@ def build_bom(
                     metadata={"waste_factor": waste},
                 )
             )
+
+    # -- accessories ---------------------------------------------------------- #
+    # A shutter is a quarter of the price of the window it hangs on, so a bill
+    # of materials that leaves it out is not a bill of materials. The parts
+    # come through as themselves rather than as the aluminium they are made
+    # of, because that is how they are bought.
+    for build in builds:
+        # The accessory already carries the opening's quantity, so its own
+        # parts and lengths are multiplied by it here and nowhere else.
+        try:
+            from ..accessories import accessories_for
+
+            fitted = accessories_for(build.opening)
+        except Exception as exc:  # noqa: BLE001 - never lose a bill over a fitting
+            bom.warnings.append(f"{build.opening.name}: accessories not sized ({exc})")
+            continue
+
+        for accessory in fitted:
+            bom.add(
+                BomLine(
+                    category=BomCategory.ACCESSORY,
+                    code=accessory.code,
+                    description=accessory.hebrew,
+                    quantity=float(accessory.quantity),
+                    unit=Unit.PIECE,
+                    element_refs={build.opening.element_id},
+                    metadata={
+                        "kind": accessory.kind.value,
+                        "size_mm": f"{accessory.width:.0f} x {accessory.height:.0f}",
+                        "area_m2": round(accessory.total_area, 3),
+                        "mass_kg": round(accessory.mass * accessory.quantity, 1),
+                        **accessory.metadata,
+                    },
+                )
+            )
+            for cut in accessory.cuts:
+                bom.add(
+                    BomLine(
+                        category=BomCategory.ACCESSORY,
+                        code=cut.profile_id,
+                        description=cut.hebrew,
+                        quantity=round(
+                            cut.total_length * accessory.quantity / 1000.0, 3
+                        ),
+                        unit=Unit.METRE,
+                        element_refs={build.opening.element_id},
+                    )
+                )
+            for part in accessory.parts:
+                bom.add(
+                    BomLine(
+                        category=BomCategory.ACCESSORY,
+                        code=part.code,
+                        description=part.hebrew,
+                        quantity=float(part.quantity * accessory.quantity),
+                        unit=(
+                            Unit(part.unit) if part.unit in Unit._value2member_map_
+                            else Unit.PIECE
+                        ),
+                        supplier_id=part.supplier,
+                        element_refs={build.opening.element_id},
+                    )
+                )
+            for warning in accessory.warnings:
+                bom.warnings.append(f"{build.opening.name}: {warning}")
 
     # -- element-level warnings roll up into the bill ------------------------ #
     for build in builds:

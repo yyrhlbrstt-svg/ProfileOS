@@ -319,6 +319,36 @@ class GlassBuildUp(RoundTrips):
         return " ".join(parts)
 
 
+def area_weighted_u(
+    *,
+    glass_area: float,
+    glass_u: float,
+    frame_area: float,
+    frame_u: float,
+    perimeter: float,
+    psi: float,
+) -> float:
+    """Whole-window transmittance ``U_w`` per EN ISO 10077-1.
+
+    .. math::
+        U_w = \\frac{A_g U_g + A_f U_f + l_g \\Psi_g}{A_g + A_f}
+
+    Areas in m^2, perimeter in m. The ``psi`` term is the edge-of-glass
+    thermal bridge, which is why the spacer choice shows up in the window
+    value even though it never appears in the centre-pane one.
+
+    The arguments are already-summed quantities rather than a build-up, so an
+    element glazed with several different units weights them all through the
+    one formula instead of a second copy of it living somewhere else.
+    """
+    total_area = glass_area + frame_area
+    if total_area <= 0:
+        raise ProfileOSError("Window area must be positive to compute U_w")
+    return (
+        glass_area * glass_u + frame_area * frame_u + perimeter * psi
+    ) / total_area
+
+
 def window_u_value(
     glass: GlassBuildUp,
     *,
@@ -327,23 +357,15 @@ def window_u_value(
     perimeter: float,
     frame_u_value: float = 2.2,
 ) -> float:
-    """Whole-window transmittance ``U_w`` per EN ISO 10077-1.
-
-    .. math::
-        U_w = \\frac{A_g U_g + A_f U_f + l_g \\Psi_g}{A_g + A_f}
-
-    Areas in m^2, perimeter in m. The ``psi`` term is the edge-of-glass thermal
-    bridge, which is why the spacer choice shows up in the window value even
-    though it never appears in the centre-pane one.
-    """
-    total_area = glass_area + frame_area
-    if total_area <= 0:
-        raise ProfileOSError("Window area must be positive to compute U_w")
-    return (
-        glass_area * glass.u_value()
-        + frame_area * frame_u_value
-        + perimeter * glass.spacer.psi_value
-    ) / total_area
+    """``U_w`` for a window glazed throughout with one build-up."""
+    return area_weighted_u(
+        glass_area=glass_area,
+        glass_u=glass.u_value(),
+        frame_area=frame_area,
+        frame_u=frame_u_value,
+        perimeter=perimeter,
+        psi=glass.spacer.psi_value,
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -451,6 +473,7 @@ __all__ = [
     "Cavity",
     "GlassBuildUp",
     "window_u_value",
+    "area_weighted_u",
     "make_double_glazing",
     "make_triple_glazing",
     "make_laminated",

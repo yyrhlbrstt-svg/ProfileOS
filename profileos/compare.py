@@ -173,6 +173,26 @@ CAPABILITIES: tuple[Capability, ...] = (
         differentiator=True,
     ),
     Capability(
+        "shutters", Area.ELEMENTS,
+        "Rolling shutters sized from the roll", "תריסים לפי גליל אמיתי",
+        "The box comes from the wound coil diameter, not a rule of thumb: the "
+        "shaft, the motor torque, the curtain weight and the structural "
+        "opening the builder has to leave all fall out of the same "
+        "calculation, and they are quoted with the window rather than on a "
+        "separate sheet.",
+        probe="profileos.accessories.shutters:size_shutter",
+        differentiator=True,
+    ),
+    Capability(
+        "screens_sills", Area.ELEMENTS,
+        "Screens, sills and trims", "רשתות, אדנים ומסגרות",
+        "Insect screens split into leaves that still slide, sills checked for "
+        "fall and projection, and perimeter trims — each sized from the "
+        "opening and each on the bill of materials.",
+        probe="profileos.accessories.screens:size_screen",
+        differentiator=True,
+    ),
+    Capability(
         "curtain_wall", Area.ELEMENTS,
         "Curtain walling", "קירות מסך",
         "Multi-bay grids on the same element model as a single window.",
@@ -201,6 +221,37 @@ CAPABILITIES: tuple[Capability, ...] = (
         "The model itself, not a picture of it — so it drops into a visualiser, "
         "a BIM scene or an architect's own tool.",
         probe="profileos.viz3d.gltf:to_glb",
+        differentiator=True,
+    ),
+    Capability(
+        "whole_window_u", Area.ELEMENTS,
+        "Whole-window U-value", "⁦U_w⁩ של הפתח כולו",
+        "The frame, the glass and the edge weighted by the areas of the "
+        "element that was actually drawn, per EN ISO 10077-1 — so six small "
+        "panes correctly report worse than one large one, which is the "
+        "trade-off the divisions are making.",
+        probe="profileos.compliance.thermal:window_u_value",
+        differentiator=True,
+    ),
+    Capability(
+        "acoustic_estimate", Area.ELEMENTS,
+        "Sound reduction estimate", "אומדן ⁦R_w⁩ מותקן",
+        "The glazing by mass law with the coincidence and lamination "
+        "corrections, then penalised for how the window opens, how it seals "
+        "and whether a shutter box sits above it — the installed figure, not "
+        "the glass laboratory's.",
+        probe="profileos.compliance.acoustic:estimate_acoustic",
+        differentiator=True,
+    ),
+    Capability(
+        "wind_and_classes", Area.ELEMENTS,
+        "Wind case and required classes", "לחץ רוח וסיווגים נדרשים",
+        "Design pressure from velocity, terrain, height and facade zone — a "
+        "corner takes far more suction than the middle of the same wall — and "
+        "the air, water and wind classes to demand of the supplier. The basic "
+        "velocity is never invented: without a recorded source the pressure "
+        "is reported as unverified.",
+        probe="profileos.compliance.wind:design_pressure",
         differentiator=True,
     ),
     # -- glass --------------------------------------------------------------- #
@@ -485,6 +536,17 @@ CAPABILITIES: tuple[Capability, ...] = (
         "weighted average, sales invoicing with statutory VAT, and a "
         "double-entry general ledger every document posts to.",
         probe="profileos.erp.company:Company",
+    ),
+    Capability(
+        "israeli_tax_documents", Area.COMMERCIAL,
+        "Israeli tax documents", "מסמכי מס ישראליים",
+        "חשבונית מס, תעודת משלוח, קבלה and credit notes on the shop's own "
+        "paper, with the עוסק מורשה number, the שוטף+ terms calculated from "
+        "the end of the month of invoice, and the Tax Authority allocation "
+        "number checked before the document is issued rather than after the "
+        "customer refuses to pay it.",
+        probe="profileos.erp.israel:render_document",
+        differentiator=True,
     ),
     Capability(
         "three_way_match", Area.ADJACENT,

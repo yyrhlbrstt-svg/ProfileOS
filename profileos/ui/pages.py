@@ -1046,7 +1046,8 @@ class ElementPage(Page):
         for sash_kind in ("fixed", "casement", "tilt_turn", "top_hung", "sliding", "door"):
             self.sash_type.addItem(_OT(sash_kind).label("he"), sash_kind)
         self.sash_type.setCurrentIndex(2)
-        self.sill = QDoubleSpinBox(); self.sill.setRange(0, 100000); self.sill.setValue(900); self.sill.setSuffix(" mm")
+        self.sill_height = QDoubleSpinBox(); self.sill_height.setRange(0, 100000)
+        self.sill_height.setValue(900); self.sill_height.setSuffix(" mm")
 
         # The series is a field like any other, because "which system is this
         # in" is a question the shop answers per element, not per install.
@@ -1057,6 +1058,35 @@ class ElementPage(Page):
 
         for entry in sorted(_DIRECTORY, key=lambda e: (e.manufacturer, e.series)):
             self.system.addItem(entry.display, entry.id)
+
+        # What is fitted to the window. On an Israeli flat this is not an
+        # extra — a bedroom window without a shutter is unfinished — so it is
+        # on the form beside the size rather than on a screen of its own.
+        self.shutter = QComboBox()
+        self.shutter.addItem("ללא תריס", "")
+        from ..accessories import SLATS, Drive as _Drive
+
+        for _slat in SLATS:
+            for _drive in (_Drive.MOTOR, _Drive.STRAP):
+                self.shutter.addItem(
+                    f"{_slat.hebrew} · {_drive.hebrew}", f"{_slat.slat_id}|{_drive.value}"
+                )
+
+        self.screen = QComboBox()
+        self.screen.addItem("ללא רשת", "")
+        from ..accessories import MeshKind as _Mesh, ScreenKind as _ScreenKind
+
+        for _kind in _ScreenKind:
+            for _mesh in (_Mesh.FIBREGLASS, _Mesh.ALUMINIUM):
+                self.screen.addItem(
+                    f"{_kind.hebrew} · {_mesh.hebrew}", f"{_kind.value}|{_mesh.value}"
+                )
+
+        self.sill = QComboBox()
+        from ..accessories import SillKind as _SillKind
+
+        for _sill in _SillKind:
+            self.sill.addItem(_sill.hebrew, _sill.value)
 
         self.glass = QComboBox()
 
@@ -1072,8 +1102,9 @@ class ElementPage(Page):
             ("שם", self.name), ("סוג", self.kind), ("רוחב", self.width),
             ("גובה", self.height), ("כמות", self.quantity), ("עמודות", self.columns),
             ("שורות", self.rows), ("עמודת כנף", self.sash_column), ("שורת כנף", self.sash_row),
-            ("סוג פתיחה", self.sash_type), ("גובה סף", self.sill),
+            ("סוג פתיחה", self.sash_type), ("גובה סף", self.sill_height),
             ("סדרה", self.system), ("זכוכית", self.glass),
+            ("תריס", self.shutter), ("רשת", self.screen), ("אדן", self.sill),
         ]:
             fields.add(label, widget)
         form_card.add(fields)
@@ -1114,15 +1145,67 @@ class ElementPage(Page):
         self.hardware = DataTable(["קוד", "פריט", "כמות", "יחידה"])
         self.feasibility = DataTable(["", "היכן", "מה", "נמדד", "גבול"])
         self.warnings = QPlainTextEdit(); self.warnings.setReadOnly(True)
+
+        # Accessories get a panel rather than a column, because the number the
+        # builder is waiting for — the hole to leave in the wall — belongs
+        # beside them and nowhere else.
+        fitted = QWidget()
+        fitted_layout = QVBoxLayout(fitted)
+        fitted_layout.setContentsMargins(0, 0, 0, 0)
+        fitted_layout.setSpacing(METRICS.space(2))
+        self.opening_note = QLabel("")
+        self.opening_note.setObjectName("StatLabel")
+        self.opening_note.setWordWrap(True)
+        fitted_layout.addWidget(self.opening_note)
+        self.accessories = DataTable(
+            ["אביזר", "מידה", "כמות", "משקל ק״ג", "פרטים"],
+            empty_text="לא נבחרו אביזרים — בחר תריס, רשת או אדן בטופס",
+        )
+        fitted_layout.addWidget(self.accessories, 1)
+
+        # Performance is where a specification is won or lost, and it is the
+        # panel a customer's engineer reads first.
+        performance = QWidget()
+        performance_layout = QVBoxLayout(performance)
+        performance_layout.setContentsMargins(0, 0, 0, 0)
+        performance_layout.setSpacing(METRICS.space(2))
+        self.performance_headline = QLabel("")
+        self.performance_headline.setObjectName("StatLabel")
+        self.performance_headline.setWordWrap(True)
+        performance_layout.addWidget(self.performance_headline)
+        # Side by side rather than stacked: the figures are a narrow column and
+        # the findings are sentences, and stacking gave each of them half of a
+        # panel that was already short.
+        performance_split = QSplitter(Qt.Orientation.Horizontal)
+        self.performance = DataTable(
+            ["", "ערך"],
+            empty_text="בנה פתח כדי לראות ⁦U_w⁩, ⁦R_w⁩ ולחץ רוח",
+        )
+        self.performance.horizontalHeader().setVisible(False)
+        performance_split.addWidget(self.performance)
+        self.compliance = DataTable(["", "נושא", "תקן", "ממצא"])
+        performance_split.addWidget(self.compliance)
+        performance_split.setStretchFactor(0, 0)
+        performance_split.setStretchFactor(1, 1)
+        performance_split.setSizes([METRICS.panel_width, METRICS.panel_width * 2])
+        performance_layout.addWidget(performance_split, 1)
+
         tabs.addTab(self.cuts, "רשימת חיתוך")
         tabs.addTab(self.panes, "זכוכית")
         tabs.addTab(self.hardware, "פרזול")
+        tabs.addTab(fitted, "אביזרים")
+        tabs.addTab(performance, "ביצועים")
         tabs.addTab(self.feasibility, "ישימות")
         tabs.addTab(self.warnings, "אזהרות")
         lower_layout.addWidget(tabs, 1)
         inner.addWidget(lower)
         inner.setStretchFactor(0, 3)
         inner.setStretchFactor(1, 2)
+        # On a laptop the drawing will happily take the whole panel and leave
+        # the cut list two rows deep. Give the tables a fixed share to start
+        # from; the splitter is still there for anybody who wants the drawing
+        # larger.
+        inner.setSizes([360, 300])
         right_layout.addWidget(inner, 1)
 
         splitter.addWidget(right)
@@ -1181,14 +1264,138 @@ class ElementPage(Page):
         sash_index = self.sash_type.findData(preset.sash_type)
         if sash_index >= 0:
             self.sash_type.setCurrentIndex(sash_index)
-        self.sill.setValue(preset.sill)
+        self.sill_height.setValue(preset.sill)
         system_index = self.system.findData(preset.system_id)
         self.system.setCurrentIndex(system_index if system_index >= 0 else 0)
         glass_index = self.glass.findData(preset.glass)
         if glass_index >= 0:
             self.glass.setCurrentIndex(glass_index)
+        self._apply_fittings(preset.fittings)
         self.build_element()
         self.status(f"{preset.title} · {preset.describe()}")
+
+    def _fittings(self) -> dict:
+        """The fit-out the form is asking for, as a job file keeps it."""
+        spec: dict[str, Any] = {}
+        shutter = self.shutter.currentData()
+        if shutter:
+            slat_id, drive = shutter.split("|", 1)
+            spec["shutter"] = {"slat_id": slat_id, "drive": drive, "box": "built_in"}
+        screen = self.screen.currentData()
+        if screen:
+            kind, mesh = screen.split("|", 1)
+            spec["screen"] = {"kind": kind, "mesh": mesh}
+        sill = self.sill.currentData()
+        if sill and sill != "none":
+            spec["sill"] = sill
+        return spec
+
+    def _apply_fittings(self, spec: dict) -> None:
+        """Set the form's fit-out fields from a saved specification."""
+        shutter = spec.get("shutter")
+        self.shutter.setCurrentIndex(
+            max(0, self.shutter.findData(
+                f"{shutter['slat_id']}|{shutter.get('drive', 'motor')}"
+            )) if shutter else 0
+        )
+        screen = spec.get("screen")
+        self.screen.setCurrentIndex(
+            max(0, self.screen.findData(
+                f"{screen['kind']}|{screen.get('mesh', 'fibreglass')}"
+            )) if screen else 0
+        )
+        sill = spec.get("sill") or "none"
+        self.sill.setCurrentIndex(max(0, self.sill.findData(sill)))
+
+    def show_accessories(self, build: Any) -> None:
+        """What is fitted, what it weighs, and the hole the builder leaves."""
+        from ..accessories import accessories_for
+
+        try:
+            fitted = accessories_for(build.opening)
+        except Exception as exc:  # noqa: BLE001 - never lose a build over a fitting
+            _log.warning("Accessory sizing failed: %s", exc)
+            self.accessories.set_rows([])
+            self.opening_note.setText(str(exc))
+            return
+
+        rows: list[list[Any]] = []
+        colours: dict[tuple[int, int], str] = {}
+        for index, accessory in enumerate(fitted):
+            detail = "; ".join(accessory.notes) or accessory.metadata.get("kind", "")
+            rows.append([
+                accessory.hebrew,
+                f"{accessory.width:.0f} × {accessory.height:.0f}",
+                accessory.quantity,
+                f"{accessory.mass * accessory.quantity:.1f}",
+                detail,
+            ])
+            if accessory.warnings:
+                colours[(index, 0)] = self.colours.warning
+        self.accessories.set_rows(rows, numeric_columns=(2, 3), colours=colours)
+
+        if not len(fitted):
+            self.opening_note.setText("")
+            self.opening_note.setStyleSheet("")
+            return
+
+        width, height = fitted.structural_opening(
+            build.opening.width, build.opening.height
+        )
+        text = (
+            f"פתח בנייה נדרש: \u2066{width:.0f} × {height:.0f}\u2069 מ״מ "
+            f"(החלון \u2066{build.opening.width:.0f} × {build.opening.height:.0f}\u2069)"
+        )
+        if fitted.warnings:
+            text += " · " + " · ".join(fitted.warnings)
+            self.opening_note.setStyleSheet(f"color: {self.colours.warning};")
+        else:
+            self.opening_note.setStyleSheet(f"color: {self.colours.success};")
+        self.opening_note.setText(text)
+
+    def show_performance(self, build: Any) -> None:
+        """U-value, sound reduction, wind pressure and what they are judged by."""
+        from ..compliance import Site, Verdict, check_compliance
+
+        try:
+            report = check_compliance(build, Site())
+        except Exception as exc:  # noqa: BLE001 - the build stands without it
+            _log.warning("Compliance check failed: %s", exc)
+            self.performance.set_rows([])
+            self.compliance.set_rows([])
+            self.performance_headline.setText(str(exc))
+            return
+
+        rows: list[list[Any]] = []
+        for section in (report.thermal, report.acoustic, report.wind, report.classes):
+            if section is not None:
+                rows.extend([label, value] for label, value in section.summary_rows())
+        self.performance.set_rows(rows)
+
+        tone = {
+            Verdict.FAIL: self.colours.danger,
+            Verdict.CHECK: self.colours.warning,
+            Verdict.PASS: self.colours.success,
+        }
+        finding_rows: list[list[Any]] = []
+        colours: dict[tuple[int, int], str] = {}
+        for index, finding in enumerate(report.findings):
+            finding_rows.append([
+                finding.verdict.hebrew, finding.subject,
+                finding.citation or "—", finding.text,
+            ])
+            colours[(index, 0)] = tone[finding.verdict]
+        self.compliance.set_rows(finding_rows, colours=colours)
+
+        headline = report.verdict()
+        if report.thermal and report.acoustic:
+            headline = (
+                f"{report.thermal.describe()} · {report.acoustic.describe()} · {headline}"
+            )
+        self.performance_headline.setText(headline)
+        self.performance_headline.setStyleSheet(
+            f"color: {self.colours.danger if report.failures else self.colours.text};"
+        )
 
     def _builder(self, opening: Any) -> Any:
         """The rule set for the chosen series, or the generic one.
@@ -1222,6 +1429,7 @@ class ElementPage(Page):
                 glass_spec_id=self.glass.currentData(),
                 system_id=self.system.currentData() or "generic",
             )
+            opening.metadata["accessories"] = self._fittings()
             opening.divide_evenly(self.columns.value(), self.rows.value())
 
             sash_type = OpeningType(self.sash_type.currentData())
@@ -1230,7 +1438,7 @@ class ElementPage(Page):
                 row = min(self.sash_row.value(), opening.row_count - 1)
                 opening.set_cell(Cell(column=column, row=row, sash=Sash(opening_type=sash_type)))
 
-            build = self._builder(opening).build(opening, sill_height=self.sill.value())
+            build = self._builder(opening).build(opening, sill_height=self.sill_height.value())
         except Exception as exc:  # noqa: BLE001
             self.report(exc, "לא ניתן לבנות את הפתח")
             return
@@ -1274,6 +1482,8 @@ class ElementPage(Page):
             "\n".join(f"• {w}" for w in build.warnings) or "אין אזהרות."
         )
         self.show_feasibility(build)
+        self.show_accessories(build)
+        self.show_performance(build)
         self.header.set_subtitle(
             f"{opening.name}: \u2066{opening.width:.0f} × {opening.height:.0f}\u2069 מ״מ · "
             f"רשת \u2066{opening.column_count}×{opening.row_count}\u2069 · "
@@ -1295,7 +1505,10 @@ class ElementPage(Page):
         from ..elements.feasibility import Severity, check_element
 
         try:
-            report = check_element(build, sill_height=self.sill.value() if hasattr(self, "sill") else 0.0)
+            report = check_element(
+                build,
+                sill_height=self.sill_height.value() if hasattr(self, "sill_height") else 0.0,
+            )
         except Exception as exc:  # noqa: BLE001 - never lose the build over a check
             _log.warning("Feasibility check failed: %s", exc)
             self.verdict.setText("")
