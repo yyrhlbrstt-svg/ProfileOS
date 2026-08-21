@@ -262,6 +262,23 @@ def polygon_perimeter(polygon: object) -> float:
     return total
 
 
+def polygon_outer_perimeter(polygon: object) -> float:
+    """Only the outside of the section — what a coating can actually reach.
+
+    The difference from :func:`polygon_perimeter` is every internal chamber,
+    and on a thermally broken profile that is most of the wetted length.
+    Charging a customer for anodising the inside of a chamber that no bath
+    ever touches is how a coating estimate ends up twice the invoice.
+    """
+    from ..geometry.shapely_bridge import polygon_rings_coordinates
+    from ..geometry.primitives import perimeter as ring_perimeter
+
+    return sum(
+        ring_perimeter(shell, closed=True)
+        for shell, _holes in polygon_rings_coordinates(polygon)
+    )
+
+
 __all__ = [
     "RawMoments",
     "CentroidalMoments",
@@ -269,4 +286,5 @@ __all__ = [
     "section_moments",
     "moments_from_polygon",
     "polygon_perimeter",
+    "polygon_outer_perimeter",
 ]

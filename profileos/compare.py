@@ -589,6 +589,46 @@ CAPABILITIES: tuple[Capability, ...] = (
         differentiator=True,
     ),
     Capability(
+        "coating_area", Area.CATALOGUE,
+        "Coating area from the section", "שטח צביעה מהחתך עצמו",
+        "Anodising and paint are charged by the square metre, and the square "
+        "metre is measured off the outside of the imported section — not from "
+        "a factor, and not from the wetted perimeter, which on a thermally "
+        "broken profile is more than double and includes chambers no bath "
+        "reaches.",
+        probe="profileos.finishing:coating_area_per_metre",
+        differentiator=True,
+    ),
+    Capability(
+        "packing_list", Area.SHOPFLOOR,
+        "Loading list in fitting order", "רשימת העמסה בסדר ההרכבה",
+        "The lorry loaded so the first unit off is the first one wanted: by "
+        "floor, then by the site's own order, heaviest last on so it comes "
+        "off first — with the carry each unit needs and the load split "
+        "against the vehicle's real payload.",
+        probe="profileos.delivery.packing:pack",
+        differentiator=True,
+    ),
+    Capability(
+        "installation_plan", Area.SHOPFLOOR,
+        "Installation planning", "תכנון ימי הרכבה",
+        "Fitting time per unit by site condition and access — a renovation "
+        "with stairs is not a new build with a lift — laid on real working "
+        "days, so a short Friday is never given eight hours of work and a "
+        "crew too small for a lift-slide is caught before the van leaves.",
+        probe="profileos.delivery.installation:plan_installation",
+        differentiator=True,
+    ),
+    Capability(
+        "job_attachments", Area.COMMERCIAL,
+        "Photographs and papers on the job", "צילומים ומסמכים בתיק",
+        "The photograph that settles who pays, kept in the job rather than on "
+        "a fitter's phone: copied into the job's own folder as ordinary "
+        "files, checksummed so a signed document replaced after filing is "
+        "visible, and refused deletion when it is evidence.",
+        probe="profileos.projects.attachments:AttachmentStore",
+    ),
+    Capability(
         "three_way_match", Area.ADJACENT,
         "Three-way invoice matching", "התאמה משולשת של חשבוניות",
         "A supplier invoice is set against the order and the goods actually "

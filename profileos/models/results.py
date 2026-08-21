@@ -35,6 +35,10 @@ class SectionProperties(RoundTrips):
     # -- primary geometry -------------------------------------------------- #
     area: float = Field(description="Cross-sectional area A [mm^2]")
     perimeter: float = Field(default=0.0, description="Total wetted perimeter [mm]")
+    #: Only the outside of the section, which is the part a coating reaches.
+    outer_perimeter: float = Field(
+        default=0.0, description="Outer boundary only, for coating area [mm]"
+    )
     centroid_x: float = Field(description="x-bar, in drawing coordinates [mm]")
     centroid_y: float = Field(description="y-bar, in drawing coordinates [mm]")
 

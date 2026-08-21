@@ -76,8 +76,8 @@ class TestWindow:
         assert [p.title for p in window.pages] == [
             "Home", "Projects", "Profile", "Element", "3D view", "Drawings",
             "Nesting", "Glass", "Machining", "Quotation", "Accounts",
-            "Collection", "Shop floor", "Service", "Plumbing", "Catalogue",
-            "System",
+            "Collection", "Shop floor", "Delivery", "Service", "Plumbing",
+            "Catalogue", "System",
         ]
 
     def test_every_page_is_reachable_from_the_sidebar(self, window):
@@ -1324,3 +1324,93 @@ class TestServiceAndCollectionScreens:
         pump()
         assert page.costing_table.rowCount() > 0
         assert "דירה בבית אל" in page.costing_headline.text()
+
+
+class TestDeliveryScreen:
+    """The lorry, and the days the fitters are on site."""
+
+    def _element(self, window):
+        from profileos.library import search_openings
+
+        page = window.go_to_page("Element")
+        page.apply_preset(search_openings("הזזה 2 כנפיים 1800/1400")[0])
+        pump()
+        return page
+
+    def test_with_no_work_it_says_so_rather_than_showing_an_empty_grid(self, window):
+        page = window.go_to_page("Delivery")
+        page.refresh()
+        pump()
+        assert page.loads_table.rowCount() == 0
+        assert "אין פתחים" in page.delivery_notes.toPlainText()
+
+    def test_the_open_work_becomes_a_loading_list(self, window):
+        self._element(window)
+        page = window.go_to_page("Delivery")
+        page.refresh()
+        pump()
+        assert page.loads_table.rowCount() >= 1
+        assert page.days_table.rowCount() >= 1
+
+    def test_a_smaller_lorry_needs_more_loads(self, window):
+        self._element(window)
+        page = window.go_to_page("Delivery")
+        page.vehicle.setCurrentIndex(page.vehicle.findData("truck_12t"))
+        page.replan()
+        pump()
+        big = int(page.stats.value("loads"))
+        page.vehicle.setCurrentIndex(page.vehicle.findData("van"))
+        page.replan()
+        pump()
+        assert int(page.stats.value("loads")) >= big
+
+    def test_a_renovation_takes_more_days_than_a_new_build(self, window):
+        self._element(window)
+        page = window.go_to_page("Delivery")
+        page.condition.setCurrentIndex(page.condition.findData("new_build"))
+        page.replan()
+        pump()
+        new_build = page.days_table.rowCount()
+        page.condition.setCurrentIndex(page.condition.findData("occupied"))
+        page.replan()
+        pump()
+        assert page.days_table.rowCount() >= new_build
+
+
+class TestJobAttachments:
+    def test_a_file_attached_to_a_job_is_listed(self, window, job_dir, tmp_path):
+        from profileos.projects import default_store
+        from profileos.projects.attachments import AttachmentKind, attachments_for
+
+        store = default_store()
+        job = store.create(name="דירה")
+        store.save(job)
+        photo = tmp_path / "opening.jpg"
+        photo.write_bytes(b"\xff\xd8\xff" + b"x" * 64)
+        attachments_for(job.job_id).add(
+            photo, kind=AttachmentKind.SURVEY_PHOTO, caption="לפני פירוק",
+        )
+
+        page = window.go_to_page("Projects")
+        page.refresh()
+        pump()
+        assert page.files_table.rowCount() == 1
+        assert "צילום מדידה" in page.files_table.item(0, 0).text()
+
+    def test_a_replaced_document_is_called_out(self, window, job_dir, tmp_path):
+        from profileos.projects import default_store
+        from profileos.projects.attachments import AttachmentKind, attachments_for
+
+        store = default_store()
+        job = store.create(name="דירה")
+        store.save(job)
+        signed = tmp_path / "signed.pdf"
+        signed.write_bytes(b"%PDF original")
+        files = attachments_for(job.job_id)
+        attachment = files.add(signed, kind=AttachmentKind.SIGNED_QUOTE)
+        files.path_of(attachment).write_bytes(b"%PDF replaced")
+
+        page = window.go_to_page("Projects")
+        page.refresh()
+        pump()
+        assert "שונו" in page.files_note.text()

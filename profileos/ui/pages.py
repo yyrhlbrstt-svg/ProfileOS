@@ -378,6 +378,7 @@ class ProjectsPage(Page):
         tabs.addTab(self._jobs_tab(), "פרויקטים")
         tabs.addTab(self._customers_tab(), "לקוחות")
         tabs.addTab(self._costing_tab(), "רווחיות")
+        tabs.addTab(self._files_tab(), "מסמכים")
         self.body.addWidget(tabs, 1)
         self.tabs = tabs
 
@@ -468,6 +469,7 @@ class ProjectsPage(Page):
 
         job = self._selected_job()
         self.show_costing(job)
+        self.show_attachments(job)
         self.status_combo.clear()
         if job is None:
             self.job_summary.setText("לא נבחר פרויקט")
@@ -695,6 +697,107 @@ class ProjectsPage(Page):
             f"color: {self.colours.danger if costing.is_losing else self.colours.text};"
         )
         self.costing_notes.setText(" · ".join(costing.warnings))
+
+    def _files_tab(self) -> QWidget:
+        """The photographs and papers that settle arguments later."""
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, METRICS.space(3), 0, 0)
+        layout.setSpacing(METRICS.space(3))
+
+        controls = QHBoxLayout()
+        controls.setSpacing(METRICS.space(2))
+        self.attachment_kind = QComboBox()
+        from ..projects.attachments import AttachmentKind
+
+        for kind in AttachmentKind:
+            self.attachment_kind.addItem(kind.hebrew, kind.value)
+        add = QPushButton("צרף קובץ…")
+        add.clicked.connect(self.add_attachment)
+        controls.addWidget(add)
+        controls.addWidget(self.attachment_kind)
+        controls.addStretch(1)
+        layout.addLayout(controls)
+
+        self.files_table = DataTable(
+            ["סוג", "תיאור", "פתח", "נוסף", "מי", "גודל"],
+            empty_text="אין מסמכים בתיק — צרף צילום מדידה או הצעה חתומה",
+        )
+        layout.addWidget(self.files_table, 1)
+
+        self.files_note = QLabel("")
+        self.files_note.setObjectName("Hint")
+        self.files_note.setWordWrap(True)
+        layout.addWidget(self.files_note)
+
+        note = QLabel(
+            "הקבצים נשמרים בתיקיית העבודה עצמה — אפשר לפתוח אותם, לשלוח אותם "
+            "ולגבות אותם בלי התוכנה. לכל קובץ נשמרת חתימת ביקורת, כך שאם מסמך "
+            "חתום הוחלף אחרי שהוגש — רואים את זה."
+        )
+        note.setObjectName("Hint")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        return page
+
+    def add_attachment(self) -> None:
+        from ..projects.attachments import AttachmentKind, attachments_for
+
+        job = self._selected_job()
+        if job is None:
+            self.report(ProfileOSError("בחר פרויקט מהרשימה"), "לא נבחר פרויקט")
+            return
+        path, _ = QFileDialog.getOpenFileName(
+            self, "צירוף מסמך לתיק", "",
+            "מסמכים וצילומים (*.jpg *.jpeg *.png *.heic *.pdf *.dxf *.dwg);;כל הקבצים (*)",
+        )
+        if not path:
+            return
+        try:
+            attachments_for(job.job_id).add(
+                Path(path),
+                kind=AttachmentKind(self.attachment_kind.currentData()),
+                caption=Path(path).stem,
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "לא ניתן לצרף את הקובץ")
+            return
+        self.show_attachments(job)
+        self.status(f"צורף {Path(path).name}")
+
+    def show_attachments(self, job: Any) -> None:
+        from ..projects.attachments import attachments_for
+
+        if job is None:
+            self.files_table.set_rows([])
+            self.files_note.setText("")
+            return
+        store = attachments_for(job.job_id)
+        self.files_table.set_rows([
+            [
+                item.kind.hebrew, item.caption or item.name, item.element or "—",
+                item.added_at[:10], item.added_by or "—",
+                f"{item.size / 1024:,.0f} KB",
+            ]
+            for item in store
+        ])
+        summary = store.summary()
+        parts = [
+            f"⁦{summary['count']}⁩ מסמכים",
+            f"⁦{summary['photos']}⁩ צילומים",
+            f"⁦{summary['megabytes']:.1f}⁩ MB",
+        ]
+        changed = store.changed()
+        if changed:
+            parts.append(
+                f"⁦{len(changed)}⁩ קבצים שונו מאז שצורפו — בדוק אותם"
+            )
+        if summary["missing"]:
+            parts.append(f"⁦{summary['missing']}⁩ קבצים חסרים מהתיקייה")
+        self.files_note.setText(" · ".join(parts))
+        self.files_note.setStyleSheet(
+            f"color: {self.colours.warning};" if changed or summary["missing"] else ""
+        )
 
     def _customers_tab(self) -> QWidget:
         page = QWidget()
@@ -1109,6 +1212,14 @@ class ElementPage(Page):
         self.sill_height = QDoubleSpinBox(); self.sill_height.setRange(0, 100000)
         self.sill_height.setValue(900); self.sill_height.setSuffix(" mm")
 
+        # Where it is fitted. Two small fields, and they are what turns a pile
+        # of finished units into a loading list somebody can work from.
+        self.location = QLineEdit()
+        self.location.setPlaceholderText("סלון, חדר שינה, מרפסת…")
+        self.floor = QSpinBox()
+        self.floor.setRange(-3, 60)
+        self.floor.setSuffix(" קומה")
+
         # The series is a field like any other, because "which system is this
         # in" is a question the shop answers per element, not per install.
         # Generic keeps the family stand-ins and says so on the cut list.
@@ -1165,6 +1276,7 @@ class ElementPage(Page):
             ("סוג פתיחה", self.sash_type), ("גובה סף", self.sill_height),
             ("סדרה", self.system), ("זכוכית", self.glass),
             ("תריס", self.shutter), ("רשת", self.screen), ("אדן", self.sill),
+            ("מיקום", self.location), ("קומה", self.floor),
         ]:
             fields.add(label, widget)
         form_card.add(fields)
@@ -1490,6 +1602,14 @@ class ElementPage(Page):
                 system_id=self.system.currentData() or "generic",
             )
             opening.metadata["accessories"] = self._fittings()
+            if self.location.text().strip() or self.floor.value():
+                opening.metadata["place"] = {
+                    "location": self.location.text().strip(),
+                    "floor": self.floor.value(),
+                    # Fitted in the order they were designed, unless somebody
+                    # says otherwise: it is the order the shop thought in.
+                    "sequence": len(self.session.builds),
+                }
             opening.divide_evenly(self.columns.value(), self.rows.value())
 
             sash_type = OpeningType(self.sash_type.currentData())
@@ -3728,6 +3848,190 @@ class CollectionPage(Page):
 
 
 # --------------------------------------------------------------------------- #
+# Delivery
+# --------------------------------------------------------------------------- #
+
+class DeliveryPage(Page):
+    """Loading the lorry in the order the units come off it.
+
+    The last thing that happens in the workshop is the one nobody plans:
+    finished units loaded in the order they were glazed, arriving at a site
+    that wants the ground floor first. This screen is the fix, and it costs
+    one look at it.
+    """
+
+    title = "Delivery"
+    hebrew = "הובלה והרכבה"
+    subtitle = "רשימת העמסה בסדר ההרכבה, ותכנון ימי ההרכבה"
+
+    def build(self) -> None:
+        plan = QPushButton("תכנן")
+        plan.setObjectName("Primary")
+        plan.clicked.connect(self.replan)
+        self.header.add_action(plan)
+
+        self.stats = StatRow([
+            ("loads", "הובלות"), ("pieces", "יחידות"), ("mass", "משקל ק״ג"),
+            ("days", "ימי הרכבה"), ("finish", "סיום צפוי"),
+        ])
+        self.body.addWidget(self.stats)
+
+        controls = QHBoxLayout()
+        controls.setSpacing(METRICS.space(3))
+
+        self.vehicle = QComboBox()
+        from ..delivery import VEHICLES
+
+        for lorry in VEHICLES:
+            self.vehicle.addItem(
+                f"{lorry.hebrew} · ⁦{lorry.payload_kg:,.0f}⁩ ק״ג", lorry.name
+            )
+        self.vehicle.setCurrentIndex(2)
+
+        self.condition = QComboBox()
+        from ..delivery import Access as _Access, SiteCondition as _Condition
+
+        for condition in _Condition:
+            self.condition.addItem(condition.hebrew, condition.value)
+
+        self.access = QComboBox()
+        for access in _Access:
+            self.access.addItem(access.hebrew, access.value)
+
+        self.crew_size = QSpinBox()
+        self.crew_size.setRange(1, 8)
+        self.crew_size.setValue(2)
+        self.crew_size.setSuffix(" אנשים")
+
+        for label, widget in (
+            ("רכב", self.vehicle), ("תנאי האתר", self.condition),
+            ("גישה", self.access), ("צוות", self.crew_size),
+        ):
+            caption = QLabel(label)
+            caption.setObjectName("FieldLabel")
+            controls.addWidget(caption)
+            controls.addWidget(widget)
+        controls.addStretch(1)
+        self.body.addLayout(controls)
+
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+
+        loading = Card("רשימת העמסה")
+        self.loads_table = DataTable(
+            ["הובלה", "סימון", "מיקום", "קומה", "מידה", "כמות", "ק״ג", "נשיאה", "אביזרים"],
+            empty_text="תכנן פתחים ולחץ ״תכנן״ — הרשימה נבנית מהעבודה שעל השולחן",
+        )
+        loading.add(self.loads_table, 1)
+        splitter.addWidget(loading)
+
+        side = QWidget()
+        side_layout = QVBoxLayout(side)
+        side_layout.setContentsMargins(0, 0, 0, 0)
+        side_layout.setSpacing(METRICS.space(3))
+
+        schedule = Card("ימי הרכבה")
+        self.days_table = DataTable(
+            ["יום", "תאריך", "יחידות", "שעות"],
+            empty_text="אין תכנון עדיין",
+        )
+        schedule.add(self.days_table, 1)
+        side_layout.addWidget(schedule, 1)
+
+        notes = Card("לשים לב")
+        # A plain text edit does not inherit the application's direction, so
+        # a Hebrew line with a number in it comes out shuffled unless both the
+        # widget and its document are told which way the text runs.
+        self.delivery_notes = QPlainTextEdit()
+        self.delivery_notes.setReadOnly(True)
+        self.delivery_notes.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
+        option = self.delivery_notes.document().defaultTextOption()
+        option.setTextDirection(Qt.LayoutDirection.RightToLeft)
+        option.setAlignment(Qt.AlignmentFlag.AlignRight)
+        self.delivery_notes.document().setDefaultTextOption(option)
+        notes.add(self.delivery_notes, 1)
+        side_layout.addWidget(notes, 1)
+
+        splitter.addWidget(side)
+        splitter.setStretchFactor(0, 2)
+        splitter.setStretchFactor(1, 1)
+        splitter.setSizes([METRICS.panel_width * 2, METRICS.panel_width])
+        self.body.addWidget(splitter, 1)
+
+    def refresh(self) -> None:
+        self.replan()
+
+    def replan(self) -> None:
+        """Rebuild the load list and the fitting days from the open work."""
+        from ..delivery import (
+            Access, Crew, SiteCondition, pack, plan_installation, units_from_builds,
+        )
+
+        builds = self.session.builds
+        if not builds:
+            self.loads_table.set_rows([])
+            self.days_table.set_rows([])
+            self.delivery_notes.setPlainText(
+                "אין פתחים בעבודה. תכנן פתחים בעמוד ״פתח״ ואז חזור לכאן."
+            )
+            self.stats.update_many({
+                key: ("—", "") for key in
+                ("loads", "pieces", "mass", "days", "finish")
+            })
+            return
+
+        units = units_from_builds(builds)
+        packing = pack(units, vehicle_name=self.vehicle.currentData())
+        plan = plan_installation(
+            units,
+            crew=Crew(name="צוות א׳", people=self.crew_size.value()),
+            condition=SiteCondition(self.condition.currentData()),
+            access=Access(self.access.currentData()),
+        )
+
+        rows: list[list[Any]] = []
+        colours: dict[tuple[int, int], str] = {}
+        index = 0
+        for load in packing.loads:
+            for unit in load.units:
+                rows.append([
+                    load.number, unit.mark, unit.location or "—", unit.floor,
+                    f"{unit.width:.0f}×{unit.height:.0f}", unit.quantity,
+                    f"{unit.total_mass:.1f}", unit.handling.hebrew,
+                    ", ".join(unit.accessories) or "—",
+                ])
+                if unit.handling.people >= 4:
+                    colours[(index, 7)] = self.colours.warning
+                index += 1
+        self.loads_table.set_rows(rows, numeric_columns=(0, 3, 5, 6), colours=colours)
+
+        self.days_table.set_rows(
+            [
+                [number, day.strftime("%d/%m/%Y"), len(tasks),
+                 f"{sum(task.minutes for task in tasks) / 60.0:.1f}"]
+                for number, (day, tasks) in enumerate(plan.days, start=1)
+            ],
+            numeric_columns=(0, 2, 3),
+        )
+
+        notes = [load.describe() for load in packing.loads]
+        notes.extend(packing.warnings)
+        notes.extend(plan.warnings)
+        self.delivery_notes.setPlainText("\n".join(f"• {note}" for note in notes))
+
+        summary = packing.summary()
+        self.stats.update_many({
+            "loads": (str(summary["loads"]), "נדרש מנוף" if summary["crane"] else ""),
+            "pieces": (str(summary["pieces"]), ""),
+            "mass": (f"{summary['mass_kg']:,.0f}", ""),
+            "days": (str(len(plan.days)), f"{plan.person_hours:.0f} שעות-אדם"),
+            "finish": (
+                plan.finish.strftime("%d/%m") if plan.finish else "—",
+                plan.finish.strftime("%Y") if plan.finish else "",
+            ),
+        })
+
+
+# --------------------------------------------------------------------------- #
 # Catalogue
 # --------------------------------------------------------------------------- #
 
@@ -5139,7 +5443,7 @@ PAGES: list[type[Page]] = [
     HomePage, ProjectsPage, ProfilePage, ElementPage, ViewPage, DrawingsPage,
     NestingPage, GlassPage,
     MachiningPage, QuotePage, AccountsPage, CollectionPage,
-    ShopFloorPage, ServicePage, PlumbingPage,
+    ShopFloorPage, DeliveryPage, ServicePage, PlumbingPage,
     CataloguePage,
     SystemPage,
 ]
@@ -5147,6 +5451,6 @@ PAGES: list[type[Page]] = [
 __all__ = [
     "Page", "HomePage", "ProjectsPage", "ProfilePage", "ElementPage", "ViewPage",
     "DrawingsPage", "NestingPage", "GlassPage", "MachiningPage", "QuotePage", "AccountsPage",
-    "ShopFloorPage", "ServicePage", "CollectionPage", "PlumbingPage",
+    "ShopFloorPage", "DeliveryPage", "ServicePage", "CollectionPage", "PlumbingPage",
     "CataloguePage", "SystemPage", "PAGES",
 ]

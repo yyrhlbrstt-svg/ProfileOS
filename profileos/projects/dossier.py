@@ -164,6 +164,33 @@ def _accessory_rows(builds: Iterable[Any]) -> list[tuple[str, str, str, int, str
     return rows
 
 
+def _packing_rows(builds: Iterable[Any]) -> list[tuple]:
+    """The loading list: which lorry, in what order, and who carries it."""
+    from ..delivery import pack, units_from_builds
+
+    builds = list(builds)
+    if not builds:
+        return []
+    try:
+        packing = pack(units_from_builds(builds))
+    except Exception:  # noqa: BLE001 - a pack is worth more than a load plan
+        return []
+    rows: list[tuple] = []
+    for load in packing.loads:
+        for unit in load.units:
+            rows.append((
+                load.number,
+                unit.mark,
+                unit.location or "—",
+                unit.floor,
+                f"⁦{unit.width:.0f} × {unit.height:.0f}⁩",
+                unit.quantity,
+                f"{unit.total_mass:,.1f}",
+                unit.handling.hebrew,
+            ))
+    return rows
+
+
 def render_dossier(job: Any, builds: list[Any], *, today: date | None = None) -> str:
     """The whole job as one printable page."""
     from ..branding import active_brand
@@ -309,6 +336,27 @@ def render_dossier(job: Any, builds: list[Any], *, today: date | None = None) ->
                 f"<tr><td>{_esc(name)}</td><td>{_esc(hebrew)}</td>"
                 f"<td>{_esc(size)}</td><td class='n'>{quantity}</td>"
                 f"<td>{_esc(structural)}</td></tr>"
+            )
+        parts.append("</tbody></table>")
+
+    # -- the loading list ------------------------------------------------------ #
+    # Whoever loads the lorry reads this page and nothing else, so it says the
+    # order and the carry, not the theory.
+    loads = _packing_rows(builds)
+    if loads:
+        parts.append(
+            "<h2>רשימת העמסה</h2><table><thead><tr>"
+            "<th class='n'>הובלה</th><th>סימון</th><th>מיקום</th>"
+            "<th class='n'>קומה</th><th>מידה</th><th class='n'>כמות</th>"
+            "<th class='n'>ק״ג</th><th>נשיאה</th>"
+            "</tr></thead><tbody>"
+        )
+        for number, mark, where, floor, size, quantity, mass, handling in loads:
+            parts.append(
+                f"<tr><td class='n'>{number}</td><td>{_esc(mark)}</td>"
+                f"<td>{_esc(where)}</td><td class='n'>{floor}</td>"
+                f"<td>{_esc(size)}</td><td class='n'>{quantity}</td>"
+                f"<td class='n'>{mass}</td><td>{_esc(handling)}</td></tr>"
             )
         parts.append("</tbody></table>")
 

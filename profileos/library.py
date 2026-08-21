@@ -209,7 +209,7 @@ FAMILIES: tuple[OpeningFamily, ...] = (
         widths=_SLIDING_W, heights=_SLIDING_H, sill=900,
         note="הזזה על מסילות — הפתח הנפוץ ביותר בארץ",
         fittings="dwelling",
-        tags=("הזזה", "sliding", "מסילה", "בלגי הזזה"),
+        tags=("הזזה", "sliding", "מסילה", "בלגי הזזה", "סלון", "מטבח", "חדר שינה"),
         min_width=900, max_width=12000,
     ),
     OpeningFamily(
@@ -218,7 +218,7 @@ FAMILIES: tuple[OpeningFamily, ...] = (
         widths=_SLIDING_W, heights=_SLIDING_H, sill=900,
         note="כנף נעה אחת מול זיגוג קבוע",
         fittings="dwelling",
-        tags=("הזזה", "קבוע", "משולב"),
+        tags=("הזזה", "קבוע", "משולב", "סלון"),
         min_width=1200, max_width=12000,
     ),
     OpeningFamily(
@@ -247,7 +247,7 @@ FAMILIES: tuple[OpeningFamily, ...] = (
         widths=_CASEMENT_W, heights=_CASEMENT_H, sill=900,
         note="פתיחה על ציר צד",
         fittings="dwelling",
-        tags=("בלגי", "ציר", "casement", "כנף"),
+        tags=("בלגי", "ציר", "casement", "כנף", "חדר שינה", "מטבח"),
         min_width=400, max_width=3000,
     ),
     OpeningFamily(
@@ -290,7 +290,7 @@ FAMILIES: tuple[OpeningFamily, ...] = (
         heights=(600, 900, 1200, 1400, 1800, 2200), sill=900,
         note="זיגוג קבוע ללא כנף",
         fittings="sill_only",
-        tags=("קבוע", "fixed", "אטום", "ויטרינה"),
+        tags=("קבוע", "fixed", "אטום", "ויטרינה", "מדרגות", "פינת אוכל"),
         max_width=4000,
     ),
     OpeningFamily(
@@ -355,7 +355,7 @@ FAMILIES: tuple[OpeningFamily, ...] = (
         leaves=(2, 3, 4), sash_position="middle",
         widths=(2400, 3000, 3600, 4200, 6000), heights=(2400, 2700, 3000),
         sill=0, note="מחיצה פנימית עם דלת",
-        tags=("משרד", "מחיצה", "אופיס", "פנימי", "partition"),
+        tags=("משרד", "מחיצה", "אופיס", "פנימי", "partition", "לובי"),
         min_width=1200, max_width=12000, min_height=1800,
     ),
     OpeningFamily(

@@ -62,6 +62,9 @@ spec_app = typer.Typer(help="Performance and the standards a window is judged ag
 service_app = typer.Typer(help="Service calls: what comes back, and why.")
 money_app = typer.Typer(help="Cheques, collection and what a job actually earned.")
 calendar_app = typer.Typer(help="The Israeli working year.")
+deliver_app = typer.Typer(help="Loading and fitting: getting the work into the wall.")
+finish_app = typer.Typer(help="Anodising and paint, on the area a bath reaches.")
+files_app = typer.Typer(help="The photographs and papers kept with a job.")
 
 app.add_typer(geometry_app, name="section")
 app.add_typer(nest_app, name="nest")
@@ -88,6 +91,9 @@ app.add_typer(spec_app, name="spec")
 app.add_typer(service_app, name="service")
 app.add_typer(money_app, name="money")
 app.add_typer(calendar_app, name="calendar")
+app.add_typer(deliver_app, name="deliver")
+app.add_typer(finish_app, name="finish")
+app.add_typer(files_app, name="files")
 
 
 # --------------------------------------------------------------------------- #
@@ -2833,6 +2839,219 @@ def access_rotate(
 # --------------------------------------------------------------------------- #
 # Jobs
 # --------------------------------------------------------------------------- #
+@finish_app.command("area")
+def finish_area(
+    drawing: Path = typer.Argument(..., help="The profile's DXF."),
+    length: float = typer.Option(6000.0, "--length", "-l", help="Bar length [mm]."),
+    pieces: int = typer.Option(1, "--pieces", "-n"),
+) -> None:
+    """Coated area of a profile, from the outside of the section only."""
+    from .finishing import coating_area_per_metre
+    from .structural import analyse_dxf
+
+    try:
+        properties, _section = analyse_dxf(str(drawing), profile_id=drawing.stem)
+    except Exception as exc:  # noqa: BLE001
+        _fail(f"Could not analyse {drawing}: {exc}")
+
+    per_metre = coating_area_per_metre(properties)
+    area = per_metre * length / 1000.0 * pieces
+    table = Table(title=drawing.stem, header_style="dim")
+    table.add_column("What", style="cyan")
+    table.add_column("Value", justify="right")
+    for label, value in (
+        ("Wetted perimeter", f"{properties.perimeter:,.1f} mm"),
+        ("Outer perimeter", f"{properties.outer_perimeter:,.1f} mm"),
+        ("Coated area per metre", f"{per_metre:.4f} m2/m"),
+        (f"Coated area, {pieces} x {length:,.0f} mm", f"{area:.3f} m2"),
+    ):
+        table.add_row(label, value)
+    console.print(table)
+    saved = (properties.perimeter - properties.outer_perimeter) / max(
+        properties.perimeter, 1e-9
+    )
+    console.print(
+        f"[dim]The chambers are {saved:.0%} of the wetted perimeter and no bath "
+        f"reaches them; charging on the wetted figure would overstate this "
+        f"order by that much.[/dim]"
+    )
+
+
+@finish_app.command("kinds")
+def finish_kinds() -> None:
+    """The finishes that can be ordered, and how many passes each takes."""
+    from .finishing import FinishKind
+
+    table = Table(title="Finishes", header_style="dim")
+    table.add_column("Kind", style="cyan")
+    table.add_column("Hebrew")
+    table.add_column("Passes", justify="right")
+    for kind in FinishKind:
+        table.add_row(kind.value, kind.hebrew, str(kind.passes))
+    console.print(table)
+
+
+@deliver_app.command("pack")
+def deliver_pack(
+    job_id: str = typer.Argument(..., help="The job to load."),
+    vehicle: str = typer.Option("truck_7t", "--vehicle", "-v"),
+) -> None:
+    """The loading list, in the order the units come off the lorry."""
+    from .delivery import pack, units_from_builds
+    from .projects import default_store
+
+    job = default_store().get(job_id)
+    if job is None:
+        _fail(f"No job {job_id}.")
+    if job.schedule is None or not job.schedule.openings:
+        _fail(f"{job_id} has no elements saved to it yet.")
+
+    from .elements import ElementBuilder
+
+    builds = [
+        ElementBuilder().build(opening, sill_height=job.schedule.sill_height)
+        for opening in job.schedule.openings
+    ]
+    try:
+        packing = pack(
+            units_from_builds(builds), vehicle_name=vehicle,
+            job_id=job.job_id, job_name=job.name, site=job.site_address,
+        )
+    except Exception as exc:  # noqa: BLE001
+        _fail(str(exc))
+
+    for load in packing.loads:
+        console.print(f"[cyan]{load.describe()}[/cyan]")
+        table = Table(header_style="dim")
+        table.add_column("Mark", style="cyan")
+        table.add_column("Where")
+        table.add_column("Floor", justify="right")
+        table.add_column("Size")
+        table.add_column("Qty", justify="right")
+        table.add_column("kg", justify="right")
+        table.add_column("Carry")
+        for unit in load.units:
+            table.add_row(
+                unit.mark, unit.location or "-", str(unit.floor),
+                f"{unit.width:,.0f} x {unit.height:,.0f}", str(unit.quantity),
+                f"{unit.total_mass:,.1f}", unit.handling.hebrew,
+            )
+        console.print(table)
+    for warning in packing.warnings:
+        console.print(f"[yellow]{warning}[/yellow]")
+
+
+@deliver_app.command("plan")
+def deliver_plan(
+    job_id: str = typer.Argument(..., help="The job to fit."),
+    people: int = typer.Option(2, "--people", "-p"),
+    condition: str = typer.Option("new_build", "--condition", "-c"),
+    access: str = typer.Option("ground", "--access", "-a"),
+    start: str = typer.Option("", "--start", help="First fitting day YYYY-MM-DD."),
+) -> None:
+    """Lay the fitting out on real working days, festivals included."""
+    from datetime import date as _date
+
+    from .delivery import (
+        Access, Crew, SiteCondition, plan_installation, units_from_builds,
+    )
+    from .elements import ElementBuilder
+    from .projects import default_store
+
+    job = default_store().get(job_id)
+    if job is None:
+        _fail(f"No job {job_id}.")
+    if job.schedule is None or not job.schedule.openings:
+        _fail(f"{job_id} has no elements saved to it yet.")
+
+    builds = [
+        ElementBuilder().build(opening, sill_height=job.schedule.sill_height)
+        for opening in job.schedule.openings
+    ]
+    plan = plan_installation(
+        units_from_builds(builds),
+        crew=Crew(name="crew", people=people),
+        condition=SiteCondition(condition),
+        access=Access(access),
+        start=_date.fromisoformat(start) if start else None,
+        job_id=job.job_id, site=job.site_address,
+    )
+
+    table = Table(title=f"{job.job_id} — fitting", header_style="dim")
+    table.add_column("What", style="cyan")
+    table.add_column("Value")
+    for label, value in plan.summary_rows():
+        table.add_row(label, value)
+    console.print(table)
+
+    days = Table(header_style="dim")
+    days.add_column("Day", style="cyan")
+    days.add_column("Date")
+    days.add_column("Units", justify="right")
+    days.add_column("Hours", justify="right")
+    for number, (day, tasks) in enumerate(plan.days, start=1):
+        days.add_row(
+            str(number), day.strftime("%d/%m/%Y %a"), str(len(tasks)),
+            f"{sum(task.minutes for task in tasks) / 60.0:.1f}",
+        )
+    console.print(days)
+    for warning in plan.warnings:
+        console.print(f"[yellow]{warning}[/yellow]")
+
+
+@files_app.command("list")
+def files_list(
+    job_id: str = typer.Argument(..., help="The job whose files to list."),
+) -> None:
+    """Everything kept with a job, and whether it is still what was filed."""
+    from .projects.attachments import attachments_for
+
+    store = attachments_for(job_id)
+    if not len(store):
+        console.print(f"[dim]No files attached to {job_id} yet.[/dim]")
+        return
+
+    table = Table(title=f"{job_id} files", header_style="dim")
+    table.add_column("Kind", style="cyan")
+    table.add_column("Caption")
+    table.add_column("Element")
+    table.add_column("Added")
+    table.add_column("Size", justify="right")
+    for item in store:
+        table.add_row(
+            item.kind.hebrew, item.caption or item.name, item.element or "-",
+            item.added_at[:10], f"{item.size / 1024:,.0f} KB",
+        )
+    console.print(table)
+
+    for item in store.changed():
+        console.print(f"[yellow]{item.name} has changed since it was filed[/yellow]")
+    for item in store.missing():
+        console.print(f"[red]{item.name} is listed but missing from the folder[/red]")
+
+
+@files_app.command("add")
+def files_add(
+    job_id: str = typer.Argument(..., help="The job to file it under."),
+    path: Path = typer.Argument(..., help="The file to attach."),
+    kind: str = typer.Option("other", "--kind", "-k"),
+    caption: str = typer.Option("", "--caption", "-c"),
+    element: str = typer.Option("", "--element", "-e"),
+    by: str = typer.Option("", "--by"),
+) -> None:
+    """Copy a photograph or a document into the job's own folder."""
+    from .projects.attachments import AttachmentKind, attachments_for
+
+    try:
+        attachment = attachments_for(job_id).add(
+            path, kind=AttachmentKind(kind), caption=caption,
+            added_by=by, element=element,
+        )
+    except Exception as exc:  # noqa: BLE001
+        _fail(str(exc))
+    console.print(f"[green]{attachment.name}[/green] {attachment.describe()}")
+
+
 @calendar_app.command("year")
 def calendar_year(
     year: int = typer.Argument(0, help="Gregorian year; default this one."),

@@ -83,6 +83,10 @@ _PATHS["wrench"] = (
     "<path d='M15.5 3.5a5 5 0 0 0-4.6 6.9L3.8 17.5a1.7 1.7 0 0 0 2.4 2.4l7.1-7.1"
     "A5 5 0 1 0 15.5 3.5z'/><path d='M15.6 8.4v0'/>"
 )
+_PATHS["lorry"] = (
+    "<path d='M2.8 7.4h10.4v9H2.8z'/><path d='M13.2 10.4h4l3 3v3h-7z'/>"
+    "<circle cx='7' cy='18' r='1.7'/><circle cx='16.6' cy='18' r='1.7'/>"
+)
 _PATHS["cheque"] = (
     "<rect x='2.8' y='6' width='18.4' height='12' rx='1.6'/>"
     "<path d='M6.4 11h6M6.4 14h3.6'/><path d='m15 13.6 1.7 1.7 3-3.6'/>"
@@ -101,6 +105,7 @@ PAGE_ICONS: dict[str, str] = {
     "Quotation": "document",
     "Accounts": "ledger",
     "Shop floor": "barcode",
+    "Delivery": "lorry",
     "Service": "wrench",
     "Collection": "cheque",
     "Plumbing": "pipe",

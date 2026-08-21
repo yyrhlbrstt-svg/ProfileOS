@@ -26,7 +26,7 @@ from ..core.profiling import timed
 from ..models.materials import Material, get_material
 from ..models.profile import ProfileDefinition
 from ..models.results import SectionProperties
-from .green import moments_from_polygon, polygon_perimeter
+from .green import moments_from_polygon, polygon_outer_perimeter, polygon_perimeter
 from .plastic import plastic_modulus_x, plastic_modulus_y
 from .torsion import compute_torsion
 
@@ -97,6 +97,7 @@ def analyse_section(
         profile_id=profile_id,
         area=centroidal.area,
         perimeter=polygon_perimeter(polygon),
+        outer_perimeter=polygon_outer_perimeter(polygon),
         centroid_x=centroidal.centroid_x,
         centroid_y=centroidal.centroid_y,
         bounds=(min_x, min_y, max_x, max_y),

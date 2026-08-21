@@ -113,6 +113,11 @@ class StatRow(QWidget):
         for key, (value, note) in values.items():
             self.set(key, value, note)
 
+    def value(self, key: str) -> str:
+        """What a tile currently reads — so code and tests can ask."""
+        tile = self.tiles.get(key)
+        return tile.value.text() if tile is not None else ""
+
 
 class PageHeader(QWidget):
     """The title bar at the top of every page."""
