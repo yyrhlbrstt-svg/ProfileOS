@@ -163,6 +163,16 @@ CAPABILITIES: tuple[Capability, ...] = (
         probe="profileos.elements.builder:ElementBuilder",
     ),
     Capability(
+        "type_library", Area.ELEMENTS,
+        "Spoken type library", "ספריית טיפוסים בדיבור",
+        "Every opening type the trade makes, at any size, leaf count and "
+        "series — found by saying it: \"הזזה 4 כנפיים 6000/2200 קליל 9000\". "
+        "Sizes are generated, not stored, so nothing is missing from the list, "
+        "and centimetres, metres and millimetres are all understood.",
+        probe="profileos.library:search_openings",
+        differentiator=True,
+    ),
+    Capability(
         "curtain_wall", Area.ELEMENTS,
         "Curtain walling", "קירות מסך",
         "Multi-bay grids on the same element model as a single window.",

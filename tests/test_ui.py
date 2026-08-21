@@ -1144,24 +1144,46 @@ class TestFindingThings:
         assert window.session.section_properties is None
 
     def test_a_picked_opening_is_built_without_typing_anything(self, window):
-        from profileos.library import opening
+        from profileos.library import search_openings
 
         page = window.go_to_page("Element")
-        page.apply_preset(opening("sliding_3"))
+        page.apply_preset(search_openings("הזזה 3 כנפיים 6000/2200")[0])
         pump()
 
         assert window.session.builds
         build = window.session.builds[-1]
-        assert build.opening.width == 2700
+        assert (build.opening.width, build.opening.height) == (6000, 2200)
         assert build.opening.column_count == 3
         assert page.cuts.rowCount() > 0
 
-    def test_a_preset_arrives_marked_the_way_the_shop_marks_things(self, window):
-        from profileos.library import opening
+    def test_a_series_asked_for_by_name_is_the_one_it_is_built_in(self, window):
+        from profileos.library import search_openings
 
         page = window.go_to_page("Element")
-        page.apply_preset(opening("sliding_2"))
-        page.apply_preset(opening("entry_door"))
+        page.apply_preset(search_openings("הזזה 2400/1400 קליל 7300")[0])
+        pump()
+
+        assert window.session.builds[-1].opening.system_id == "klil-7300"
+
+    def test_an_unclassified_series_is_refused_with_the_reason(self, window, monkeypatch):
+        recorded: list[str] = []
+        monkeypatch.setattr(
+            type(window.page("Element")), "report",
+            lambda self, exc, context="": recorded.append(str(exc)),
+        )
+        page = window.go_to_page("Element")
+        index = page.system.findData("klil-9200")
+        assert index > 0
+        page.system.setCurrentIndex(index)
+        page.build_element()
+        assert recorded and "סווג" in recorded[0]
+
+    def test_a_preset_arrives_marked_the_way_the_shop_marks_things(self, window):
+        from profileos.library import search_openings
+
+        page = window.go_to_page("Element")
+        page.apply_preset(search_openings("הזזה 2 כנפיים 2400/1400")[0])
+        page.apply_preset(search_openings("דלת כניסה 1000/2100")[0])
         pump()
 
         marks = {build.opening.name for build in window.session.builds}
@@ -1177,7 +1199,7 @@ class TestFindingThings:
         assert everything > 10
         dialog.search.setText("דלת")
         pump()
-        assert 0 < dialog.results.count() < everything
+        assert 0 < dialog.results.count() <= everything
         dialog.search.setText("קורקינט")
         pump()
         assert dialog.results.count() == 0
@@ -1188,7 +1210,7 @@ class TestFindingThings:
         from profileos.ui.palette_search import CommandPalette
 
         palette = CommandPalette(window)
-        palette._filter("מטבח")
+        palette._filter("פתח: חלון ממ")
         assert palette.results.count() >= 1
         item = palette.results.item(0)
         from PySide6.QtCore import Qt

@@ -73,10 +73,12 @@ class FinderDialog(QDialog):
         placeholder: str,
         fetch: Callable[[str], Sequence[tuple[str, str, str, Any]]],
         empty_text: str = "לא נמצא כלום. נסה מילה אחרת.",
+        hint: str = "",
     ) -> None:
         super().__init__(parent)
         self._fetch = fetch
         self._empty_text = empty_text
+        self._hint = hint or "Enter — בחירה · Esc — סגירה · ↑↓ — ניווט"
         self.chosen: Any = None
 
         self.setWindowTitle(title)
@@ -109,7 +111,7 @@ class FinderDialog(QDialog):
         self.results.itemClicked.connect(self._choose)
         layout.addWidget(self.results, 1)
 
-        self.hint = QLabel("Enter — בחירה · Esc — סגירה · ↑↓ — ניווט")
+        self.hint = QLabel(self._hint)
         self.hint.setObjectName("PaletteHint")
         layout.addWidget(self.hint)
 
@@ -129,7 +131,7 @@ class FinderDialog(QDialog):
             self.results.setItemWidget(item, widget)
         if rows:
             self.results.setCurrentRow(0)
-            self.hint.setText("Enter — בחירה · Esc — סגירה · ↑↓ — ניווט")
+            self.hint.setText(self._hint)
         else:
             self.hint.setText(self._empty_text)
 
@@ -182,7 +184,7 @@ def _opening_rows(text: str) -> list[tuple[str, str, str, Any]]:
     from ..library import search_openings
 
     return [
-        (preset.hebrew, preset.note, preset.describe(), preset)
+        (preset.title, preset.note, preset.describe(), preset)
         for preset in search_openings(text)
     ]
 
@@ -200,13 +202,16 @@ def find_profile(parent: QWidget | None) -> Any:
 
 
 def find_opening(parent: QWidget | None) -> Any:
-    """Pick a ready-made opening: hozaza, tilt-turn, door, curtain wall."""
+    """Say the opening out loud and get it: type, leaves, size, series."""
+    from ..library import catalogue_size
+
     dialog = FinderDialog(
         parent,
-        title="ספריית פתחים",
-        placeholder="חפש פתח — הזזה, בלגי, דלת, ממ״ד…",
+        title=f"ספריית פתחים · ⁦{catalogue_size():,}⁩ צירופים",
+        placeholder="הזזה 4 כנפיים 6000/2200 קליל 9000",
         fetch=_opening_rows,
-        empty_text="אין פתח בשם הזה. נסה: הזזה, ציר, דלת, מסך.",
+        empty_text="נסה: הזזה · בלגי · נטוי · דלת · קיר מסך — ומידה: ⁦240/140⁩ או ⁦6000x2200⁩",
+        hint="סוג · כנפיים · מידה · סדרה — כל חלק לא חובה. מ״מ, ס״מ או מטרים.",
     )
     return dialog.open_over()
 

@@ -56,6 +56,7 @@ draw_app = typer.Typer(help="Shop drawings: elevations, wall sections and sheets
 mobile_app = typer.Typer(help="Phones and tablets paired to this machine.")
 quote_app = typer.Typer(help="Quotations: price, negotiate, issue.")
 jobs_app = typer.Typer(help="Job files: the shop's own record of the work it has taken on.")
+library_app = typer.Typer(help="The type library: every opening the shop can make.")
 
 app.add_typer(geometry_app, name="section")
 app.add_typer(nest_app, name="nest")
@@ -76,6 +77,7 @@ app.add_typer(draw_app, name="draw")
 app.add_typer(mobile_app, name="mobile")
 app.add_typer(quote_app, name="quote")
 app.add_typer(jobs_app, name="jobs")
+app.add_typer(library_app, name="library")
 
 
 # --------------------------------------------------------------------------- #
@@ -2821,6 +2823,113 @@ def access_rotate(
 # --------------------------------------------------------------------------- #
 # Jobs
 # --------------------------------------------------------------------------- #
+@library_app.command("types")
+def library_types() -> None:
+    """Every opening type this shop makes, and the sizes each is made at."""
+    from .library import catalogue_size, families
+
+    table = Table(title="Opening types", header_style="dim")
+    table.add_column("Type", style="cyan")
+    table.add_column("Hebrew")
+    table.add_column("Leaves")
+    table.add_column("Width", justify="right")
+    table.add_column("Height", justify="right")
+    for family in families():
+        table.add_row(
+            family.family_id,
+            family.hebrew,
+            ", ".join(str(count) for count in family.leaves),
+            f"{family.min_width:,.0f}-{family.max_width:,.0f}",
+            f"{family.min_height:,.0f}-{family.max_height:,.0f}",
+        )
+    console.print(table)
+    console.print(
+        f"[dim]{catalogue_size():,} combinations at 50 mm steps — "
+        f"any size in between is made on request.[/dim]"
+    )
+
+
+@library_app.command("find")
+def library_find(
+    query: str = typer.Argument(..., help='For example: "הזזה 4 כנפיים 6000/2200 קליל 9000".'),
+    limit: int = typer.Option(15, "--limit", "-n"),
+) -> None:
+    """Search the library the way the shop says it out loud."""
+    from .library import parse_query, search_openings
+
+    parsed = parse_query(query)
+    found = search_openings(query, limit=limit)
+    if not found:
+        _fail(f"Nothing matches {query!r}. Try a type: הזזה, בלגי, דלת, קיר מסך.")
+
+    table = Table(title=f"{len(found)} matches", header_style="dim")
+    table.add_column("Type", style="cyan")
+    table.add_column("Size", justify="right")
+    table.add_column("Leaves", justify="right")
+    table.add_column("Series")
+    table.add_column("Id", style="dim")
+    for preset in found:
+        table.add_row(
+            preset.hebrew,
+            f"{preset.width:,.0f} x {preset.height:,.0f}",
+            str(preset.columns),
+            preset.system_hebrew or "-",
+            preset.preset_id,
+        )
+    console.print(table)
+    console.print(
+        f"[dim]read as: width={parsed.width or '-'} height={parsed.height or '-'} "
+        f"leaves={parsed.leaves or '-'} series={parsed.system_id or '-'}[/dim]"
+    )
+
+
+@library_app.command("build")
+def library_build(
+    preset_id: str = typer.Argument(..., help="An id from `profileos library find`."),
+    quantity: int = typer.Option(1, "--quantity", "-q"),
+) -> None:
+    """Build one opening from the library and show what it takes to make."""
+    from .elements import Cell, ElementBuilder, ElementKind, Opening, OpeningType, Sash
+    from .library import opening as library_opening
+
+    preset = library_opening(preset_id)
+    if preset is None:
+        _fail(f"No such opening: {preset_id}. List them with `profileos library find`.")
+
+    unit = Opening(
+        name=preset.preset_id,
+        kind=ElementKind(preset.kind),
+        width=preset.width,
+        height=preset.height,
+        quantity=quantity,
+        glass_spec_id=preset.glass,
+        system_id=preset.system_id,
+    )
+    unit.divide_evenly(preset.columns, preset.rows)
+    sash_type = OpeningType(preset.sash_type)
+    if sash_type is not OpeningType.FIXED:
+        unit.set_cell(Cell(
+            column=min(preset.sash_column, unit.column_count - 1),
+            row=min(preset.sash_row, unit.row_count - 1),
+            sash=Sash(opening_type=sash_type),
+        ))
+    build = ElementBuilder().build(unit, sill_height=preset.sill)
+
+    summary = build.summary()
+    table = Table(title=preset.hebrew, header_style="dim")
+    table.add_column("Role", style="cyan")
+    table.add_column("Profile")
+    table.add_column("Length", justify="right")
+    table.add_column("Qty", justify="right")
+    for cut in sorted(build.cuts, key=lambda c: (c.role, -c.length)):
+        table.add_row(cut.role, cut.profile_id, f"{cut.length:,.1f}", str(cut.quantity))
+    console.print(table)
+    console.print(
+        f"[dim]{summary['pieces']} pieces, {summary['glass_panes']} panes, "
+        f"{summary['glass_area_m2']:.2f} m2 glass, {summary['hardware_items']} hardware items[/dim]"
+    )
+
+
 @jobs_app.command("list")
 def jobs_list(
     all_jobs: bool = typer.Option(False, "--all", help="Include installed and lost jobs."),

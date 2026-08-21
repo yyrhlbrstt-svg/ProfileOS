@@ -102,10 +102,15 @@ class CommandPalette(QDialog):
 
         for preset in opening_library():
             commands.append(Command(
-                label=f"פתח: {preset.hebrew}  ⁦{preset.width:.0f}×{preset.height:.0f}⁩",
+                label=f"פתח: {preset.title}  ⁦{preset.width:.0f}×{preset.height:.0f}⁩",
                 keywords=" ".join(preset.search_terms()).lower(),
                 run=lambda p=preset: self._build_opening(p),
             ))
+        commands.append(Command(
+            label="חיפוש פתח לפי מידה…",
+            keywords="פתח חלון מידה גודל הזזה בלגי דלת search size",
+            run=self._find_opening,
+        ))
         for profile in profile_library():
             commands.append(Command(
                 label=f"פרופיל: {profile.hebrew}",
@@ -123,6 +128,11 @@ class CommandPalette(QDialog):
         page = self._window.go_to_page("Profile")
         if hasattr(page, "load"):
             page.load(profile.path)
+
+    def _find_opening(self) -> None:
+        page = self._window.go_to_page("Element")
+        if hasattr(page, "find_opening"):
+            page.find_opening()
 
     def _build_opening(self, preset: Any) -> None:
         page = self._window.go_to_page("Element")

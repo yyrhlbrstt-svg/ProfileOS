@@ -1047,6 +1047,17 @@ class ElementPage(Page):
             self.sash_type.addItem(_OT(sash_kind).label("he"), sash_kind)
         self.sash_type.setCurrentIndex(2)
         self.sill = QDoubleSpinBox(); self.sill.setRange(0, 100000); self.sill.setValue(900); self.sill.setSuffix(" mm")
+
+        # The series is a field like any other, because "which system is this
+        # in" is a question the shop answers per element, not per install.
+        # Generic keeps the family stand-ins and says so on the cut list.
+        self.system = QComboBox()
+        self.system.addItem("רגיל — ערכים טיפוסיים", "generic")
+        from ..systems import DIRECTORY as _DIRECTORY
+
+        for entry in sorted(_DIRECTORY, key=lambda e: (e.manufacturer, e.series)):
+            self.system.addItem(entry.display, entry.id)
+
         self.glass = QComboBox()
 
         from ..glazing import STANDARD_BUILDUPS
@@ -1061,7 +1072,8 @@ class ElementPage(Page):
             ("שם", self.name), ("סוג", self.kind), ("רוחב", self.width),
             ("גובה", self.height), ("כמות", self.quantity), ("עמודות", self.columns),
             ("שורות", self.rows), ("עמודת כנף", self.sash_column), ("שורת כנף", self.sash_row),
-            ("סוג פתיחה", self.sash_type), ("גובה סף", self.sill), ("זכוכית", self.glass),
+            ("סוג פתיחה", self.sash_type), ("גובה סף", self.sill),
+            ("סדרה", self.system), ("זכוכית", self.glass),
         ]:
             fields.add(label, widget)
         form_card.add(fields)
@@ -1170,11 +1182,33 @@ class ElementPage(Page):
         if sash_index >= 0:
             self.sash_type.setCurrentIndex(sash_index)
         self.sill.setValue(preset.sill)
+        system_index = self.system.findData(preset.system_id)
+        self.system.setCurrentIndex(system_index if system_index >= 0 else 0)
         glass_index = self.glass.findData(preset.glass)
         if glass_index >= 0:
             self.glass.setCurrentIndex(glass_index)
         self.build_element()
-        self.status(f"{preset.hebrew} · {preset.describe()}")
+        self.status(f"{preset.title} · {preset.describe()}")
+
+    def _builder(self, opening: Any) -> Any:
+        """The rule set for the chosen series, or the generic one.
+
+        An unclassified series is refused with the reason rather than quietly
+        cut on a stand-in: a bar cut to a guess is a bar in the skip.
+        """
+        from ..elements import ElementBuilder
+
+        if opening.system_id in ("", "generic"):
+            return ElementBuilder()
+        from ..systems import UnclassifiedSystem
+
+        try:
+            return ElementBuilder.for_system(opening.system_id)
+        except UnclassifiedSystem as exc:
+            raise ProfileOSError(
+                "הסדרה עדיין לא סווגה, אז אין לפי מה לגזור. "
+                "סווג אותה בעמוד ״קטלוג״ ואז חזור לכאן."
+            ) from exc
 
     def build_element(self) -> None:
         from ..elements import Cell, ElementBuilder, ElementKind, Opening, OpeningType, Sash
@@ -1186,6 +1220,7 @@ class ElementPage(Page):
                 width=self.width.value(), height=self.height.value(),
                 quantity=self.quantity.value(),
                 glass_spec_id=self.glass.currentData(),
+                system_id=self.system.currentData() or "generic",
             )
             opening.divide_evenly(self.columns.value(), self.rows.value())
 
@@ -1195,7 +1230,7 @@ class ElementPage(Page):
                 row = min(self.sash_row.value(), opening.row_count - 1)
                 opening.set_cell(Cell(column=column, row=row, sash=Sash(opening_type=sash_type)))
 
-            build = ElementBuilder().build(opening, sill_height=self.sill.value())
+            build = self._builder(opening).build(opening, sill_height=self.sill.value())
         except Exception as exc:  # noqa: BLE001
             self.report(exc, "לא ניתן לבנות את הפתח")
             return
