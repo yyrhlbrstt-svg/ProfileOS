@@ -77,6 +77,17 @@ _PATHS: dict[str, str] = {
 }
 
 #: Which glyph belongs to which page, by the page's stable title.
+#: A wrench for the calls that come back, and a cheque for the money that has
+#: been promised. Drawn on the same 24-unit grid and stroke as the rest.
+_PATHS["wrench"] = (
+    "<path d='M15.5 3.5a5 5 0 0 0-4.6 6.9L3.8 17.5a1.7 1.7 0 0 0 2.4 2.4l7.1-7.1"
+    "A5 5 0 1 0 15.5 3.5z'/><path d='M15.6 8.4v0'/>"
+)
+_PATHS["cheque"] = (
+    "<rect x='2.8' y='6' width='18.4' height='12' rx='1.6'/>"
+    "<path d='M6.4 11h6M6.4 14h3.6'/><path d='m15 13.6 1.7 1.7 3-3.6'/>"
+)
+
 PAGE_ICONS: dict[str, str] = {
     "Home": "home",
     "Projects": "folder",
@@ -90,6 +101,8 @@ PAGE_ICONS: dict[str, str] = {
     "Quotation": "document",
     "Accounts": "ledger",
     "Shop floor": "barcode",
+    "Service": "wrench",
+    "Collection": "cheque",
     "Plumbing": "pipe",
     "Catalogue": "books",
     "System": "gear",

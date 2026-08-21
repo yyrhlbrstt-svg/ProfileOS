@@ -59,6 +59,9 @@ jobs_app = typer.Typer(help="Job files: the shop's own record of the work it has
 library_app = typer.Typer(help="The type library: every opening the shop can make.")
 fit_app = typer.Typer(help="Shutters, screens, sills — what is fitted to an opening.")
 spec_app = typer.Typer(help="Performance and the standards a window is judged against.")
+service_app = typer.Typer(help="Service calls: what comes back, and why.")
+money_app = typer.Typer(help="Cheques, collection and what a job actually earned.")
+calendar_app = typer.Typer(help="The Israeli working year.")
 
 app.add_typer(geometry_app, name="section")
 app.add_typer(nest_app, name="nest")
@@ -82,6 +85,9 @@ app.add_typer(jobs_app, name="jobs")
 app.add_typer(library_app, name="library")
 app.add_typer(fit_app, name="fit")
 app.add_typer(spec_app, name="spec")
+app.add_typer(service_app, name="service")
+app.add_typer(money_app, name="money")
+app.add_typer(calendar_app, name="calendar")
 
 
 # --------------------------------------------------------------------------- #
@@ -2827,6 +2833,251 @@ def access_rotate(
 # --------------------------------------------------------------------------- #
 # Jobs
 # --------------------------------------------------------------------------- #
+@calendar_app.command("year")
+def calendar_year(
+    year: int = typer.Argument(0, help="Gregorian year; default this one."),
+) -> None:
+    """Every day the Hebrew calendar takes out of the working year."""
+    from datetime import date as _date
+
+    from .hebrew_calendar import holidays_between
+
+    year = year or _date.today().year
+    table = Table(title=f"Working year {year}", header_style="dim")
+    table.add_column("Date", style="cyan")
+    table.add_column("Day")
+    table.add_column("Hebrew")
+    table.add_column("What it is")
+    table.add_column("Hours", justify="right")
+
+    from .erp.scheduling import Calendar
+
+    israeli = Calendar.israeli()
+    for holiday in holidays_between(_date(year, 1, 1), _date(year, 12, 31)):
+        table.add_row(
+            holiday.day.strftime("%d/%m/%Y"),
+            holiday.day.strftime("%a"),
+            holiday.hebrew,
+            holiday.kind.hebrew,
+            f"{israeli.hours_on(holiday.day):.1f}",
+        )
+    console.print(table)
+
+
+@calendar_app.command("date")
+def calendar_date(
+    day: str = typer.Argument("", help="Gregorian date YYYY-MM-DD; default today."),
+) -> None:
+    """What one day is, in both calendars."""
+    from datetime import date as _date
+
+    from .erp.scheduling import Calendar
+    from .hebrew_calendar import describe, holiday_on
+
+    when = _date.fromisoformat(day) if day else _date.today()
+    israeli = Calendar.israeli()
+    console.print(f"[cyan]{when:%d/%m/%Y}[/cyan] {when:%A}")
+    console.print(f"  {describe(when)}")
+    festival = holiday_on(when)
+    if festival is not None:
+        console.print(f"  [yellow]{festival.describe()}[/yellow]")
+    console.print(f"  working hours: {israeli.hours_on(when):.1f}")
+    if not israeli.is_working(when):
+        console.print(f"  next working day: {israeli.next_working_day(when):%d/%m/%Y}")
+
+
+@service_app.command("list")
+def service_list(
+    everything: bool = typer.Option(False, "--all", help="Closed calls too."),
+) -> None:
+    """The calls on the board."""
+    from datetime import date as _date
+
+    from .service import default_register
+
+    register = default_register()
+    calls = register.all() if everything else register.open_calls()
+    if not calls:
+        console.print("[green]No open service calls.[/green]")
+        return
+
+    table = Table(title="Service calls", header_style="dim")
+    table.add_column("Id", style="cyan")
+    table.add_column("Customer")
+    table.add_column("Symptom")
+    table.add_column("Opened")
+    table.add_column("Due")
+    table.add_column("State")
+    table.add_column("Warranty")
+    today = _date.today()
+    for call in calls:
+        covered = call.under_warranty
+        overdue = call.is_overdue(today)
+        table.add_row(
+            call.call_id, call.customer_name, call.symptom.hebrew,
+            call.opened.strftime("%d/%m/%Y"),
+            f"[red]{call.due_by():%d/%m/%Y}[/red]" if overdue
+            else call.due_by().strftime("%d/%m/%Y"),
+            call.state.hebrew,
+            "?" if covered is None else ("yes" if covered else "no"),
+        )
+    console.print(table)
+
+
+@service_app.command("open")
+def service_open(
+    customer: str = typer.Argument(..., help="Who rang."),
+    symptom: str = typer.Argument(..., help="water, dropped, shutter, ..."),
+    job: str = typer.Option("", "--job", "-j"),
+    element: str = typer.Option("", "--element", "-e"),
+    delivered: str = typer.Option("", "--delivered", help="Handover date YYYY-MM-DD."),
+    note: str = typer.Option("", "--note", "-n"),
+) -> None:
+    """Log a call while the customer is still on the phone."""
+    from datetime import date as _date
+
+    from .service import ServiceCall, Symptom, default_register
+
+    try:
+        kind = Symptom(symptom)
+    except ValueError:
+        _fail(
+            f"Unknown symptom {symptom!r}. One of: "
+            + ", ".join(entry.value for entry in Symptom)
+        )
+    call = ServiceCall(
+        job_id=job, customer_name=customer, element_name=element,
+        symptom=kind, description=note,
+        delivered=_date.fromisoformat(delivered) if delivered else None,
+    )
+    default_register().add(call)
+
+    covered = call.under_warranty
+    console.print(f"[green]{call.call_id}[/green] {call.describe()}")
+    console.print(
+        f"[dim]severity {call.severity.hebrew}, be there by "
+        f"{call.due_by():%d/%m/%Y}[/dim]"
+    )
+    if covered is None:
+        console.print("[yellow]Handover date unknown, so warranty is unknown.[/yellow]")
+    else:
+        until = call.warranty_until()
+        console.print(
+            f"[dim]{call.warranty_component_hebrew}: "
+            + (f"covered until {until:%d/%m/%Y}" if covered else "out of warranty")
+            + "[/dim]"
+        )
+
+
+@service_app.command("close")
+def service_close(
+    call_id: str = typer.Argument(..., help="The call to close."),
+    cause: str = typer.Argument(..., help="manufacture, installation, building, ..."),
+    minutes: int = typer.Option(60, "--minutes", "-m"),
+    engineer: str = typer.Option("", "--engineer"),
+    charged: float = typer.Option(0.0, "--charged"),
+) -> None:
+    """Shut a call with what it turned out to be."""
+    from datetime import date as _date
+
+    from .service import Cause, default_register
+
+    register = default_register()
+    call = register.get(call_id)
+    if call is None:
+        _fail(f"No service call {call_id}.")
+    try:
+        why = Cause(cause)
+    except ValueError:
+        _fail(
+            f"Unknown cause {cause!r}. One of: "
+            + ", ".join(entry.value for entry in Cause)
+        )
+    call.close(_date.today(), why, minutes=minutes, engineer=engineer, charged=charged)
+    register.update(call)
+    console.print(f"[green]{call_id}[/green] closed: {why.hebrew}")
+    if why.is_ours:
+        console.print("[yellow]Counted against this job's margin.[/yellow]")
+
+
+@service_app.command("report")
+def service_report() -> None:
+    """What comes back, why, and what going back has cost."""
+    from .service import default_register
+
+    register = default_register()
+    if not len(register):
+        console.print("[dim]No service calls recorded yet.[/dim]")
+        return
+
+    quality = register.cost_of_quality()
+    performance = register.response_performance()
+    table = Table(title="After-sales", header_style="dim")
+    table.add_column("What", style="cyan")
+    table.add_column("Value", justify="right")
+    for label, value in (
+        ("Calls", str(len(register))),
+        ("Open", str(len(register.open_calls()))),
+        ("Overdue", str(len(register.overdue()))),
+        ("Hours our fault", f"{quality['hours_our_fault']:.1f}"),
+        ("Hours chargeable", f"{quality['hours_chargeable']:.1f}"),
+        ("Recovered", f"{quality['recovered']:,.0f}"),
+        ("Median days to close", f"{performance['median_days']:.0f}"),
+        ("Within target", f"{performance['within_target']:.0f}%"),
+    ):
+        table.add_row(label, value)
+    console.print(table)
+
+    recurring = register.recurring(minimum=2)
+    if recurring:
+        console.print("[yellow]Coming back more than once:[/yellow]")
+        for label, count in recurring:
+            console.print(f"  {count}x  {label}")
+
+
+@money_app.command("cheques")
+def money_cheques() -> None:
+    """What a cheque book would look like — the shape of the register."""
+    from .erp.collection import ChequeState
+
+    table = Table(title="Cheque states", header_style="dim")
+    table.add_column("State", style="cyan")
+    table.add_column("Hebrew")
+    table.add_column("Is money", justify="right")
+    for state in ChequeState:
+        table.add_row(state.value, state.hebrew, "yes" if state.is_money else "no")
+    console.print(table)
+    console.print(
+        "[dim]A cheque is a promise. It is never posted as revenue here, "
+        "because a promise booked as revenue hides a bad debtor.[/dim]"
+    )
+
+
+@money_app.command("job")
+def money_job(
+    job_id: str = typer.Argument(..., help="The job to cost."),
+) -> None:
+    """What one job has earned, read from every side that has an entry."""
+    from .projects import default_store
+    from .projects.costing import cost_job
+    from .service import default_register
+
+    job = default_store().get(job_id)
+    if job is None:
+        _fail(f"No job {job_id}. List them with `profileos jobs list`.")
+    costing = cost_job(job, service=default_register())
+
+    table = Table(title=f"{job.job_id} — {job.name}", header_style="dim")
+    table.add_column("What", style="cyan")
+    table.add_column("Value", justify="right")
+    for label, value in costing.summary_rows():
+        table.add_row(label, value)
+    console.print(table)
+    console.print(f"[cyan]{costing.verdict()}[/cyan]")
+    for warning in costing.warnings:
+        console.print(f"[yellow]{warning}[/yellow]")
+
+
 @erp_app.command("terms")
 def erp_terms(
     issued: str = typer.Option("", "--on", help="Invoice date YYYY-MM-DD; default today."),

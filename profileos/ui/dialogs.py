@@ -1,4 +1,4 @@
-"""The two dialogs that create things: a job, and a customer.
+"""The dialogs that create things: a job, a customer, a call, a cheque.
 
 Both follow the same rule — the fewest fields that make the record useful, and
 nothing that can be filled in later. A shop opening a job while the customer
@@ -11,9 +11,13 @@ from typing import Any
 
 from PySide6.QtWidgets import (
     QComboBox,
+    QDateEdit,
     QDialog,
     QDialogButtonBox,
+    QDoubleSpinBox,
     QLineEdit,
+    QPlainTextEdit,
+    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
@@ -140,4 +144,171 @@ class NewCustomerDialog(_FormDialog):
         }
 
 
-__all__ = ["NewCustomerDialog", "NewJobDialog"]
+class NewServiceCallDialog(_FormDialog):
+    """Log a call while the customer is still on the phone.
+
+    The handover date is asked for because it is what warranty is counted
+    from, and asking later means looking it up in a folder.
+    """
+
+    accept_text = "רישום קריאה"
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        from datetime import date
+
+        super().__init__("קריאת שירות", parent)
+
+        self.customer = QLineEdit()
+        self.customer.setPlaceholderText("מי מתקשר")
+        self.phone = QLineEdit()
+        self.job_id = QLineEdit()
+        self.job_id.setPlaceholderText("J-2026-0007")
+        self.element = QLineEdit()
+        self.element.setPlaceholderText("W-04, חלון הסלון")
+
+        self.symptom = QComboBox()
+        from ..service import Symptom
+
+        for symptom in Symptom:
+            self.symptom.addItem(symptom.hebrew, symptom.value)
+
+        self.delivered = QDateEdit()
+        self.delivered.setCalendarPopup(True)
+        self.delivered.setDisplayFormat("dd/MM/yyyy")
+        self.delivered.setDate(date.today())
+
+        self.description = QPlainTextEdit()
+        self.description.setPlaceholderText("במילים של הלקוח")
+        self.description.setMaximumHeight(90)
+
+        for label, widget in (
+            ("לקוח", self.customer), ("טלפון", self.phone),
+            ("פרויקט", self.job_id), ("פתח", self.element),
+            ("תקלה", self.symptom), ("תאריך מסירה", self.delivered),
+            ("תיאור", self.description),
+        ):
+            self.grid.add(label, widget)
+
+        self.customer.textChanged.connect(
+            lambda text: self.ok_button.setEnabled(bool(text.strip()))
+        )
+        self.ok_button.setEnabled(False)
+        self.customer.setFocus()
+
+    def values(self) -> dict[str, Any]:
+        return {
+            "customer": self.customer.text().strip(),
+            "phone": self.phone.text().strip(),
+            "job_id": self.job_id.text().strip(),
+            "element": self.element.text().strip(),
+            "symptom": self.symptom.currentData(),
+            "delivered": self.delivered.date().toPython(),
+            "description": self.description.toPlainText().strip(),
+        }
+
+
+class CloseServiceCallDialog(_FormDialog):
+    """Shut a call, and say what it turned out to be.
+
+    The cause is the required field. A register of calls with no causes in it
+    answers no question anybody would open it to ask.
+    """
+
+    accept_text = "סגירת קריאה"
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__("סגירת קריאה", parent)
+
+        self.cause = QComboBox()
+        from ..service import Cause
+
+        for cause in Cause:
+            if cause is Cause.UNKNOWN:
+                continue
+            self.cause.addItem(cause.hebrew, cause.value)
+
+        self.engineer = QLineEdit()
+        self.engineer.setPlaceholderText("מי יצא")
+        self.minutes = QSpinBox()
+        self.minutes.setRange(0, 3000)
+        self.minutes.setValue(60)
+        self.minutes.setSuffix(" דקות")
+        self.charged = QDoubleSpinBox()
+        self.charged.setRange(0, 1_000_000)
+        self.charged.setSuffix(" ₪")
+        self.note = QPlainTextEdit()
+        self.note.setPlaceholderText("מה נעשה בפועל")
+        self.note.setMaximumHeight(90)
+
+        for label, widget in (
+            ("סיבה", self.cause), ("טכנאי", self.engineer),
+            ("זמן עבודה", self.minutes), ("חויב", self.charged),
+            ("הערה", self.note),
+        ):
+            self.grid.add(label, widget)
+
+    def values(self) -> dict[str, Any]:
+        return {
+            "cause": self.cause.currentData(),
+            "engineer": self.engineer.text().strip(),
+            "minutes": self.minutes.value(),
+            "charged": self.charged.value(),
+            "note": self.note.toPlainText().strip(),
+        }
+
+
+class NewChequeDialog(_FormDialog):
+    """Take a cheque into the drawer."""
+
+    accept_text = "רישום צ׳ק"
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        from datetime import date
+
+        super().__init__("צ׳ק חדש", parent)
+
+        self.customer = QLineEdit()
+        self.amount = QDoubleSpinBox()
+        self.amount.setRange(0.01, 10_000_000)
+        self.amount.setValue(1000.0)
+        self.amount.setSuffix(" ₪")
+        self.due = QDateEdit()
+        self.due.setCalendarPopup(True)
+        self.due.setDisplayFormat("dd/MM/yyyy")
+        self.due.setDate(date.today())
+        self.bank = QLineEdit()
+        self.number = QLineEdit()
+        self.number.setPlaceholderText("מספר הצ׳ק")
+        self.job_id = QLineEdit()
+
+        for label, widget in (
+            ("לקוח", self.customer), ("סכום", self.amount),
+            ("תאריך פירעון", self.due), ("בנק", self.bank),
+            ("מספר", self.number), ("פרויקט", self.job_id),
+        ):
+            self.grid.add(label, widget)
+
+        self.customer.textChanged.connect(
+            lambda text: self.ok_button.setEnabled(bool(text.strip()))
+        )
+        self.ok_button.setEnabled(False)
+        self.customer.setFocus()
+
+    def values(self) -> dict[str, Any]:
+        return {
+            "customer": self.customer.text().strip(),
+            "amount": self.amount.value(),
+            "due": self.due.date().toPython(),
+            "bank": self.bank.text().strip(),
+            "number": self.number.text().strip(),
+            "job_id": self.job_id.text().strip(),
+        }
+
+
+__all__ = [
+    "CloseServiceCallDialog",
+    "NewChequeDialog",
+    "NewCustomerDialog",
+    "NewJobDialog",
+    "NewServiceCallDialog",
+]

@@ -76,7 +76,8 @@ class TestWindow:
         assert [p.title for p in window.pages] == [
             "Home", "Projects", "Profile", "Element", "3D view", "Drawings",
             "Nesting", "Glass", "Machining", "Quotation", "Accounts",
-            "Shop floor", "Plumbing", "Catalogue", "System",
+            "Collection", "Shop floor", "Service", "Plumbing", "Catalogue",
+            "System",
         ]
 
     def test_every_page_is_reachable_from_the_sidebar(self, window):
@@ -1220,3 +1221,106 @@ class TestFindingThings:
         assert window.session.builds
         assert window.stack.currentWidget().title == "Element"
         palette.deleteLater()
+
+
+class TestServiceAndCollectionScreens:
+    """The two screens about what happens after the window is in the wall."""
+
+    def test_a_call_logged_appears_on_the_board(self, window, job_dir):
+        from datetime import date
+
+        from profileos.service import ServiceCall, Symptom, default_register
+
+        default_register().add(ServiceCall(
+            job_id="J-1", customer_name="משה כהן", element_name="W-04",
+            symptom=Symptom.WATER, delivered=date(2025, 1, 1),
+        ))
+        page = window.go_to_page("Service")
+        page.refresh()
+        pump()
+        assert page.calls_table.rowCount() == 1
+        assert "משה כהן" in page.calls_table.item(0, 1).text()
+
+    def test_a_fault_that_recurs_is_shown_as_a_pattern(self, window, job_dir):
+        from datetime import date
+
+        from profileos.service import Cause, ServiceCall, Symptom, default_register
+
+        register = default_register()
+        for index in range(3):
+            call = ServiceCall(
+                job_id="J-1", customer_name="לקוח", symptom=Symptom.DROPPED,
+                opened=date(2026, 1, 1 + index),
+            )
+            call.close(date(2026, 1, 5 + index), Cause.MANUFACTURE, minutes=60)
+            register.add(call)
+        page = window.go_to_page("Service")
+        page.refresh()
+        pump()
+        assert page.patterns_table.rowCount() >= 1
+
+    def test_an_overdue_call_is_marked_in_the_danger_colour(self, window, job_dir):
+        from datetime import date
+
+        from profileos.service import ServiceCall, Symptom, default_register
+
+        default_register().add(ServiceCall(
+            customer_name="לקוח", symptom=Symptom.BROKEN_GLASS,
+            opened=date(2020, 1, 1),
+        ))
+        page = window.go_to_page("Service")
+        page.refresh()
+        pump()
+        assert page.calls_table.item(0, 5).foreground().color().name().lower() == (
+            window.colours.danger.lower()
+        )
+
+    def test_a_post_dated_cheque_cannot_be_deposited_from_the_screen(
+        self, window, monkeypatch
+    ):
+        from datetime import date, timedelta
+
+        from profileos.erp.collection import Cheque
+
+        recorded: list[str] = []
+        monkeypatch.setattr(
+            type(window.page("Collection")), "report",
+            lambda self, exc, context="": recorded.append(str(exc)),
+        )
+        page = window.go_to_page("Collection")
+        page.book().add(Cheque(
+            customer="כהן", amount=1000, due=date.today() + timedelta(days=60)
+        ))
+        page.refresh()
+        pump()
+        page.cheques_table.setCurrentCell(0, 0)
+        page.deposit()
+        assert recorded and "דחוי" in recorded[0]
+
+    def test_the_drawer_totals_what_is_still_expected(self, window):
+        from datetime import date, timedelta
+
+        from profileos.erp.collection import Cheque
+
+        page = window.go_to_page("Collection")
+        book = page.book()
+        for index in range(3):
+            book.add(Cheque(
+                customer="כהן", amount=1000,
+                due=date.today() + timedelta(days=30 * index),
+            ))
+        page.refresh()
+        pump()
+        assert page.cheques_table.rowCount() == 3
+        assert book.in_hand == 3000
+
+    def test_the_costing_panel_answers_for_the_selected_job(self, window, job_dir):
+        from profileos.projects import default_store
+
+        store = default_store()
+        store.save(store.create(name="דירה בבית אל"))
+        page = window.go_to_page("Projects")
+        page.refresh()
+        pump()
+        assert page.costing_table.rowCount() > 0
+        assert "דירה בבית אל" in page.costing_headline.text()

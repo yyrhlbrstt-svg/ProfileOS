@@ -549,6 +549,46 @@ CAPABILITIES: tuple[Capability, ...] = (
         differentiator=True,
     ),
     Capability(
+        "hebrew_calendar", Area.PLATFORM,
+        "The Israeli working year", "לוח השנה העברי בתכנון",
+        "The Hebrew calendar computed rather than typed in: the working week "
+        "runs Sunday to Thursday, festival eves are short days, חול המועד is "
+        "a thin one, and no schedule ever promises a delivery on Yom Kippur "
+        "or counts the fortnight of Tishrei as ordinary weeks.",
+        probe="profileos.hebrew_calendar:holidays_for_hebrew_year",
+        differentiator=True,
+    ),
+    Capability(
+        "service_register", Area.COMMERCIAL,
+        "Service calls and warranty", "קריאות שירות ואחריות",
+        "The window a year later: what came back, whether it is still under "
+        "warranty counted from handover, and — because every call records a "
+        "cause — which faults recur often enough to be a message to the "
+        "workshop rather than to the fitter.",
+        probe="profileos.service.register:ServiceRegister",
+        differentiator=True,
+    ),
+    Capability(
+        "cheque_book", Area.COMMERCIAL,
+        "Post-dated cheque register", "ספר צ׳קים דחויים",
+        "How customers here actually pay: five cheques over five months, "
+        "which can be banked and which cannot, what clears each week, and "
+        "whose cheques come back. Never posted as revenue, because a promise "
+        "booked as revenue hides a bad debtor.",
+        probe="profileos.erp.collection:ChequeBook",
+        differentiator=True,
+    ),
+    Capability(
+        "job_costing", Area.COMMERCIAL,
+        "Live job profitability", "רווחיות בזמן אמת",
+        "One job read from four sides at once — quoted, committed, invoiced "
+        "and returned to — while it is still open and something can be done "
+        "about it. A side with no data is declared rather than assumed to be "
+        "zero.",
+        probe="profileos.projects.costing:cost_job",
+        differentiator=True,
+    ),
+    Capability(
         "three_way_match", Area.ADJACENT,
         "Three-way invoice matching", "התאמה משולשת של חשבוניות",
         "A supplier invoice is set against the order and the goods actually "

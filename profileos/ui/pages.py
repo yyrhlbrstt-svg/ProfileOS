@@ -377,6 +377,7 @@ class ProjectsPage(Page):
         tabs = QTabWidget()
         tabs.addTab(self._jobs_tab(), "פרויקטים")
         tabs.addTab(self._customers_tab(), "לקוחות")
+        tabs.addTab(self._costing_tab(), "רווחיות")
         self.body.addWidget(tabs, 1)
         self.tabs = tabs
 
@@ -466,6 +467,7 @@ class ProjectsPage(Page):
         from ..projects import TRANSITIONS
 
         job = self._selected_job()
+        self.show_costing(job)
         self.status_combo.clear()
         if job is None:
             self.job_summary.setText("לא נבחר פרויקט")
@@ -636,6 +638,64 @@ class ProjectsPage(Page):
         self.status(f"תיק העבודה נשמר: {written}")
 
     # -- customers ---------------------------------------------------------- #
+    def _costing_tab(self) -> QWidget:
+        """Is this job making money — asked while it can still be answered."""
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, METRICS.space(3), 0, 0)
+        layout.setSpacing(METRICS.space(3))
+
+        self.costing_headline = QLabel("")
+        self.costing_headline.setObjectName("StatLabel")
+        self.costing_headline.setWordWrap(True)
+        layout.addWidget(self.costing_headline)
+
+        self.costing_table = DataTable(
+            ["", "ערך"],
+            empty_text="בחר פרויקט ברשימה כדי לראות את הרווחיות שלו",
+        )
+        self.costing_table.horizontalHeader().setVisible(False)
+        layout.addWidget(self.costing_table, 1)
+
+        self.costing_notes = QLabel("")
+        self.costing_notes.setObjectName("Hint")
+        self.costing_notes.setWordWrap(True)
+        layout.addWidget(self.costing_notes)
+
+        note = QLabel(
+            "הרווח כאן נקרא מארבעה צדדים — מה שהוצע, מה שהוזמן מספקים, מה "
+            "שחויב וכמה חזרנו לאתר. מה שאין עליו נתון נאמר במפורש ולא נכנס "
+            "לחשבון, כי רווח שמניח אפס לעבודה שלא נרשמה גרוע מאין רווח."
+        )
+        note.setObjectName("Hint")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        return page
+
+    def show_costing(self, job: Any) -> None:
+        """Fill the profitability panel for one job."""
+        from ..projects.costing import cost_job
+
+        if job is None:
+            self.costing_table.set_rows([])
+            self.costing_headline.setText("")
+            return
+        try:
+            from ..service import default_register
+
+            service = default_register()
+        except Exception:  # noqa: BLE001 - costing works without the register
+            service = None
+        costing = cost_job(job, service=service)
+        self.costing_table.set_rows(
+            [[label, value] for label, value in costing.summary_rows()]
+        )
+        self.costing_headline.setText(f"{job.job_id} · {job.name} — {costing.verdict()}")
+        self.costing_headline.setStyleSheet(
+            f"color: {self.colours.danger if costing.is_losing else self.colours.text};"
+        )
+        self.costing_notes.setText(" · ".join(costing.warnings))
+
     def _customers_tab(self) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
@@ -3284,6 +3344,390 @@ class PlumbingPage(Page):
 
 
 # --------------------------------------------------------------------------- #
+# Service
+# --------------------------------------------------------------------------- #
+
+class ServicePage(Page):
+    """The calls that come back, and what they say about the work.
+
+    Every other screen in this suite is about making the window. This is the
+    only one about the window a year later, which is where a shop's reputation
+    is actually decided — and where, until now, the record was a notebook.
+    """
+
+    title = "Service"
+    hebrew = "שירות"
+    subtitle = "קריאות שירות, אחריות ומה שחוזר מהשטח"
+
+    def build(self) -> None:
+        new_call = QPushButton("קריאה חדשה")
+        new_call.setObjectName("Primary")
+        new_call.clicked.connect(self.new_call)
+        self.header.add_action(new_call)
+
+        close_call = QPushButton("סגירת קריאה")
+        close_call.clicked.connect(self.close_call)
+        self.header.add_action(close_call)
+
+        self.stats = StatRow([
+            ("open", "קריאות פתוחות"), ("overdue", "באיחור"),
+            ("ours", "שעות על חשבוננו"), ("charged", "נגבה"),
+            ("ontime", "בזמן היעד"),
+        ])
+        self.body.addWidget(self.stats)
+
+        splitter = QSplitter(Qt.Orientation.Vertical)
+
+        calls = Card("קריאות")
+        self.calls_table = DataTable(
+            ["מספר", "לקוח", "פתח", "תקלה", "נפתחה", "יעד", "מצב", "אחריות", "סיבה"],
+            empty_text="אין קריאות שירות — לחץ ״קריאה חדשה״ כדי לרשום אחת",
+        )
+        calls.add(self.calls_table, 1)
+        splitter.addWidget(calls)
+
+        lower = QWidget()
+        lower_layout = QHBoxLayout(lower)
+        lower_layout.setContentsMargins(0, 0, 0, 0)
+        lower_layout.setSpacing(METRICS.space(3))
+
+        patterns = Card("מה חוזר")
+        self.patterns_table = DataTable(
+            ["תופעה וסיבה", "מקרים"],
+            empty_text="עדיין אין מספיק קריאות מאובחנות כדי לראות דפוס",
+        )
+        patterns.add(self.patterns_table, 1)
+        pattern_note = QLabel(
+            "תקלה שחוזרת שלוש פעמים מאותה סיבה היא הודעה לבית המלאכה, "
+            "לא לטכנאי. הסיבה נרשמת בסגירת הקריאה — בלעדיה אי אפשר לראות דפוס."
+        )
+        pattern_note.setObjectName("Hint")
+        pattern_note.setWordWrap(True)
+        patterns.add(pattern_note)
+        lower_layout.addWidget(patterns, 1)
+
+        warranty = Card("אחריות")
+        self.warranty_table = DataTable(["רכיב", "חודשים"])
+        warranty.add(self.warranty_table, 1)
+        lower_layout.addWidget(warranty, 1)
+
+        splitter.addWidget(lower)
+        splitter.setStretchFactor(0, 3)
+        splitter.setStretchFactor(1, 2)
+        splitter.setSizes([320, 240])
+        self.body.addWidget(splitter, 1)
+
+        self._calls: list[Any] = []
+
+    def _register(self) -> Any:
+        from ..service import default_register
+
+        return default_register()
+
+    def new_call(self) -> None:
+        from .dialogs import NewServiceCallDialog
+
+        dialog = NewServiceCallDialog(self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        from ..service import ServiceCall, Symptom
+
+        values = dialog.values()
+        try:
+            call = ServiceCall(
+                job_id=values["job_id"],
+                customer_name=values["customer"],
+                element_name=values["element"],
+                symptom=Symptom(values["symptom"]),
+                description=values["description"],
+                delivered=values["delivered"],
+                phone=values["phone"],
+            )
+            self._register().add(call)
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "לא ניתן לרשום את הקריאה")
+            return
+        self.refresh()
+        self.status(f"נרשמה קריאה {call.call_id} — {call.symptom.hebrew}")
+
+    def close_call(self) -> None:
+        """Close the selected call with the cause, which is the whole point."""
+        from datetime import date as _date
+
+        from .dialogs import CloseServiceCallDialog
+
+        call = self._selected()
+        if call is None:
+            self.report(ProfileOSError("בחר קריאה מהרשימה"), "לא נבחרה קריאה")
+            return
+        dialog = CloseServiceCallDialog(self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        from ..service import Cause
+
+        values = dialog.values()
+        call.close(
+            _date.today(),
+            Cause(values["cause"]),
+            minutes=values["minutes"],
+            engineer=values["engineer"],
+            note=values["note"],
+            charged=values["charged"],
+        )
+        self._register().update(call)
+        self.refresh()
+        self.status(f"נסגרה {call.call_id} — {call.cause.hebrew}")
+
+    def _selected(self) -> Any:
+        model = self.calls_table.selectionModel()
+        if model is None or not model.selectedRows():
+            return None
+        index = model.selectedRows()[0].row()
+        return self._calls[index] if index < len(self._calls) else None
+
+    def refresh(self) -> None:
+        from datetime import date as _date
+
+        from ..service import WARRANTY_HEBREW, WARRANTY_MONTHS
+
+        register = self._register()
+        self._calls = register.all()
+
+        rows: list[list[Any]] = []
+        colours: dict[tuple[int, int], str] = {}
+        today = _date.today()
+        for index, call in enumerate(self._calls):
+            covered = call.under_warranty
+            warranty_text = (
+                "לא ידוע" if covered is None else ("באחריות" if covered else "מחוץ לאחריות")
+            )
+            rows.append([
+                call.call_id, call.customer_name, call.element_name or "—",
+                call.symptom.hebrew,
+                call.opened.strftime("%d/%m/%Y"),
+                call.due_by().strftime("%d/%m/%Y"),
+                call.state.hebrew, warranty_text, call.cause.hebrew,
+            ])
+            if call.is_overdue(today):
+                colours[(index, 5)] = self.colours.danger
+            elif call.state.is_open:
+                colours[(index, 6)] = self.colours.warning
+            if covered is False:
+                colours[(index, 7)] = self.colours.text_muted
+        self.calls_table.set_rows(rows, colours=colours)
+        if rows and self.calls_table.currentRow() < 0:
+            self.calls_table.setCurrentCell(0, 0)
+
+        self.patterns_table.set_rows(
+            [[label, count] for label, count in register.recurring(minimum=2)],
+            numeric_columns=(1,),
+        )
+        self.warranty_table.set_rows(
+            [[WARRANTY_HEBREW.get(key, key), months]
+             for key, months in WARRANTY_MONTHS.items()],
+            numeric_columns=(1,),
+        )
+
+        quality = register.cost_of_quality()
+        performance = register.response_performance()
+        self.stats.update_many({
+            "open": (str(len(register.open_calls())), ""),
+            "overdue": (str(len(register.overdue(today))), ""),
+            "ours": (f"{quality['hours_our_fault']:.1f}", "חזרות לאתר"),
+            "charged": (f"{quality['recovered']:,.0f}", "₪"),
+            "ontime": (f"{performance['within_target']:.0f}%", f"{performance['closed']} נסגרו"),
+        })
+
+
+# --------------------------------------------------------------------------- #
+# Collection
+# --------------------------------------------------------------------------- #
+
+class CollectionPage(Page):
+    """Cheques: money that has been promised but is not money yet.
+
+    A customer who hands over five post-dated cheques has paid in a sense no
+    ledger recognises. This screen is the drawer they are kept in, and the
+    only place that says which of them can be banked this morning.
+    """
+
+    title = "Collection"
+    hebrew = "גבייה"
+    subtitle = "צ׳קים דחויים, מה נפרע ומה חזר"
+
+    def build(self) -> None:
+        add = QPushButton("צ׳ק חדש")
+        add.setObjectName("Primary")
+        add.clicked.connect(self.new_cheque)
+        self.header.add_action(add)
+
+        deposit = QPushButton("הפקדה")
+        deposit.clicked.connect(self.deposit)
+        self.header.add_action(deposit)
+
+        bounce = QPushButton("סימון כחוזר")
+        bounce.clicked.connect(self.bounce)
+        self.header.add_action(bounce)
+
+        self.stats = StatRow([
+            ("in_hand", "במגירה ₪"), ("bankable", "להפקדה היום ₪"),
+            ("bounced", "חזרו ₪"), ("days", "ימי אשראי ממוצעים"),
+        ])
+        self.body.addWidget(self.stats)
+
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+
+        cheques = Card("צ׳קים")
+        self.cheques_table = DataTable(
+            ["מספר", "לקוח", "סכום", "לפירעון", "בנק", "עבודה", "מצב"],
+            empty_text="אין צ׳קים בספר — לחץ ״צ׳ק חדש״",
+        )
+        cheques.add(self.cheques_table, 1)
+        splitter.addWidget(cheques)
+
+        side = QWidget()
+        side_layout = QVBoxLayout(side)
+        side_layout.setContentsMargins(0, 0, 0, 0)
+        side_layout.setSpacing(METRICS.space(3))
+
+        flow = Card("תזרים צפוי")
+        self.flow_table = DataTable(
+            ["שבוע", "צפוי ₪"],
+            empty_text="אין צ׳קים דחויים",
+        )
+        flow.add(self.flow_table, 1)
+        side_layout.addWidget(flow, 1)
+
+        risk = Card("לקוחות בסיכון")
+        self.risk_table = DataTable(
+            ["לקוח", "חזרו", "שיעור"],
+            empty_text="אף צ׳ק לא חזר",
+        )
+        risk.add(self.risk_table, 1)
+        note = QLabel(
+            "צ׳ק אינו הכנסה עד שהוא נפרע. הוא לא נרשם בספרים כאן בכוונה — "
+            "רגע שרושמים אותו כתקבול, מפסיקים לשים לב שלקוח משלם בנייר."
+        )
+        note.setObjectName("Hint")
+        note.setWordWrap(True)
+        risk.add(note)
+        side_layout.addWidget(risk, 1)
+
+        splitter.addWidget(side)
+        splitter.setStretchFactor(0, 2)
+        splitter.setStretchFactor(1, 1)
+        splitter.setSizes([METRICS.panel_width * 2, METRICS.panel_width])
+        self.body.addWidget(splitter, 1)
+
+        self._book = None
+        self._cheques: list[Any] = []
+
+    def book(self) -> Any:
+        """The drawer, kept for the life of the window."""
+        from ..erp.collection import ChequeBook
+
+        if self._book is None:
+            self._book = ChequeBook()
+        return self._book
+
+    def new_cheque(self) -> None:
+        from .dialogs import NewChequeDialog
+
+        dialog = NewChequeDialog(self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        from ..erp.collection import Cheque
+
+        values = dialog.values()
+        try:
+            cheque = Cheque(
+                customer=values["customer"],
+                amount=values["amount"],
+                due=values["due"],
+                bank=values["bank"],
+                number=values["number"],
+                job_id=values["job_id"],
+            )
+            self.book().add(cheque)
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "לא ניתן לרשום את הצ׳ק")
+            return
+        self.refresh()
+        self.status(f"נרשם צ׳ק ⁦{cheque.amount:,.0f}⁩ ₪ מ{cheque.customer}")
+
+    def _selected(self) -> Any:
+        model = self.cheques_table.selectionModel()
+        if model is None or not model.selectedRows():
+            return None
+        index = model.selectedRows()[0].row()
+        return self._cheques[index] if index < len(self._cheques) else None
+
+    def deposit(self) -> None:
+        cheque = self._selected()
+        if cheque is None:
+            self.report(ProfileOSError("בחר צ׳ק מהרשימה"), "לא נבחר צ׳ק")
+            return
+        try:
+            cheque.deposit()
+        except Exception as exc:  # noqa: BLE001 - a post-dated cheque says why
+            self.report(exc, "אי אפשר להפקיד")
+            return
+        self.refresh()
+        self.status(f"הופקד ⁦{cheque.amount:,.0f}⁩ ₪")
+
+    def bounce(self) -> None:
+        cheque = self._selected()
+        if cheque is None:
+            self.report(ProfileOSError("בחר צ׳ק מהרשימה"), "לא נבחר צ׳ק")
+            return
+        cheque.bounce(reason="חזר")
+        self.refresh()
+        self.status(f"סומן כחוזר: ⁦{cheque.amount:,.0f}⁩ ₪", )
+
+    def refresh(self) -> None:
+        book = self.book()
+        self._cheques = list(book)
+
+        rows: list[list[Any]] = []
+        colours: dict[tuple[int, int], str] = {}
+        bankable = {cheque.cheque_id for cheque in book.bankable()}
+        for index, cheque in enumerate(self._cheques):
+            rows.append([
+                cheque.number or cheque.cheque_id, cheque.customer,
+                f"{cheque.amount:,.0f}", cheque.due.strftime("%d/%m/%Y"),
+                cheque.bank or "—", cheque.job_id or "—", cheque.state.hebrew,
+            ])
+            from ..erp.collection import ChequeState
+
+            if cheque.state is ChequeState.BOUNCED:
+                colours[(index, 6)] = self.colours.danger
+            elif cheque.cheque_id in bankable:
+                colours[(index, 3)] = self.colours.success
+            elif cheque.state is ChequeState.CLEARED:
+                colours[(index, 6)] = self.colours.success
+        self.cheques_table.set_rows(rows, numeric_columns=(2,), colours=colours)
+
+        self.flow_table.set_rows(
+            [[week.strftime("%d/%m/%Y"), f"{amount:,.0f}"]
+             for week, amount in book.cash_flow()],
+            numeric_columns=(1,),
+        )
+        self.risk_table.set_rows(
+            [[customer, count, f"{rate:.0f}%"]
+             for customer, count, rate in book.risky_customers(minimum=1)],
+            numeric_columns=(1,),
+        )
+
+        summary = book.summary()
+        self.stats.update_many({
+            "in_hand": (f"{summary['in_hand']:,.0f}", f"{summary['count']} צ׳קים"),
+            "bankable": (f"{summary['bankable_today']:,.0f}", ""),
+            "bounced": (f"{summary['bounced']:,.0f}", ""),
+            "days": (f"{summary['average_days_out']:.0f}", "ימים"),
+        })
+
+
+# --------------------------------------------------------------------------- #
 # Catalogue
 # --------------------------------------------------------------------------- #
 
@@ -4694,7 +5138,8 @@ class AccountsPage(Page):
 PAGES: list[type[Page]] = [
     HomePage, ProjectsPage, ProfilePage, ElementPage, ViewPage, DrawingsPage,
     NestingPage, GlassPage,
-    MachiningPage, QuotePage, AccountsPage, ShopFloorPage, PlumbingPage,
+    MachiningPage, QuotePage, AccountsPage, CollectionPage,
+    ShopFloorPage, ServicePage, PlumbingPage,
     CataloguePage,
     SystemPage,
 ]
@@ -4702,5 +5147,6 @@ PAGES: list[type[Page]] = [
 __all__ = [
     "Page", "HomePage", "ProjectsPage", "ProfilePage", "ElementPage", "ViewPage",
     "DrawingsPage", "NestingPage", "GlassPage", "MachiningPage", "QuotePage", "AccountsPage",
-    "ShopFloorPage", "PlumbingPage", "CataloguePage", "SystemPage", "PAGES",
+    "ShopFloorPage", "ServicePage", "CollectionPage", "PlumbingPage",
+    "CataloguePage", "SystemPage", "PAGES",
 ]

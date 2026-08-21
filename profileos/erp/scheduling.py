@@ -80,11 +80,44 @@ class Calendar:
     #: Sunday to Thursday full days, Friday a half day, Saturday closed.
     weekday_hours: tuple[float, ...] = (8.5, 8.5, 8.5, 8.5, 4.0, 0.0, 8.5)
     holidays: frozenset[date] = frozenset()
+    #: Follow the Hebrew calendar as well as the week. Off by default so a
+    #: calendar built for somewhere else stays what it was; on for the shop.
+    observe_festivals: bool = False
 
     def hours_on(self, day: date) -> float:
         if day in self.holidays:
             return 0.0
-        return self.weekday_hours[day.weekday()]
+        hours = self.weekday_hours[day.weekday()]
+        if self.observe_festivals and hours:
+            # A festival is not simply a day off: an eve is a short day and
+            # חול המועד is a thin one, and a schedule that treats them as
+            # ordinary promises work that will not happen.
+            from ..hebrew_calendar import holiday_on
+
+            festival = holiday_on(day)
+            if festival is not None:
+                hours *= festival.kind.working_fraction
+        return hours
+
+    @classmethod
+    def israeli(cls, **overrides: object) -> "Calendar":
+        """The working year as it is actually kept here.
+
+        Sunday to Thursday, a short Friday, and the Hebrew calendar on top —
+        which is what stops a scheduler promising a delivery on Yom Kippur or
+        counting the fortnight of Tishrei as ordinary weeks.
+        """
+        values: dict[str, object] = {"observe_festivals": True}
+        values.update(overrides)
+        return cls(**values)  # type: ignore[arg-type]
+
+    def festival_on(self, day: date) -> object | None:
+        """What this day is in the Hebrew calendar, or ``None``."""
+        if not self.observe_festivals:
+            return None
+        from ..hebrew_calendar import holiday_on
+
+        return holiday_on(day)
 
     def is_working(self, day: date) -> bool:
         return self.hours_on(day) > 0.0
