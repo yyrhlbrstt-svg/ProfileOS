@@ -663,6 +663,40 @@ CAPABILITIES: tuple[Capability, ...] = (
         differentiator=True,
     ),
     Capability(
+        "migration_import", Area.PLATFORM,
+        "Import from what the shop uses now", "ייבוא ממה שיש היום",
+        "Nobody retypes four hundred customers. Exports come across as CSV — "
+        "including the windows-1255 Excel on a Hebrew Windows actually "
+        "writes, the title lines above the header, and column names spelled "
+        "three different ways — and every import shows what it would do, "
+        "which column fed which field and which rows it will skip and why, "
+        "before it writes anything.",
+        probe="profileos.migration.importers:plan_customers",
+        differentiator=True,
+    ),
+    Capability(
+        "shared_folder", Area.PLATFORM,
+        "Two people, one folder", "שני מחשבים, תיקייה אחת",
+        "The data stays as files the shop can copy and back up with anything, "
+        "and a lock beside them stops two estimators' saves overlapping. A "
+        "lock left by a machine that went away expires rather than holding "
+        "the shop up, and a write built on data somebody else has since "
+        "changed is refused instead of silently erasing their work.",
+        probe="profileos.core.sharing:guarded",
+    ),
+    Capability(
+        "machine_proving", Area.CNC,
+        "Proving record for posted programs", "רישום הוכחת קוד מכונה",
+        "No program from here has been cut on a real machine, and that is "
+        "said on every posted file. It stops being said one pair at a time: "
+        "a named person cuts on scrap, measures, and records what they "
+        "found — and the banner comes off for that post-processor on that "
+        "machine only, because proving the Elumatec says nothing about the "
+        "Emmegi beside it.",
+        probe="profileos.cnc.proving:ProvingRecord",
+        differentiator=True,
+    ),
+    Capability(
         "three_way_match", Area.ADJACENT,
         "Three-way invoice matching", "התאמה משולשת של חשבוניות",
         "A supplier invoice is set against the order and the goods actually "

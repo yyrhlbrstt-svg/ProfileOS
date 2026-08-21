@@ -304,12 +304,22 @@ def _check_machines() -> Check:
 
 
 def _check_post_processor() -> Check:
-    """The one that has never been true and has to keep saying so."""
+    """Whether anybody has actually cut from a program this software wrote."""
+    from .cnc.proving import default_record
+
+    record = default_record()
+    summary = record.summary()
+    if not summary["accepted"]:
+        return Check(
+            "post_proven", "הוכחת קוד מכונה", State.ATTENTION,
+            "אף פוסט-פרוססור לא הוכח על מכונה",
+            blocks="ייצור ישיר מקוד שלא נוסה",
+            fix="הריצו תוכנית אחת על פסולת, מדדו, ורשמו: `profileos cnc prove`",
+            critical=True,
+        )
     return Check(
-        "post_proven", "הוכחת קוד מכונה", State.ATTENTION,
-        "פורמטי ה-CNC מעולם לא נחתכו על מכונה פיזית מהתוכנה הזאת",
-        blocks="ייצור ישיר מקוד שלא נוסה",
-        fix="הריצו תוכנית אחת על פסולת ואמתו מידות לפני ייצור",
+        "post_proven", "הוכחת קוד מכונה", State.READY,
+        f"⁦{summary['accepted']}⁩ צירופי פוסט-מכונה הוכחו על ⁦{summary['machines']}⁩ מכונות",
         critical=True,
     )
 

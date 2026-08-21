@@ -27,10 +27,32 @@ _log = get_logger("projects.store")
 
 
 def _atomic_write(path: Path, text: str) -> None:
+    """Write beside the target and rename over it, holding the lock.
+
+    Atomic on its own is only half of it: two people on a shared folder can
+    each write atomically and still have the second one erase the first. The
+    lock makes the pair of writes take turns, and a machine that went away
+    without releasing it does not hold the shop up — see
+    :mod:`profileos.core.sharing`.
+    """
+    from ..core.sharing import Locked, locked
+
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(text, encoding="utf-8")
-    os.replace(temporary, path)
+
+    def write() -> None:
+        temporary = path.with_suffix(path.suffix + ".tmp")
+        temporary.write_text(text, encoding="utf-8")
+        os.replace(temporary, path)
+
+    try:
+        with locked(path):
+            write()
+    except Locked:
+        # Never lose somebody's work to a lock: say who has it, and write
+        # anyway. Refusing here would mean an estimator loses what they typed
+        # because a colleague left a window open, which is a worse trade.
+        _log.warning("Wrote %s while another machine held the lock", path.name)
+        write()
 
 
 class JobStore:

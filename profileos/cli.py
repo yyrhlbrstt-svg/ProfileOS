@@ -66,6 +66,7 @@ deliver_app = typer.Typer(help="Loading and fitting: getting the work into the w
 finish_app = typer.Typer(help="Anodising and paint, on the area a bath reaches.")
 files_app = typer.Typer(help="The photographs and papers kept with a job.")
 hw_app = typer.Typer(help="Hardware chosen by what the sash weighs.")
+import_app = typer.Typer(help="Bring across what the shop already has.")
 
 app.add_typer(geometry_app, name="section")
 app.add_typer(nest_app, name="nest")
@@ -96,6 +97,7 @@ app.add_typer(deliver_app, name="deliver")
 app.add_typer(finish_app, name="finish")
 app.add_typer(files_app, name="files")
 app.add_typer(hw_app, name="hardware")
+app.add_typer(import_app, name="import")
 
 
 # --------------------------------------------------------------------------- #
@@ -3061,6 +3063,188 @@ def files_add(
     except Exception as exc:  # noqa: BLE001
         _fail(str(exc))
     console.print(f"[green]{attachment.name}[/green] {attachment.describe()}")
+
+
+def _show_plan(plan: Any) -> None:
+    """Show what an import would do, before it does any of it."""
+    console.print(f"[cyan]{plan.summary()}[/cyan]")
+    if plan.table.skipped_preamble:
+        console.print(
+            f"[dim]Skipped {plan.table.skipped_preamble} line(s) above the "
+            f"header row.[/dim]"
+        )
+
+    columns = Table(title="Columns matched", header_style="dim")
+    columns.add_column("Field", style="cyan")
+    columns.add_column("Column in the file")
+    for field_name, header in plan.describe_columns():
+        columns.add_row(field_name, header)
+    console.print(columns)
+
+    if plan.unmatched_fields:
+        console.print(
+            "[yellow]No column for: " + ", ".join(plan.unmatched_fields) + "[/yellow]"
+        )
+    if plan.ignored_columns:
+        console.print(
+            "[dim]Nothing read from: " + ", ".join(plan.ignored_columns[:6]) + "[/dim]"
+        )
+
+    skipped = plan.of_action("skip")
+    if skipped:
+        console.print(f"[yellow]{len(skipped)} row(s) will be skipped:[/yellow]")
+        for row in skipped[:10]:
+            console.print(f"  line {row.number}: {row.label} — {row.reason}")
+        if len(skipped) > 10:
+            console.print(f"  [dim]…and {len(skipped) - 10} more[/dim]")
+
+    for problem in plan.problems:
+        console.print(f"[red]{problem}[/red]")
+
+
+@cnc_app.command("prove")
+def cnc_prove(
+    driver: str = typer.Argument(..., help="Post-processor, e.g. elumatec.ncx."),
+    machine: str = typer.Argument(..., help="The machine it was cut on."),
+    by: str = typer.Option(..., "--by", help="Who proved it."),
+    findings: str = typer.Option(..., "--findings", help="What was cut and measured."),
+    deviation: float = typer.Option(0.0, "--deviation", help="Largest error [mm]."),
+    reject: bool = typer.Option(False, "--reject", help="Record a failed proving."),
+) -> None:
+    """Record that a program from here was cut on a real machine and measured."""
+    from .cnc.proving import Proof, default_record
+
+    record = default_record()
+    try:
+        proof = record.record(Proof(
+            driver=driver, machine=machine, proved_by=by,
+            findings=findings, largest_deviation=deviation,
+            accepted=not reject,
+        ))
+    except Exception as exc:  # noqa: BLE001
+        _fail(str(exc))
+
+    console.print(f"[green]{proof.describe()}[/green]")
+    banner = record.banner(driver, machine)
+    if banner:
+        console.print(f"[yellow]{banner}[/yellow]")
+    else:
+        console.print(
+            "[green]Programs for this post-processor on this machine no "
+            "longer carry the unproven banner.[/green]"
+        )
+
+
+@cnc_app.command("proven")
+def cnc_proven() -> None:
+    """Which post-processor has been proved on which machine."""
+    from .cnc.proving import default_record
+
+    record = default_record()
+    if not len(record):
+        console.print(
+            "[yellow]Nothing has been proved on a machine yet. Every posted "
+            "program carries the unproven banner, and it should.[/yellow]"
+        )
+        return
+
+    table = Table(title="Proving record", header_style="dim")
+    table.add_column("Post-processor", style="cyan")
+    table.add_column("Machine")
+    table.add_column("By")
+    table.add_column("On")
+    table.add_column("Largest error", justify="right")
+    table.add_column("Result")
+    for proof in record:
+        table.add_row(
+            proof.driver, proof.machine, proof.proved_by, proof.on,
+            f"{proof.largest_deviation:.2f} mm" if proof.largest_deviation else "-",
+            "[green]accepted[/green]" if proof.accepted else "[red]rejected[/red]",
+        )
+    console.print(table)
+
+
+@import_app.command("preview")
+def import_preview(
+    kind: str = typer.Argument(..., help="customers, jobs or prices."),
+    path: Path = typer.Argument(..., help="The exported CSV."),
+) -> None:
+    """Read the file and say what an import would do. Writes nothing."""
+    from .migration import PLANNERS
+
+    planner = PLANNERS.get(kind)
+    if planner is None:
+        _fail(f"Unknown kind {kind!r}. One of: " + ", ".join(PLANNERS))
+    try:
+        plan = planner(path)
+    except Exception as exc:  # noqa: BLE001
+        _fail(str(exc))
+    _show_plan(plan)
+    if plan.is_safe:
+        console.print(f"[green]Run `profileos import {kind} {path}` to apply.[/green]")
+
+
+def _run_import(kind: str, path: Path, yes: bool) -> None:
+    from .migration import IMPORTERS, PLANNERS
+
+    planner, importer = PLANNERS.get(kind), IMPORTERS.get(kind)
+    if planner is None or importer is None:
+        _fail(f"Unknown kind {kind!r}. One of: " + ", ".join(PLANNERS))
+    try:
+        plan = planner(path)
+    except Exception as exc:  # noqa: BLE001
+        _fail(str(exc))
+
+    _show_plan(plan)
+    if plan.problems:
+        raise typer.Exit(code=1)
+    if not (plan.creates or plan.updates):
+        console.print("[yellow]Nothing to import.[/yellow]")
+        raise typer.Exit(code=1)
+
+    # An import writes hundreds of records into the shop's own data. It asks.
+    if not yes and not typer.confirm(
+        f"Import {plan.creates} new and {plan.updates} updated {kind}?"
+    ):
+        console.print("[dim]Nothing was written.[/dim]")
+        raise typer.Exit(code=1)
+
+    result = importer(plan)
+    console.print(
+        f"[green]{result['created']} created, {result['updated']} updated"
+        + (f", {result['failed']} failed" if result["failed"] else "")
+        + "[/green]"
+    )
+    for row in plan.rows:
+        if row.action != "skip" and row.reason and "קיים" not in row.reason:
+            console.print(f"[yellow]{row.label}: {row.reason}[/yellow]")
+
+
+@import_app.command("customers")
+def import_customers_command(
+    path: Path = typer.Argument(..., help="Customer list exported to CSV."),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Do not ask."),
+) -> None:
+    """Bring a customer list across from whatever the shop uses now."""
+    _run_import("customers", path, yes)
+
+
+@import_app.command("jobs")
+def import_jobs_command(
+    path: Path = typer.Argument(..., help="Job list exported to CSV."),
+    yes: bool = typer.Option(False, "--yes", "-y"),
+) -> None:
+    """Bring the order book across. Jobs link to customers already imported."""
+    _run_import("jobs", path, yes)
+
+
+@import_app.command("prices")
+def import_prices_command(
+    path: Path = typer.Argument(..., help="Supplier price list as CSV."),
+    yes: bool = typer.Option(False, "--yes", "-y"),
+) -> None:
+    """Load a supplier's price list."""
+    _run_import("prices", path, yes)
 
 
 @hw_app.command("list")
