@@ -57,6 +57,11 @@ class Page(QWidget):
     title = "Page"
     hebrew = ""
     subtitle = ""
+    #: Pages built from a stack of cards set this: on a laptop the stack is
+    #: taller than the screen, and squeezing every card until its table shows
+    #: one row is worse than scrolling. Pages built around a splitter leave it
+    #: off — a splitter already decides how to share the height it is given.
+    scrollable = False
 
     def __init__(self, session: Any, palette: Palette, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -72,7 +77,17 @@ class Page(QWidget):
 
         body = QWidget()
         self.body = page_layout(body)
-        outer.addWidget(body, 1)
+        if self.scrollable:
+            area = QScrollArea()
+            area.setWidget(body)
+            area.setWidgetResizable(True)
+            area.setFrameShape(QScrollArea.Shape.NoFrame)
+            area.setHorizontalScrollBarPolicy(
+                Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+            )
+            outer.addWidget(area, 1)
+        else:
+            outer.addWidget(body, 1)
 
         self.build()
 
@@ -112,6 +127,7 @@ class HomePage(Page):
 
     title = "Home"
     hebrew = "דף הבית"
+    scrollable = True
     subtitle = ""
 
     #: The production chain, in the order work moves: (page title, Hebrew
@@ -189,12 +205,34 @@ class HomePage(Page):
         actions.add_layout(buttons)
         self.body.addWidget(actions)
 
+        # What this installation can actually do this morning. It sits above
+        # the order book because a shop that does not know it cannot cut yet
+        # finds out at the saw.
+        setup = Card("מצב ההקמה")
+        self.readiness_headline = QLabel("")
+        self.readiness_headline.setObjectName("StatLabel")
+        self.readiness_headline.setWordWrap(True)
+        setup.add(self.readiness_headline)
+        self.readiness_table = DataTable(
+            ["", "מה", "מצב", "מה זה חוסם", "איך סוגרים"],
+            empty_text="הכול מוכן",
+        )
+        # The home page shows the next few things to do, not the whole audit:
+        # a twelve-row checklist on the front page is a checklist nobody reads.
+        # The full list is on the System page and on the command line.
+        self.readiness_table.setFixedHeight(METRICS.row_height * 5)
+        setup.add(self.readiness_table)
+        self.readiness_more = QLabel("")
+        self.readiness_more.setObjectName("Hint")
+        setup.add(self.readiness_more)
+        self.body.addWidget(setup)
+
         recent = Card("פרויקטים אחרונים")
         self.recent_table = DataTable(
             ["מספר", "שם", "לקוח", "סטטוס", "עודכן"],
             empty_text="עדיין אין פרויקטים — פתח אחד בעמוד ״פרויקטים״",
         )
-        self.recent_table.setMaximumHeight(190)
+        self.recent_table.setMaximumHeight(METRICS.row_height * 5)
         self.recent_table.itemDoubleClicked.connect(self._open_recent)
         recent.add(self.recent_table)
         hint = QLabel("לחיצה כפולה על שורה פותחת את הפרויקט לעבודה.")
@@ -244,6 +282,50 @@ class HomePage(Page):
             if hasattr(page, "load_sample"):
                 page.load_sample()
 
+    def show_readiness(self) -> None:
+        """The setup list, worst first — the things that block real work."""
+        from ..readiness import State, readiness
+
+        try:
+            report = readiness()
+        except Exception as exc:  # noqa: BLE001 - never lose the home page
+            _log.warning("Readiness report failed: %s", exc)
+            self.readiness_table.set_rows([])
+            self.readiness_headline.setText("")
+            return
+
+        order = {State.ATTENTION: 0, State.EMPTY: 1, State.PARTIAL: 2, State.READY: 3}
+        tone = {
+            State.ATTENTION: self.colours.danger,
+            State.EMPTY: self.colours.warning,
+            State.PARTIAL: self.colours.info,
+            State.READY: self.colours.success,
+        }
+        outstanding = sorted(
+            (check for check in report if not check.state.is_ready),
+            key=lambda check: (0 if check.critical else 1, order[check.state]),
+        )
+
+        shown = outstanding[:4]
+        rows: list[list[Any]] = []
+        colours: dict[tuple[int, int], str] = {}
+        for index, check in enumerate(shown):
+            rows.append([
+                "●", check.hebrew, check.state.hebrew,
+                check.blocks or "—", check.fix or "—",
+            ])
+            colours[(index, 0)] = tone[check.state]
+        self.readiness_table.set_rows(rows, colours=colours)
+        self.readiness_more.setText(
+            f"ועוד ⁦{len(outstanding) - len(shown)}⁩ פריטים — הרשימה המלאה בעמוד ״מערכת״"
+            if len(outstanding) > len(shown) else ""
+        )
+
+        self.readiness_headline.setText(report.verdict())
+        self.readiness_headline.setStyleSheet(
+            f"color: {self.colours.success if report.may_cut else self.colours.warning};"
+        )
+
     def _find_opening(self) -> None:
         """Straight from the front door to a built window."""
         window = self.window()
@@ -277,10 +359,21 @@ class HomePage(Page):
             "צהריים טובים" if 12 <= now.hour < 17 else "ערב טוב"
         )
         self.greeting.setText(f"{part}, {self._brand_name}")
+        self.show_readiness()
         when = (
             f"יום {hebrew_days[now.weekday()]}, "
             f"{now.day} ב{hebrew_months[now.month - 1]} {now.year}"
         )
+        # And the Hebrew date, because half the shop's deadlines are set in it.
+        try:
+            from ..hebrew_calendar import describe, holiday_on
+
+            when += f"  ·  {describe(now.date())}"
+            festival = holiday_on(now.date())
+            if festival is not None:
+                when += f"  ·  {festival.describe()}"
+        except Exception:  # noqa: BLE001 - a date is not worth a broken page
+            pass
         job = self.session.job
         self.header.set_subtitle(
             f"{when}  ·  פרויקט פתוח: {job.job_id} — {job.name}"
@@ -4415,6 +4508,7 @@ class SystemPage(Page):
         self.header.add_action(check)
 
         tabs = QTabWidget()
+        tabs.addTab(self._readiness_tab(), "מצב ההקמה")
         tabs.addTab(self._updates_tab(), "עדכונים")
         tabs.addTab(self._licence_tab(), "רישיון")
         tabs.addTab(self._brand_tab(), "מפעיל")
@@ -4441,6 +4535,74 @@ class SystemPage(Page):
             self._build_comparison()
 
     # -- updates ------------------------------------------------------------- #
+    def refresh(self) -> None:
+        """The setup list is re-read every time the page is opened.
+
+        It is the one panel whose answer changes because of work done on
+        other screens, so a cached copy of it would be wrong exactly when it
+        matters.
+        """
+        self.show_setup()
+
+    def _readiness_tab(self) -> QWidget:
+        """The full setup list — the front page shows only the next few."""
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, METRICS.space(3), 0, 0)
+        layout.setSpacing(METRICS.space(3))
+
+        self.setup_headline = QLabel("")
+        self.setup_headline.setObjectName("StatLabel")
+        self.setup_headline.setWordWrap(True)
+        layout.addWidget(self.setup_headline)
+
+        self.setup_table = DataTable(
+            ["", "מה", "מצב", "מה יש כרגע", "מה זה חוסם", "איך סוגרים"],
+            empty_text="אין בדיקות",
+        )
+        layout.addWidget(self.setup_table, 1)
+
+        note = QLabel(
+            "אף תוכנה בענף אינה שלמה עד שהעובדות של המפעל בתוכה: אילו סדרות "
+            "קונים, מה הקיזוזים של הספק, מה הצַבָּע גובה, איזו מכונה על הרצפה. "
+            "ההבדל כאן הוא שזה נאמר במפורש במקום שמסך ייראה גמור ויתמחר על "
+            "ערכי ברירת מחדל."
+        )
+        note.setObjectName("Hint")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        return page
+
+    def show_setup(self) -> None:
+        from ..readiness import State, readiness
+
+        try:
+            report = readiness()
+        except Exception as exc:  # noqa: BLE001
+            self.setup_table.set_rows([])
+            self.setup_headline.setText(str(exc))
+            return
+
+        tone = {
+            State.ATTENTION: self.colours.danger,
+            State.EMPTY: self.colours.warning,
+            State.PARTIAL: self.colours.info,
+            State.READY: self.colours.success,
+        }
+        rows: list[list[Any]] = []
+        colours: dict[tuple[int, int], str] = {}
+        for index, check in enumerate(report):
+            rows.append([
+                "●", check.hebrew, check.state.hebrew, check.detail,
+                check.blocks or "—", check.fix or "—",
+            ])
+            colours[(index, 0)] = tone[check.state]
+        self.setup_table.set_rows(rows, colours=colours)
+        self.setup_headline.setText(report.verdict())
+        self.setup_headline.setStyleSheet(
+            f"color: {self.colours.success if report.may_cut else self.colours.warning};"
+        )
+
     def _updates_tab(self) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)

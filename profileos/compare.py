@@ -629,6 +629,17 @@ CAPABILITIES: tuple[Capability, ...] = (
         probe="profileos.projects.attachments:AttachmentStore",
     ),
     Capability(
+        "readiness_report", Area.PLATFORM,
+        "Says what it cannot do yet", "אומרת מה היא עדיין לא יכולה",
+        "Every package in this trade is complete only once the shop's own "
+        "facts are in it. This one says which of them are missing, what each "
+        "gap blocks, and how to close it — so a fresh installation reports "
+        "that no bar may be cut from it yet instead of looking finished and "
+        "quietly pricing on stand-in figures.",
+        probe="profileos.readiness:readiness",
+        differentiator=True,
+    ),
+    Capability(
         "three_way_match", Area.ADJACENT,
         "Three-way invoice matching", "התאמה משולשת של חשבוניות",
         "A supplier invoice is set against the order and the goods actually "

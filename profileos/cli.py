@@ -3052,6 +3052,50 @@ def files_add(
     console.print(f"[green]{attachment.name}[/green] {attachment.describe()}")
 
 
+@app.command()
+def readiness() -> None:
+    """What this installation can actually do this morning, and what is missing.
+
+    Not a score: a list. Every package in this trade is complete only after
+    the shop's own facts are in it, and this says which of them are.
+    """
+    from .readiness import State, readiness as run_readiness
+
+    report = run_readiness()
+    colour = {
+        State.READY: "green", State.PARTIAL: "cyan",
+        State.EMPTY: "yellow", State.ATTENTION: "red",
+    }
+
+    table = Table(title="Readiness", header_style="dim")
+    table.add_column("What", style="cyan")
+    table.add_column("State")
+    table.add_column("Detail")
+    for check in report:
+        table.add_row(
+            check.hebrew,
+            f"[{colour[check.state]}]{check.state.hebrew}[/{colour[check.state]}]",
+            check.detail,
+        )
+    console.print(table)
+    console.print(f"[cyan]{report.verdict()}[/cyan]")
+
+    outstanding = [check for check in report if not check.state.is_ready and check.blocks]
+    if outstanding:
+        console.print("\n[yellow]What is blocked, and how to close it:[/yellow]")
+        for check in outstanding:
+            console.print(f"  [dim]{check.hebrew}[/dim] — {check.blocks}")
+            if check.fix:
+                console.print(f"    [green]→[/green] {check.fix}")
+
+    if not report.may_cut:
+        console.print(
+            "\n[yellow]No bar may be cut from this installation yet: no series "
+            "carries its supplier's own deductions. Quoting is fine; every cut "
+            "sheet will carry the not-for-production banner.[/yellow]"
+        )
+
+
 @calendar_app.command("year")
 def calendar_year(
     year: int = typer.Argument(0, help="Gregorian year; default this one."),
