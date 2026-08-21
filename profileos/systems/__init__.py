@@ -24,6 +24,17 @@ from .registry import (
     hardware_makers,
 )
 
+from .confirmation import (
+    FIGURES,
+    Confirmation,
+    ConfirmationBook,
+    Figure,
+    default_confirmations,
+    load_confirmations,
+    read_confirmation,
+    template,
+    write_template,
+)
 from .decisions import (
     Decision,
     DecisionBook,
@@ -45,6 +56,15 @@ __all__ = [
     "SystemFamily",
     "SystemReadiness",
     "UnclassifiedSystem",
+    "FIGURES",
+    "Confirmation",
+    "ConfirmationBook",
+    "Figure",
+    "default_confirmations",
+    "load_confirmations",
+    "read_confirmation",
+    "template",
+    "write_template",
     "hardware_makers",
     "Decision", "DecisionBook", "DecisionError",
     "default_decisions", "load_decisions",

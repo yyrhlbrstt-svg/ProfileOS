@@ -65,6 +65,7 @@ calendar_app = typer.Typer(help="The Israeli working year.")
 deliver_app = typer.Typer(help="Loading and fitting: getting the work into the wall.")
 finish_app = typer.Typer(help="Anodising and paint, on the area a bath reaches.")
 files_app = typer.Typer(help="The photographs and papers kept with a job.")
+hw_app = typer.Typer(help="Hardware chosen by what the sash weighs.")
 
 app.add_typer(geometry_app, name="section")
 app.add_typer(nest_app, name="nest")
@@ -94,6 +95,7 @@ app.add_typer(calendar_app, name="calendar")
 app.add_typer(deliver_app, name="deliver")
 app.add_typer(finish_app, name="finish")
 app.add_typer(files_app, name="files")
+app.add_typer(hw_app, name="hardware")
 
 
 # --------------------------------------------------------------------------- #
@@ -141,6 +143,15 @@ def main_callback(
     configure_logging(level, use_rich=True, force=True)
     if config_dir is not None:
         load_settings(config_dir=config_dir)
+
+    # The shop's own decisions about its systems — which family a series is,
+    # and the supplier figures that make it cuttable — are restored before any
+    # command runs. A cut sheet produced by the command line has to carry the
+    # same provenance as one produced by the window.
+    from .systems import load_confirmations, load_decisions
+
+    load_decisions()
+    load_confirmations()
 
 
 @app.command()
@@ -3050,6 +3061,252 @@ def files_add(
     except Exception as exc:  # noqa: BLE001
         _fail(str(exc))
     console.print(f"[green]{attachment.name}[/green] {attachment.describe()}")
+
+
+@hw_app.command("list")
+def hardware_list(
+    kind: str = typer.Option("", "--kind", "-k", help="hinge, roller, handle…"),
+) -> None:
+    """What the shop can fit, and what each item is rated to carry."""
+    from .hardware import PartKind, default_library
+
+    library = default_library()
+    if not len(library):
+        console.print("[yellow]The hardware library is empty.[/yellow]")
+        console.print(
+            "[dim]profileos hardware template -o hardware.json, fill in a "
+            "supplier's load chart, then profileos hardware import[/dim]"
+        )
+        return
+
+    parts = library.of_kind(PartKind(kind)) if kind else list(library)
+    table = Table(title="Hardware", header_style="dim")
+    table.add_column("Code", style="cyan")
+    table.add_column("What")
+    table.add_column("Maker")
+    table.add_column("Max sash", justify="right")
+    table.add_column("Max leaf", justify="right")
+    table.add_column("Figures")
+    for part in sorted(parts, key=lambda item: (item.kind.value, item.code)):
+        table.add_row(
+            part.code, part.hebrew, part.maker or "-",
+            f"{part.max_sash_kg:,.0f} kg" if part.max_sash_kg else "-",
+            (
+                f"{part.max_width:,.0f} x {part.max_height:,.0f}"
+                if part.max_width or part.max_height else "-"
+            ),
+            part.confidence.hebrew,
+        )
+    console.print(table)
+    console.print(
+        f"[dim]{len(library.rated())} of {len(library)} carry a "
+        f"manufacturer's own figures; only those may be fitted to a load."
+        "[/dim]"
+    )
+
+
+@hw_app.command("template")
+def hardware_template(
+    maker: str = typer.Option("", "--maker", "-m"),
+    out: Optional[Path] = typer.Option(None, "--out", "-o"),
+) -> None:
+    """Write a blank hardware file to fill in from a supplier's load chart."""
+    from .hardware import template as hardware_form
+
+    destination = out or Path("hardware.json")
+    destination.write_text(
+        json.dumps(hardware_form(maker), ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    console.print(f"[green]{destination}[/green] — fill it in, then:")
+    console.print(f"  profileos hardware import {destination}")
+
+
+@hw_app.command("import")
+def hardware_import(
+    path: Path = typer.Argument(..., help="A filled-in hardware file."),
+) -> None:
+    """Load a supplier's parts and ratings into the shop's library."""
+    from .hardware import default_library
+    from .hardware.library import _part_from
+
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:  # noqa: BLE001
+        _fail(f"Could not read {path}: {exc}")
+
+    library = default_library()
+    added, refused = 0, []
+    for entry in raw.get("parts", []):
+        try:
+            library.add(_part_from(entry), save=False)
+            added += 1
+        except Exception as exc:  # noqa: BLE001 - name what was refused and why
+            refused.append(f"{entry.get('code', '?')}: {exc}")
+    library.save()
+
+    console.print(f"[green]{added}[/green] part(s) in the library.")
+    for reason in refused:
+        console.print(f"[yellow]{reason}[/yellow]")
+
+
+@hw_app.command("select")
+def hardware_select(
+    opening_type: str = typer.Argument(..., help="casement, tilt_turn, sliding…"),
+    width: float = typer.Argument(..., help="Leaf width [mm]."),
+    height: float = typer.Argument(..., help="Leaf height [mm]."),
+    glass: float = typer.Option(25.0, "--glass", help="Glass mass [kg/m2]."),
+) -> None:
+    """Choose the hardware for one leaf, against what it actually weighs."""
+    from .hardware import default_library
+
+    library = default_library()
+    try:
+        selection = library.select_for(
+            opening_type=opening_type, width=width, height=height,
+            glass_mass_per_m2=glass,
+        )
+    except Exception as exc:  # noqa: BLE001
+        _fail(str(exc))
+
+    console.print(
+        f"[cyan]Leaf {width:,.0f} x {height:,.0f} mm weighs "
+        f"{selection.sash_mass:,.1f} kg[/cyan]"
+    )
+    if selection.parts:
+        table = Table(header_style="dim")
+        table.add_column("Code", style="cyan")
+        table.add_column("What")
+        table.add_column("Qty", justify="right")
+        table.add_column("Figures")
+        for part, quantity in selection.parts:
+            table.add_row(
+                part.code, part.describe(), str(quantity), part.confidence.hebrew
+            )
+        console.print(table)
+        if selection.price:
+            console.print(f"[dim]{selection.price:,.2f} per leaf[/dim]")
+
+    for reason in selection.unmet:
+        console.print(f"[red]{reason}[/red]")
+    for warning in selection.warnings:
+        console.print(f"[yellow]{warning}[/yellow]")
+    if selection.may_be_ordered:
+        console.print("[green]Every load-bearing choice rests on a real chart.[/green]")
+
+
+@systems_app.command("figures")
+def systems_figures() -> None:
+    """The numbers to read out of a supplier catalogue, in catalogue order."""
+    from .systems import FIGURES
+
+    table = Table(title="What a series needs to be cuttable", header_style="dim")
+    table.add_column("Key", style="cyan")
+    table.add_column("Hebrew")
+    table.add_column("Where to find it")
+    table.add_column("Range", justify="right")
+    table.add_column("Required", justify="right")
+    for figure in FIGURES:
+        table.add_row(
+            figure.key, figure.hebrew, figure.where,
+            f"{figure.minimum:g}-{figure.maximum:g}",
+            "yes" if figure.required else "no",
+        )
+    console.print(table)
+    console.print(
+        "[dim]Eleven numbers, once per series. `profileos systems template "
+        "<series> -o file.json` writes a form to fill in at the bench.[/dim]"
+    )
+
+
+@systems_app.command("template")
+def systems_template(
+    entry_id: str = typer.Argument(..., help="Series id, e.g. klil-7300."),
+    out: Optional[Path] = typer.Option(None, "--out", "-o"),
+) -> None:
+    """Write a blank form to fill in from the catalogue."""
+    from .systems import DIRECTORY, write_template
+
+    entry = DIRECTORY.get(entry_id)
+    if entry is None:
+        _fail(
+            f"No series {entry_id}. List them with `profileos systems list`."
+        )
+    destination = out or Path(f"{entry_id}-figures.json")
+    write_template(entry_id, destination)
+    console.print(f"[green]{destination}[/green] — fill it in and run:")
+    console.print(f"  profileos systems confirm {destination}")
+
+
+@systems_app.command("confirm")
+def systems_confirm(
+    path: Path = typer.Argument(..., help="A filled-in figures file."),
+) -> None:
+    """Confirm a series from its catalogue figures, so it may be cut to."""
+    from .systems import DIRECTORY, default_confirmations, read_confirmation
+
+    try:
+        confirmation = read_confirmation(path)
+    except Exception as exc:  # noqa: BLE001
+        _fail(f"Could not read {path}: {exc}")
+
+    problems = confirmation.problems()
+    if problems:
+        console.print("[yellow]Not confirmed yet:[/yellow]")
+        for problem in problems:
+            console.print(f"  · {problem}")
+        raise typer.Exit(code=1)
+
+    try:
+        default_confirmations().record(confirmation)
+    except Exception as exc:  # noqa: BLE001
+        _fail(str(exc))
+
+    entry = DIRECTORY.get(confirmation.entry_id)
+    readiness_note = DIRECTORY.readiness(confirmation.entry_id)
+    console.print(
+        f"[green]{entry.display if entry else confirmation.entry_id}[/green] "
+        f"confirmed from {confirmation.source}"
+    )
+    console.print(
+        f"[dim]may quote: {readiness_note.may_quote} · "
+        f"may cut: {readiness_note.may_cut}[/dim]"
+    )
+    if readiness_note.may_cut:
+        console.print(
+            "[green]Cut sheets for this series no longer carry the "
+            "not-for-production banner.[/green]"
+        )
+
+
+@systems_app.command("confirmed")
+def systems_confirmed() -> None:
+    """Every series the shop has entered supplier figures for."""
+    from .systems import DIRECTORY, default_confirmations
+
+    book = default_confirmations()
+    if not len(book):
+        console.print(
+            "[yellow]No series confirmed yet — nothing here may be cut to.[/yellow]"
+        )
+        console.print(
+            "[dim]profileos systems template <series> -o figures.json[/dim]"
+        )
+        return
+
+    table = Table(title="Confirmed series", header_style="dim")
+    table.add_column("Series", style="cyan")
+    table.add_column("Source")
+    table.add_column("Entered by")
+    table.add_column("On")
+    for confirmation in book:
+        entry = DIRECTORY.get(confirmation.entry_id)
+        table.add_row(
+            entry.display if entry else confirmation.entry_id,
+            confirmation.source, confirmation.entered_by or "-",
+            confirmation.entered_on,
+        )
+    console.print(table)
 
 
 @app.command()

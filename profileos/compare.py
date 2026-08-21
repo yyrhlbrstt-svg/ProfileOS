@@ -640,6 +640,29 @@ CAPABILITIES: tuple[Capability, ...] = (
         differentiator=True,
     ),
     Capability(
+        "series_confirmation", Area.CATALOGUE,
+        "Eleven numbers to make a series cuttable", "אישור סדרה בהזנה אחת",
+        "The gap between quoting and cutting is the supplier's own deductions, "
+        "and no software can invent them. This one asks for exactly eleven "
+        "figures in catalogue order, each with where to find it, checks them "
+        "against what is physically possible, catches a transposed pair, and "
+        "records the source — after which the series is cuttable and the "
+        "not-for-production banner comes off its sheets.",
+        probe="profileos.systems.confirmation:Confirmation",
+        differentiator=True,
+    ),
+    Capability(
+        "hardware_by_load", Area.ELEMENTS,
+        "Hardware chosen by sash weight", "פרזול לפי משקל הכנף",
+        "The commonest warranty call in the trade is a hinge one size down. "
+        "Parts here carry a rating, a leaf size and a source; selection takes "
+        "the lightest that carries the leaf, refuses anything unrated, and "
+        "when nothing fits says whether it was the weight or the width — "
+        "rather than returning the largest thing on the shelf.",
+        probe="profileos.hardware.library:HardwareLibrary",
+        differentiator=True,
+    ),
+    Capability(
         "three_way_match", Area.ADJACENT,
         "Three-way invoice matching", "התאמה משולשת של חשבוניות",
         "A supplier invoice is set against the order and the goods actually "

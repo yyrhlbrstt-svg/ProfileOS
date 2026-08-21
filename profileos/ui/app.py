@@ -31,9 +31,13 @@ def run(argv: Sequence[str] | None = None, *, theme: str = "dark") -> int:
 
     # The shop's own series classifications, restored before any page reads
     # the directory — a family decided last week must not need deciding again.
-    from ..systems import load_decisions
+    from ..systems import load_confirmations, load_decisions
 
     load_decisions()
+    # And the supplier figures the shop has entered, which is what decides
+    # whether a cut sheet may be worked to. Restoring them at start-up is the
+    # difference between a demonstration and a tool.
+    load_confirmations()
 
     application = QApplication(list(argv) if argv is not None else sys.argv)
     application.setApplicationName("ProfileOS")

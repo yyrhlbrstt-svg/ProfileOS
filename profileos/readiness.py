@@ -169,7 +169,15 @@ def _check_brand() -> Check:
 
 
 def _check_systems() -> tuple[Check, Check]:
-    from .systems import DIRECTORY
+    from .systems import DIRECTORY, default_confirmations
+
+    # Apply whatever the shop has entered before asking what is confirmed:
+    # the answer must not depend on whether this process happens to have
+    # loaded them yet.
+    try:
+        default_confirmations().apply()
+    except Exception:  # noqa: BLE001 - the check is worth more than the load
+        _log.warning("Could not apply stored confirmations before checking")
 
     coverage = DIRECTORY.coverage()
     total = coverage.get("total", 0)
@@ -249,6 +257,32 @@ def _check_jobs() -> Check:
     return Check(
         "jobs", "תיקי עבודה", State.EMPTY, "אין פרויקטים",
         fix="עמוד ״פרויקטים״ → ״פרויקט חדש״, או `profileos seed` לנתוני התחלה",
+    )
+
+
+def _check_hardware() -> Check:
+    from .hardware import default_library
+
+    library = default_library()
+    if not len(library):
+        return Check(
+            "hardware", "ספריית פרזול", State.EMPTY,
+            "אין פריטי פרזול",
+            blocks="אי אפשר לבדוק שהציר נושא את הכנף — הסיבה מספר אחת "
+                   "לקריאות אחריות",
+            fix="`profileos hardware template` → מלאו טבלת עומסים → `hardware import`",
+        )
+    rated = len(library.rated())
+    if rated < len(library):
+        return Check(
+            "hardware", "ספריית פרזול", State.PARTIAL,
+            f"⁦{rated}⁩ מתוך ⁦{len(library)}⁩ עם נתוני יצרן",
+            blocks="פריט בלי דירוג עומס לא ייבחר לכנף",
+            fix="השלימו את הדירוגים מטבלת העומסים של הספק",
+        )
+    return Check(
+        "hardware", "ספריית פרזול", State.READY,
+        f"⁦{len(library)}⁩ פריטים, כולם עם נתוני יצרן",
     )
 
 
@@ -363,6 +397,7 @@ CHECKS: tuple[Callable[[], Any], ...] = (
     _check_systems,
     _check_samples,
     _check_jobs,
+    _check_hardware,
     _check_machines,
     _check_post_processor,
     _check_tax_rule,

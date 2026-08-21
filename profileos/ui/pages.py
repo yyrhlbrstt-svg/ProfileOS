@@ -1408,6 +1408,9 @@ class ElementPage(Page):
         self.cuts = DataTable(["תפקיד", "פרופיל", "אורך", "כמות", "זוויות"])
         self.panes = DataTable(["סימון", "מידה", "מפרט", "שטח מ״ר", "משקל ק״ג", "U", "בטיחות"])
         self.hardware = DataTable(["קוד", "פריט", "כמות", "יחידה"])
+        self.hardware_check = QLabel("")
+        self.hardware_check.setObjectName("Hint")
+        self.hardware_check.setWordWrap(True)
         self.feasibility = DataTable(["", "היכן", "מה", "נמדד", "גבול"])
         self.warnings = QPlainTextEdit(); self.warnings.setReadOnly(True)
 
@@ -1457,7 +1460,16 @@ class ElementPage(Page):
 
         tabs.addTab(self.cuts, "רשימת חיתוך")
         tabs.addTab(self.panes, "זכוכית")
-        tabs.addTab(self.hardware, "פרזול")
+        # The hardware tab carries the load check under the list, because the
+        # question "will this sash still close in five years" is answered by
+        # the rating and nothing else on this screen.
+        hardware_panel = QWidget()
+        hardware_layout = QVBoxLayout(hardware_panel)
+        hardware_layout.setContentsMargins(0, 0, 0, 0)
+        hardware_layout.setSpacing(METRICS.space(2))
+        hardware_layout.addWidget(self.hardware, 1)
+        hardware_layout.addWidget(self.hardware_check)
+        tabs.addTab(hardware_panel, "פרזול")
         tabs.addTab(fitted, "אביזרים")
         tabs.addTab(performance, "ביצועים")
         tabs.addTab(self.feasibility, "ישימות")
@@ -1618,6 +1630,67 @@ class ElementPage(Page):
             self.opening_note.setStyleSheet(f"color: {self.colours.success};")
         self.opening_note.setText(text)
 
+    def show_hardware_check(self, build: Any) -> None:
+        """Whether the shop's own hardware can carry the leaves just drawn.
+
+        Silent when the library is empty: a shop that has not entered a load
+        chart yet should not be nagged on every build, but the moment they
+        have one, every oversized sash is caught here rather than in a
+        warranty call two winters later.
+        """
+        from ..hardware import default_library
+
+        try:
+            library = default_library()
+        except Exception:  # noqa: BLE001
+            self.hardware_check.setText("")
+            return
+        if not len(library):
+            self.hardware_check.setText(
+                "ספריית הפרזול ריקה — הזינו טבלת עומסים של ספק כדי שהתוכנה "
+                "תבדוק שהצירים נושאים את הכנף"
+            )
+            self.hardware_check.setStyleSheet(f"color: {self.colours.text_muted};")
+            return
+
+        from ..elements import ElementBuilder
+
+        rects = ElementBuilder().cell_rects(build.opening, build.rules)
+        problems: list[str] = []
+        heaviest = 0.0
+        for cell in build.opening.all_cells():
+            sash = getattr(cell, "sash", None)
+            if sash is None:
+                continue
+            rect = rects.get(cell.key) if isinstance(rects, dict) else None
+            width = getattr(rect, "width", build.opening.width)
+            height = getattr(rect, "height", build.opening.height)
+            glass_mass = max(
+                (panel.mass / max(panel.area, 1e-6) for panel in build.glass),
+                default=25.0,
+            )
+            selection = library.select_for(
+                opening_type=str(sash.opening_type),
+                width=width, height=height, glass_mass_per_m2=glass_mass,
+            )
+            heaviest = max(heaviest, selection.sash_mass)
+            problems.extend(selection.unmet)
+            problems.extend(selection.warnings)
+
+        if not heaviest:
+            self.hardware_check.setText("")
+            return
+        if problems:
+            self.hardware_check.setText(
+                f"כנף כבדה ביותר ⁦{heaviest:.0f}⁩ ק״ג · " + " · ".join(problems[:3])
+            )
+            self.hardware_check.setStyleSheet(f"color: {self.colours.danger};")
+        else:
+            self.hardware_check.setText(
+                f"כנף כבדה ביותר ⁦{heaviest:.0f}⁩ ק״ג — הפרזול בספרייה נושא אותה"
+            )
+            self.hardware_check.setStyleSheet(f"color: {self.colours.success};")
+
     def show_performance(self, build: Any) -> None:
         """U-value, sound reduction, wind pressure and what they are judged by."""
         from ..compliance import Site, Verdict, check_compliance
@@ -1757,6 +1830,7 @@ class ElementPage(Page):
         self.show_feasibility(build)
         self.show_accessories(build)
         self.show_performance(build)
+        self.show_hardware_check(build)
         self.header.set_subtitle(
             f"{opening.name}: \u2066{opening.width:.0f} × {opening.height:.0f}\u2069 מ״מ · "
             f"רשת \u2066{opening.column_count}×{opening.row_count}\u2069 · "
@@ -4267,6 +4341,12 @@ class CataloguePage(Page):
             controls.addWidget(caption)
             controls.addWidget(widget, 1 if widget is self.decided_by else 0)
         controls.addWidget(classify)
+
+        # And the button that actually opens the saw: eleven numbers off the
+        # supplier's catalogue, entered once.
+        confirm = QPushButton("הזן נתוני יצרן…")
+        confirm.clicked.connect(self.confirm_system)
+        controls.addWidget(confirm)
         layout.addLayout(controls)
 
         self.systems_table = DataTable(
@@ -4282,8 +4362,10 @@ class CataloguePage(Page):
 
         note = QLabel(
             "סדרה שסווגה אפשר לתמחר לפיה — על ערכי משפחה טיפוסיים, לא על נתוני "
-            "היצרן. חיתוך נפתח רק אחרי קליטת הקטלוג של הספק בלשונית ״קליטה״, "
-            "וזה בכוונה: מוט שנחתך לפי ניחוש הוא מוט שנזרק."
+            "היצרן. חיתוך נפתח רק אחרי שהוזנו נתוני היצרן: ⁦11⁩ מספרים "
+            "מהקטלוג, פעם אחת לסדרה, בכפתור ״הזן נתוני יצרן״. "
+            "עד אז כל דף חיתוך נושא ״לא לייצור״, וזה בכוונה — "
+            "מוט שנחתך לפי ניחוש הוא מוט שנזרק."
         )
         note.setObjectName("Hint")
         note.setWordWrap(True)
@@ -4296,6 +4378,44 @@ class CataloguePage(Page):
             return ""
         index = rows.selectedRows()[0].row()
         return self._system_ids[index] if index < len(self._system_ids) else ""
+
+    def confirm_system(self) -> None:
+        """Enter the supplier's own figures, which is what unlocks cutting."""
+        from .dialogs import ConfirmSystemDialog
+
+        entry_id = self._selected_system()
+        if not entry_id:
+            self.report(ProfileOSError("בחר סדרה מהרשימה"), "לא נבחרה סדרה")
+            return
+
+        from ..systems import DIRECTORY, Confirmation, default_confirmations
+
+        entry = DIRECTORY.get(entry_id)
+        book = default_confirmations()
+        dialog = ConfirmSystemDialog(
+            entry.display if entry else entry_id,
+            existing=book.get(entry_id),
+            parent=self,
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        values = dialog.values()
+        confirmation = Confirmation(
+            entry_id=entry_id,
+            source=values["source"],
+            entered_by=values["entered_by"],
+            values=values["figures"],
+            profiles=values["profiles"],
+        )
+        try:
+            book.record(confirmation)
+        except Exception as exc:  # noqa: BLE001 - the reason is the answer
+            self.report(exc, "הנתונים לא התקבלו")
+            return
+
+        self.refresh()
+        self.status(f"{entry.display if entry else entry_id} — ניתן לחיתוך")
 
     def classify_system(self) -> None:
         from ..systems import DIRECTORY, SystemFamily, default_decisions

@@ -30,7 +30,7 @@ from ..elements.rules import (
     SystemRules,
     register_system_rules,
 )
-from .israel import HARDWARE_MAKERS, MANUFACTURERS, SERIES
+from .israel import HARDWARE_MAKERS, MANUFACTURERS, OPERATOR_LIST, SERIES
 from .model import Manufacturer, Provenance, SystemEntry, SystemFamily, SystemReadiness
 
 _log = get_logger("systems")
@@ -311,6 +311,27 @@ class SystemDirectory:
         )
         self._entries[updated.id] = updated
         _log.info("Confirmed %s from %s", updated.display, source)
+        return updated
+
+    def revoke(self, entry_id: str) -> SystemEntry:
+        """Take a series' confirmed figures back off it.
+
+        The mirror of :meth:`confirm`, and not optional: a shop that deletes a
+        catalogue entry they typed wrong must stop cutting to it, and without
+        this the series stays cuttable for the rest of the session on figures
+        nobody stands behind any more.
+        """
+        entry = self.get(entry_id)
+        if entry is None:
+            raise KeyError(f"No system named {entry_id!r}")
+        updated = replace(
+            entry,
+            rules_id=None,
+            provenance=Provenance.UNKNOWN if entry.family is None else Provenance.TYPICAL,
+            source=OPERATOR_LIST,
+        )
+        self._entries[updated.id] = updated
+        _log.info("Revoked the confirmed figures for %s", updated.display)
         return updated
 
     # -- reporting ---------------------------------------------------------- #

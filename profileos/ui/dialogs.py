@@ -305,8 +305,92 @@ class NewChequeDialog(_FormDialog):
         }
 
 
+class ConfirmSystemDialog(_FormDialog):
+    """The eleven numbers that turn a series into one the shop may cut to.
+
+    Laid out in the order a catalogue prints them, each with the place to look
+    for it, so somebody can work down the page with the book open beside them
+    instead of hunting for each field.
+    """
+
+    accept_text = "אשר את הסדרה"
+
+    def __init__(
+        self,
+        series: str,
+        existing: Any = None,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(f"נתוני יצרן — {series}", parent)
+        self.setMinimumWidth(560)
+
+        from ..systems import FIGURES
+
+        self.source = QLineEdit()
+        self.source.setPlaceholderText("קטלוג קליל 7300, מהדורת 2026, עמ׳ 41")
+        self.entered_by = QLineEdit()
+        self.entered_by.setPlaceholderText("מי קרא את המספרים")
+
+        self.grid.add("מקור", self.source)
+        self.grid.add("הוזן על ידי", self.entered_by)
+
+        self.figures: dict[str, QDoubleSpinBox] = {}
+        for figure in FIGURES:
+            box = QDoubleSpinBox()
+            box.setRange(figure.minimum, figure.maximum)
+            box.setDecimals(1)
+            box.setSuffix(f" {figure.unit}")
+            box.setToolTip(figure.where)
+            if figure.default is not None:
+                box.setValue(figure.default)
+            self.figures[figure.key] = box
+            label = figure.hebrew if figure.required else f"{figure.hebrew} (לא חובה)"
+            self.grid.add(label, box)
+
+        self.profiles: dict[str, QLineEdit] = {}
+        for role, label in (
+            ("frame", "מק״ט משקוף"), ("sash", "מק״ט כנף"),
+            ("mullion", "מק״ט זקף"), ("bead", "מק״ט סרגל"),
+        ):
+            field = QLineEdit()
+            field.setPlaceholderText("מספר הפריט בקטלוג")
+            self.profiles[role] = field
+            self.grid.add(label, field)
+
+        if existing is not None:
+            self.source.setText(existing.source)
+            self.entered_by.setText(existing.entered_by)
+            for key, value in existing.values.items():
+                if key in self.figures:
+                    self.figures[key].setValue(value)
+            for role, code in existing.profiles.items():
+                if role in self.profiles:
+                    self.profiles[role].setText(code)
+
+        # A source is the one field with no sensible default: a confirmed
+        # figure with no record of where it came from is not confirmed.
+        self.source.textChanged.connect(
+            lambda text: self.ok_button.setEnabled(bool(text.strip()))
+        )
+        self.ok_button.setEnabled(bool(self.source.text().strip()))
+        self.source.setFocus()
+
+    def values(self) -> dict[str, Any]:
+        return {
+            "source": self.source.text().strip(),
+            "entered_by": self.entered_by.text().strip(),
+            "figures": {key: box.value() for key, box in self.figures.items()},
+            "profiles": {
+                role: field.text().strip()
+                for role, field in self.profiles.items()
+                if field.text().strip()
+            },
+        }
+
+
 __all__ = [
     "CloseServiceCallDialog",
+    "ConfirmSystemDialog",
     "NewChequeDialog",
     "NewCustomerDialog",
     "NewJobDialog",
