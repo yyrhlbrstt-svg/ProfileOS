@@ -102,6 +102,38 @@ MANUFACTURERS: tuple[Manufacturer, ...] = (
         local_stock=False,
         website="https://www.alumil.com",
     ),
+    Manufacturer(
+        id="hula", name="Hula Aluminium", hebrew="אלומיניום החולה",
+        country="IL", local_stock=True,
+    ),
+    Manufacturer(
+        id="metalpress", name="Metalpress", hebrew="מטלפרס",
+        country="IL", local_stock=True,
+    ),
+    Manufacturer(
+        id="technal", name="Technal", hebrew="טכנל",
+        country="FR", local_stock=False,
+    ),
+    # PVC systems. A growing share of the Israeli market — and a different
+    # trade inside the same workshop: welded corners rather than mitred and
+    # screwed, steel reinforcement inside the chambers, and a coefficient of
+    # thermal expansion that makes a long dark frame move enough to matter.
+    Manufacturer(
+        id="rehau", name="REHAU", hebrew="רהאו",
+        country="DE", local_stock=False, website="https://www.rehau.com",
+    ),
+    Manufacturer(
+        id="veka", name="VEKA", hebrew="וקה",
+        country="DE", local_stock=False, website="https://www.veka.com",
+    ),
+    Manufacturer(
+        id="deceuninck", name="Deceuninck", hebrew="דקווניק",
+        country="BE", local_stock=False,
+    ),
+    Manufacturer(
+        id="salamander", name="Salamander", hebrew="סלמנדר",
+        country="DE", local_stock=False,
+    ),
 )
 
 

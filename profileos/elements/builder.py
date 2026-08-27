@@ -523,7 +523,7 @@ class ElementBuilder:
         pane_width = glazing_rect.width - deduction
         pane_height = glazing_rect.height - deduction
 
-        build_up = self._resolve_glass(cell, opening)
+        build_up = self._resolve_glass(cell, opening, build)
         if build_up.total_thickness > rules.glass.max_glass_thickness:
             build.warnings.append(
                 f"Cell {cell.key}: glass is {build_up.total_thickness:.0f} mm thick but the "
@@ -679,14 +679,34 @@ class ElementBuilder:
                 )
 
     # -- helpers ------------------------------------------------------------- #
-    def _resolve_glass(self, cell: Cell, opening: Opening) -> GlassBuildUp:
+    def _resolve_glass(
+        self, cell: Cell, opening: Opening, build: "ElementBuild | None" = None
+    ) -> GlassBuildUp:
+        """The glass this cell asked for, or the default — never silently.
+
+        A cell that names a build-up this installation does not have used to
+        fall through to the default without a word. That is how a balustrade
+        specified in laminated glass is quoted, cut and fitted in ordinary
+        double glazing: nothing anywhere said the specification was dropped.
+        """
+        asked: list[str] = []
         for spec_id in (
             cell.glass_spec_id,
             cell.sash.glass_spec_id if cell.sash else None,
             opening.glass_spec_id,
         ):
-            if spec_id and spec_id in self.glass_catalogue:
+            if not spec_id:
+                continue
+            if spec_id in self.glass_catalogue:
                 return self.glass_catalogue[spec_id]
+            asked.append(spec_id)
+
+        if asked and build is not None:
+            build.warnings.append(
+                f"Cell {cell.key}: glass {asked[0]!r} is not in this "
+                f"installation's catalogue; {self.default_glass.id!r} was used "
+                "instead. Check the specification before ordering."
+            )
         return self.default_glass
 
     def _check_compliance(self, build: ElementBuild) -> None:

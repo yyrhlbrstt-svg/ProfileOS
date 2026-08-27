@@ -448,6 +448,26 @@ def make_monolithic(thickness: float = 6.0, *, toughened: bool = False) -> Glass
 
 
 #: Ready-made build-ups covering the common specification points.
+def make_laminated_unit(
+    plies: tuple[float, float] = (6.0, 6.0), interlayer: float = 0.76
+) -> GlassBuildUp:
+    """A single laminated unit, as a balustrade or an overhead pane needs.
+
+    Laminated is not the same safety as toughened and they are not
+    interchangeable: toughened glass breaks into blunt pieces, laminated glass
+    holds together on its interlayer and keeps standing. A balustrade is a
+    barrier, so it has to keep standing — which is why this is here rather
+    than being approximated with a toughened monolithic pane.
+    """
+    ply = make_laminated(plies, interlayer)
+    return GlassBuildUp(
+        id=f"lam-{plies[0]:g}{plies[1]:g}-{round(interlayer / 0.38)}",
+        name=f"למינציה {ply.name}",
+        panes=[ply],
+        cavities=[],
+    )
+
+
 STANDARD_BUILDUPS: dict[str, GlassBuildUp] = {
     build.id: build
     for build in (
@@ -455,6 +475,7 @@ STANDARD_BUILDUPS: dict[str, GlassBuildUp] = {
         make_double_glazing(),
         make_double_glazing(6.0, 16.0, 6.0, toughened=True),
         make_triple_glazing(),
+        make_laminated_unit(),
     )
 }
 
@@ -478,5 +499,6 @@ __all__ = [
     "make_triple_glazing",
     "make_laminated",
     "make_monolithic",
+    "make_laminated_unit",
     "STANDARD_BUILDUPS",
 ]
