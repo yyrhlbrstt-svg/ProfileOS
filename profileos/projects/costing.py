@@ -55,6 +55,10 @@ class JobCosting:
     warnings: list[str] = field(default_factory=list)
     currency: str = "ILS"
     as_at: date = field(default_factory=date.today)
+    #: Costs quoted in somebody else's money, by currency.
+    foreign_costs: dict[str, float] = field(default_factory=dict)
+    #: How much of the cost moves if the exchange rate does.
+    foreign_exposure: float = 0.0
 
     # -- what it cost --------------------------------------------------------- #
     @property
@@ -144,6 +148,8 @@ def cost_job(
     quotation: Any = None,
     company: Any = None,
     service: Any = None,
+    timesheets: Any = None,
+    rates: Any = None,
     labour_rate: float = 120.0,
 ) -> JobCosting:
     """Read one job's money from every side that has an entry for it.
@@ -211,6 +217,29 @@ def cost_job(
                 getattr(company, "payments_in", {}).get(invoice.invoice_id, 0)
             ) / 100.0
 
+    # -- the hours somebody actually worked ----------------------------------- #
+    # A booked hour replaces the estimate rather than joining it: once the
+    # shop knows what the job really took, the figure it was quoted on stops
+    # being the best answer available.
+    if timesheets is not None:
+        booked = timesheets.hours_on_job(costing.job_id)
+        if booked:
+            cost = timesheets.cost_of_job(
+                costing.job_id, default_rate=labour_rate
+            )
+            costing.lines = [
+                line for line in costing.lines if line.category != "labour"
+            ]
+            costing.lines.append(CostLine(
+                "labour", "עבודה — שעות שנרשמו", round(cost, 2),
+                f"⁦{booked:.1f}⁩ שעות בספר השעות",
+            ))
+            rework = timesheets.rework_share(costing.job_id)
+            if rework > 10:
+                costing.warnings.append(
+                    f"⁦{rework:.0f}%⁩ מהשעות בעבודה הזאת היו תיקון חוזר"
+                )
+
     # -- what came back ------------------------------------------------------- #
     if service is not None:
         calls = service.for_job(costing.job_id)
@@ -237,6 +266,21 @@ def cost_job(
         costing.warnings.append(
             f"⁦{costing.committed:,.0f}⁩ ₪ בהזמנות רכש שטרם התקבלה עליהן חשבונית"
         )
+
+    # -- money that is not in shekels ----------------------------------------- #
+    # A job bought in euros and sold in shekels has a margin that moves with
+    # the rate. Saying so is cheap; finding out from the supplier's invoice is
+    # not.
+    if rates is not None and costing.foreign_costs:
+        exposure = rates.exposure(costing.foreign_costs)
+        costing.foreign_exposure = exposure["foreign"]
+        for warning in exposure["warnings"]:
+            costing.warnings.append(warning)
+        if exposure["share_pct"] > 25:
+            costing.warnings.append(
+                f"⁦{exposure['share_pct']:.0f}%⁩ מהעלות נקובה במטבע זר — "
+                f"תזוזה של ⁦5%⁩ בשער שווה ⁦{exposure['if_rate_moves_5pct']:,.0f}⁩ ₪"
+            )
     return costing
 
 

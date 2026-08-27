@@ -351,6 +351,46 @@ def _check_wind() -> Check:
     )
 
 
+def _check_backup() -> Check:
+    """Whether anything the shop owns exists anywhere but one hard disk."""
+    from datetime import datetime, timezone
+
+    from .core.backup import default_backup_folder, list_backups
+
+    folder = default_backup_folder()
+    found = list_backups(folder) if folder.is_dir() else []
+    if not found:
+        return Check(
+            "backup", "גיבוי", State.EMPTY, "אין אף גיבוי",
+            blocks="כל מה שהוזן קיים בעותק אחד בלבד, על מחשב אחד",
+            fix="`profileos backup write`, ואז העתיקו את הקובץ לדיסק חיצוני",
+            critical=True,
+        )
+
+    newest = found[0][1]
+    try:
+        created = datetime.fromisoformat(newest.created)
+        if created.tzinfo is None:
+            created = created.replace(tzinfo=timezone.utc)
+        days = (datetime.now(timezone.utc) - created).days
+    except ValueError:
+        days = 999
+
+    if days > 7:
+        return Check(
+            "backup", "גיבוי", State.ATTENTION,
+            f"הגיבוי האחרון לפני ⁦{days}⁩ ימים",
+            blocks=f"עבודה של ⁦{days}⁩ ימים אינה מגובה",
+            fix="`profileos backup write`",
+            critical=True,
+        )
+    return Check(
+        "backup", "גיבוי", State.READY,
+        f"⁦{len(found)}⁩ גיבויים, האחרון לפני ⁦{days}⁩ ימים",
+        critical=True,
+    )
+
+
 def _check_service() -> Check:
     from .service import default_register
 
@@ -413,6 +453,7 @@ CHECKS: tuple[Callable[[], Any], ...] = (
     _check_tax_rule,
     _check_wind,
     _check_standard_times,
+    _check_backup,
     _check_service,
 )
 

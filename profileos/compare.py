@@ -714,6 +714,75 @@ CAPABILITIES: tuple[Capability, ...] = (
         differentiator=True,
     ),
     Capability(
+        "backup_restore", Area.PLATFORM,
+        "Backup and restore in the software", "גיבוי ושחזור בתוך התוכנה",
+        "One dated archive of everything the shop knows, with a manifest of "
+        "what is inside it, and a restore that says what it would replace "
+        "before it replaces anything and moves the current folder aside "
+        "rather than deleting it.",
+        probe="profileos.core.backup:write_backup",
+    ),
+    Capability(
+        "timesheets", Area.SHOPFLOOR,
+        "Hours booked against the job", "רישום שעות מול תיק העבודה",
+        "Time booked by person, job and operation, with rework marked "
+        "separately, feeding the job costing so the margin is measured "
+        "against the estimate instead of repeating it.",
+        probe="profileos.erp.timesheets:TimeBook",
+    ),
+    Capability(
+        "exchange_rates", Area.COMMERCIAL,
+        "Exchange rates with provenance", "שערי מטבע עם מקור ותאריך",
+        "Every rate carries the date it applied and where it was read from, "
+        "a rate older than a month is marked stale, and a quotation costed "
+        "on one carries the warning with it. Nothing is fetched: a rate "
+        "exists because somebody entered it.",
+        probe="profileos.erp.currency:RateBook",
+        differentiator=True,
+    ),
+    Capability(
+        "stocktake", Area.ADJACENT,
+        "Stocktake sheets", "גיליונות ספירת מלאי",
+        "A count sheet that freezes what the book claims, goes to the racks "
+        "without the expected figure printed on it, and posts only the lines "
+        "somebody actually counted — a blank is never posted as a zero. "
+        "Shortage and surplus are reported apart rather than netted.",
+        probe="profileos.erp.stocktake:open_stocktake",
+        differentiator=True,
+    ),
+    Capability(
+        "management_reports", Area.ADJACENT,
+        "Sales, win rate and margin reporting", "דוחות מכירות, סגירה ורווחיות",
+        "Quoted against ordered by month, win rate by count and by money "
+        "(which disagree), margin by customer, the live pipeline and what is "
+        "late. Every percentage carries the number of records behind it, and "
+        "a customer never costed shows an unknown margin rather than zero.",
+        probe="profileos.reports:dashboard",
+    ),
+    Capability(
+        "quote_revisions", Area.COMMERCIAL,
+        "Quotation revisions with a priced diff", "גרסאות הצעת מחיר עם השוואה",
+        "Every version of a price is kept with the reason it was made, and "
+        "two versions compare line by line: added, removed, re-priced, "
+        "re-counted, each with what it did to the total. The changes are "
+        "reconciled against the move in the price, and a move the lines do "
+        "not explain is reported rather than hidden.",
+        probe="profileos.quoting.revisions:compare",
+        differentiator=True,
+    ),
+    Capability(
+        "order_confirmation", Area.COMMERCIAL,
+        "Order confirmation with what is outstanding",
+        "אישור הזמנה עם מה שחסר מהלקוח",
+        "The confirmation carries what the shop is still waiting on — final "
+        "measurement, colour, glass, deposit — each with a date, and the "
+        "delivery date is counted in working days from when the last blocker "
+        "clears. A date that assumes something not yet in hand is printed as "
+        "provisional, on the customer's copy.",
+        probe="profileos.erp.order_confirmation:confirm_order",
+        differentiator=True,
+    ),
+    Capability(
         "capacity_planning", Area.ADJACENT,
         "Capacity and delivery planning", "תכנון קיבולת ומועדי אספקה",
         "Finite-capacity scheduling across work centres on the shop's own "

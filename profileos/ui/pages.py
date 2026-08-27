@@ -2788,10 +2788,159 @@ class ShopFloorPage(Page):
         scan_card.add(self.scan_result)
         self.body.addWidget(scan_card)
 
-        items_card = Card("פריטי ייצור")
+        tabs = QTabWidget()
+        items_page = QWidget()
+        items_layout = QVBoxLayout(items_page)
+        items_layout.setContentsMargins(0, METRICS.space(3), 0, 0)
         self.items = DataTable(["מזהה", "סוג", "תיאור", "שלב", "התקדמות"])
-        items_card.add(self.items, 1)
-        self.body.addWidget(items_card, 1)
+        items_layout.addWidget(self.items, 1)
+        tabs.addTab(items_page, "פריטי ייצור")
+        tabs.addTab(self._hours_tab(), "שעות עבודה")
+        self.body.addWidget(tabs, 1)
+        self.tabs = tabs
+
+    # -- hours ----------------------------------------------------------------- #
+    def _hours_tab(self) -> QWidget:
+        """Book real hours against a job, so the margin is measured not guessed.
+
+        Every quote in this trade is priced on an estimate of how long the work
+        takes. Without hours booked against the job, that estimate is never
+        corrected, and a shop can lose money on the same kind of job for years
+        while its quotation screen keeps saying the margin is fine.
+        """
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, METRICS.space(3), 0, 0)
+        layout.setSpacing(METRICS.space(3))
+
+        entry_card = Card("רישום שעות")
+        row = QHBoxLayout()
+        row.setSpacing(METRICS.space(3))
+
+        self.hours_person = QComboBox()
+        self.hours_person.setEditable(True)
+        self.hours_person.addItems(["דנה", "יוסי", "מאיה"])
+
+        self.hours_job = QLineEdit()
+        self.hours_job.setPlaceholderText("מספר תיק")
+
+        self.hours_operation = QComboBox()
+        self.hours_operation.setEditable(True)
+        self.hours_operation.addItems([
+            "חיתוך", "עיבוד CNC", "הרכבה", "זיגוג", "אריזה",
+            "התקנה באתר", "מדידה", "תיקון",
+        ])
+
+        self.hours_start = QLineEdit("07:00")
+        self.hours_start.setMaximumWidth(METRICS.space(14))
+        self.hours_end = QLineEdit("16:00")
+        self.hours_end.setMaximumWidth(METRICS.space(14))
+
+        self.hours_rework = QCheckBox("תיקון חוזר")
+
+        self.hours_rate = QDoubleSpinBox()
+        self.hours_rate.setRange(0.0, 999.0)
+        self.hours_rate.setDecimals(2)
+        self.hours_rate.setSuffix(" ₪/ש׳")
+
+        for label, widget in [
+            ("עובד", self.hours_person), ("תיק", self.hours_job),
+            ("פעולה", self.hours_operation), ("משעה", self.hours_start),
+            ("עד", self.hours_end), ("עלות", self.hours_rate),
+        ]:
+            caption = QLabel(label)
+            caption.setObjectName("FieldLabel")
+            row.addWidget(caption)
+            row.addWidget(widget)
+        row.addWidget(self.hours_rework)
+
+        book = QPushButton("רשום")
+        book.setObjectName("Primary")
+        book.clicked.connect(self.book_hours)
+        row.addWidget(book)
+        row.addStretch(1)
+        entry_card.add_layout(row)
+
+        self.hours_result = QLabel("—")
+        self.hours_result.setObjectName("StatLabel")
+        entry_card.add(self.hours_result)
+        layout.addWidget(entry_card)
+
+        self.hours_table = DataTable(
+            ["תאריך", "עובד", "תיק", "פעולה", "שעות", "עלות", "תיקון"],
+            empty_text="אין רישומי שעות — בלי שעות, הרווחיות היא הערכה בלבד",
+        )
+        layout.addWidget(self.hours_table, 1)
+
+        self.hours_summary = QLabel("")
+        self.hours_summary.setObjectName("Hint")
+        self.hours_summary.setWordWrap(True)
+        layout.addWidget(self.hours_summary)
+
+        self._timebook = None
+        self.show_hours()
+        return page
+
+    def _book(self):
+        if self._timebook is None:
+            from ..erp.timesheets import default_timebook
+
+            self._timebook = default_timebook()
+        return self._timebook
+
+    def book_hours(self) -> None:
+        from ..erp.timesheets import minutes_between
+
+        try:
+            minutes = minutes_between(
+                self.hours_start.text(), self.hours_end.text()
+            )
+            entry = self._book().book(
+                person=self.hours_person.currentText(),
+                job_id=self.hours_job.text().strip(),
+                minutes=minutes,
+                operation=self.hours_operation.currentText(),
+                rework=self.hours_rework.isChecked(),
+                rate=self.hours_rate.value(),
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.hours_result.setText(str(exc))
+            self.hours_result.setStyleSheet(f"color: {self.colours.danger};")
+            return
+
+        self.hours_result.setText(entry.describe())
+        self.hours_result.setStyleSheet(f"color: {self.colours.success};")
+        self.show_hours()
+
+    def show_hours(self) -> None:
+        book = self._book()
+        rows: list[list[Any]] = []
+        for entry in list(book)[:200]:
+            rows.append([
+                entry.on.isoformat(), entry.person, entry.job_id or "—",
+                entry.operation or entry.note or "—",
+                f"⁦{entry.hours:.2f}⁩",
+                f"⁦{entry.cost:,.2f}⁩ ₪" if entry.rate else "—",
+                "כן" if entry.rework else "",
+            ])
+        self.hours_table.set_rows(rows)
+
+        if not len(book):
+            self.hours_summary.setText("")
+            return
+        total = round(sum(entry.hours for entry in book), 2)
+        rework = book.rework_share()
+        by_person = book.by_person()
+        leaders = ", ".join(
+            f"{name} ⁦{hours:.1f}⁩"
+            for name, hours in sorted(
+                by_person.items(), key=lambda pair: pair[1], reverse=True
+            )[:4]
+        )
+        self.hours_summary.setText(
+            f"סה״כ ⁦{total:.1f}⁩ שעות · תיקונים חוזרים ⁦{rework:.0f}%⁩ "
+            f"מהזמן · {leaders}"
+        )
 
     def release(self) -> None:
         from ..mes import work_order_from_builds
@@ -4633,6 +4782,7 @@ class SystemPage(Page):
         tabs.addTab(self._licence_tab(), "רישיון")
         tabs.addTab(self._brand_tab(), "מפעיל")
         tabs.addTab(self._plugins_tab(), "תוספים")
+        tabs.addTab(self._backup_tab(), "גיבוי ושחזור")
 
         # The comparison verifies every capability claim, which means importing
         # every engine in the suite — OR-Tools, sectionproperties, FastAPI and
@@ -5117,6 +5267,179 @@ class SystemPage(Page):
         layout.addWidget(note)
         return page
 
+    # -- backup ---------------------------------------------------------------- #
+    def _backup_tab(self) -> QWidget:
+        """Write a copy of the shop, and read one back.
+
+        The one screen in the suite whose absence costs more than every other
+        screen combined, so it is a button and a list rather than a document
+        somebody is supposed to have read.
+        """
+        self._backup_folder: Path | None = None
+        self._backup_paths: list[Path] = []
+
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, METRICS.space(3), 0, 0)
+        layout.setSpacing(METRICS.space(3))
+
+        bar = QHBoxLayout()
+        bar.setSpacing(METRICS.space(2))
+        write = QPushButton("גבה עכשיו")
+        write.setObjectName("Primary")
+        write.clicked.connect(self.write_backup)
+        bar.addWidget(write)
+
+        restore = QPushButton("שחזר מגיבוי…")
+        restore.clicked.connect(self.restore_backup)
+        bar.addWidget(restore)
+
+        reveal = QPushButton("בחר תיקיית גיבוי…")
+        reveal.clicked.connect(self.choose_backup_folder)
+        bar.addWidget(reveal)
+        bar.addStretch(1)
+        layout.addLayout(bar)
+
+        self.backup_folder_label = QLabel("")
+        self.backup_folder_label.setObjectName("Hint")
+        self.backup_folder_label.setWordWrap(True)
+        layout.addWidget(self.backup_folder_label)
+
+        self.backup_table = DataTable(
+            ["נכתב", "מפעיל", "קבצים", "גודל", "מה בפנים"],
+            empty_text="אין עדיין אף גיבוי — הכול קיים בעותק אחד",
+        )
+        layout.addWidget(self.backup_table, 1)
+
+        note = QLabel(
+            "גיבוי הוא קובץ zip מתוארך אחד עם כל מה שהתוכנה יודעת: תיקי "
+            "עבודה, לקוחות, הסדרות שאושרו, קריאות שירות, פנקס הצ׳קים. "
+            "שחזור לעולם אינו דורס: התיקייה הנוכחית מוזזת הצידה ומיקומה "
+            "נאמר, כך ששחזור של הקובץ הלא נכון מתבטל בהזזת תיקייה אחת "
+            "חזרה. העתיקו את הקובץ לדיסק חיצוני — גיבוי שיושב על אותו "
+            "מחשב אינו גיבוי."
+        )
+        note.setObjectName("Hint")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+
+        self.show_backups()
+        return page
+
+    def _backup_where(self) -> Path:
+        from ..core.backup import default_backup_folder
+
+        return self._backup_folder or default_backup_folder()
+
+    def show_backups(self) -> None:
+        from ..core.backup import list_backups
+
+        folder = self._backup_where()
+        self.backup_folder_label.setText(f"תיקיית הגיבוי: {folder}")
+        if not folder.is_dir():
+            self.backup_table.set_rows([])
+            return
+
+        rows: list[list[Any]] = []
+        self._backup_paths = []
+        labels = {
+            "jobs": "תיקים", "customers": "לקוחות",
+            "system_confirmations": "סדרות", "service_calls": "קריאות",
+            "hardware": "פרזול", "price_list": "מחירון", "files": "מסמכים",
+        }
+        for path, manifest in list_backups(folder):
+            self._backup_paths.append(path)
+            inside = " · ".join(
+                f"{labels.get(key, key)} ⁦{count}⁩"
+                for key, count in sorted(manifest.contents.items())
+                if count
+            )
+            rows.append([
+                manifest.created[:16].replace("T", " "),
+                manifest.brand or "—",
+                f"⁦{manifest.files}⁩",
+                f"⁦{manifest.bytes / 1_048_576:.1f}⁩ MB",
+                inside or "—",
+            ])
+        self.backup_table.set_rows(rows)
+
+    def choose_backup_folder(self) -> None:
+        chosen = QFileDialog.getExistingDirectory(
+            self, "תיקיית גיבוי", str(self._backup_where())
+        )
+        if not chosen:
+            return
+        self._backup_folder = Path(chosen)
+        self.show_backups()
+
+    def write_backup(self) -> None:
+        from ..core.backup import prune, read_manifest, write_backup
+
+        try:
+            archive = write_backup(self._backup_where())
+            manifest = read_manifest(archive)
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "הגיבוי נכשל")
+            return
+
+        removed = prune(archive.parent, keep=14)
+        message = f"נכתב גיבוי: {manifest.describe()}"
+        if removed:
+            message += f" · נמחקו ⁦{len(removed)}⁩ גיבויים ישנים"
+        self.status(message)
+        self.show_backups()
+        self.show_setup()
+
+    def restore_backup(self) -> None:
+        """Show what a restore would replace, and only then do it."""
+        from ..core.backup import plan_restore, restore
+
+        start = str(self._backup_where())
+        chosen, _ = QFileDialog.getOpenFileName(
+            self, "בחרו קובץ גיבוי", start, "גיבויים (*.zip)"
+        )
+        if not chosen:
+            return
+
+        try:
+            plan = plan_restore(Path(chosen))
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "אי אפשר לקרוא את הגיבוי")
+            return
+
+        lines = [plan.describe(), ""]
+        lines += [
+            f"{label}: כרגע ⁦{now}⁩ · בגיבוי ⁦{inside}⁩"
+            for label, now, inside in plan.comparison()
+        ]
+        if plan.warnings:
+            lines += [""] + [f"⚠ {warning}" for warning in plan.warnings]
+        lines += ["", "התיקייה הנוכחית תוזז הצידה ולא תימחק. להמשיך?"]
+
+        box = QMessageBox(self)
+        box.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
+        box.setWindowTitle("שחזור מגיבוי")
+        box.setText("\n".join(lines))
+        box.setStandardButtons(
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        box.setDefaultButton(QMessageBox.StandardButton.No)
+        if box.exec() != QMessageBox.StandardButton.Yes:
+            return
+
+        try:
+            root, aside = restore(Path(chosen))
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "השחזור נכשל")
+            return
+
+        self.status(
+            f"שוחזר אל {root}"
+            + (f" · הנתונים הקודמים ב-{aside}" if aside else "")
+            + " — סגרו ופתחו את התוכנה"
+        )
+        self.show_backups()
+
     # -- comparison ------------------------------------------------------------ #
     def _build_comparison(self) -> None:
         if self._compare_built:
@@ -5402,8 +5725,137 @@ class AccountsPage(Page):
         tabs.addTab(self._purchasing_tab(), "רכש")
         tabs.addTab(self._ledger_tab(), "ספר חשבונות")
         tabs.addTab(self._planning_tab(), "קיבולת")
+        tabs.addTab(self._currency_tab(), "מטבע חוץ")
         self.body.addWidget(tabs, 1)
         self.tabs = tabs
+
+    # -- currency -------------------------------------------------------------- #
+    def _currency_tab(self) -> QWidget:
+        """Rates the shop typed, with the date and where each came from.
+
+        Profiles, hardware and machinery are bought in euros and dollars and
+        sold in shekels. A quotation held for ninety days on a rate somebody
+        remembered is a quotation whose margin is decided by the currency
+        market. Nothing here is fetched from anywhere: a rate exists because
+        somebody entered it and named its source, or it does not exist.
+        """
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, METRICS.space(3), 0, 0)
+        layout.setSpacing(METRICS.space(3))
+
+        from ..erp.currency import CURRENCIES, HOME, STALE_DAYS
+
+        card = Card("רישום שער")
+        row = QHBoxLayout()
+        row.setSpacing(METRICS.space(3))
+
+        self.fx_currency = QComboBox()
+        for code, hebrew in CURRENCIES.items():
+            if code != HOME:
+                self.fx_currency.addItem(f"{hebrew} ({code})", code)
+
+        self.fx_rate = QDoubleSpinBox()
+        self.fx_rate.setRange(0.0001, 999.0)
+        self.fx_rate.setDecimals(4)
+        self.fx_rate.setSuffix(" ₪")
+
+        self.fx_source = QLineEdit()
+        self.fx_source.setPlaceholderText("בנק ישראל / חשבונית הספק / הבנק")
+
+        for label, widget in [
+            ("מטבע", self.fx_currency), ("שקלים ליחידה", self.fx_rate),
+            ("מקור", self.fx_source),
+        ]:
+            caption = QLabel(label)
+            caption.setObjectName("FieldLabel")
+            row.addWidget(caption)
+            row.addWidget(widget, 1 if widget is self.fx_source else 0)
+
+        record = QPushButton("רשום שער")
+        record.setObjectName("Primary")
+        record.clicked.connect(self.record_rate)
+        row.addWidget(record)
+        card.add_layout(row)
+
+        self.fx_result = QLabel("—")
+        self.fx_result.setObjectName("StatLabel")
+        card.add(self.fx_result)
+        layout.addWidget(card)
+
+        self.fx_table = DataTable(
+            ["מטבע", "שער", "תאריך", "גיל", "מקור", "מצב"],
+            empty_text="לא נרשם אף שער — אי אפשר לתמחר רכש במטבע זר",
+        )
+        layout.addWidget(self.fx_table, 1)
+
+        note = QLabel(
+            "שער בלי מקור ובלי תאריך אינו שער אלא זיכרון. שער בן יותר "
+            f"מ-⁦{STALE_DAYS}⁩ ימים מסומן ישן, וכל תמחור שנשען עליו נושא "
+            "אזהרה עד שהוא מתעדכן."
+        )
+        note.setObjectName("Hint")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+
+        self._ratebook = None
+        self.show_rates()
+        return page
+
+    def _rates(self):
+        if self._ratebook is None:
+            from ..erp.currency import default_rates
+
+            self._ratebook = default_rates()
+        return self._ratebook
+
+    def record_rate(self) -> None:
+        from datetime import date as _date
+
+        from ..erp.currency import Rate
+
+        try:
+            rate = self._rates().record(Rate(
+                currency=self.fx_currency.currentData(),
+                per_unit=self.fx_rate.value(),
+                on=_date.today(),
+                source=self.fx_source.text().strip(),
+            ))
+        except Exception as exc:  # noqa: BLE001
+            self.fx_result.setText(str(exc))
+            self.fx_result.setStyleSheet(f"color: {self.colours.danger};")
+            return
+
+        self.fx_result.setText(rate.describe())
+        self.fx_result.setStyleSheet(f"color: {self.colours.success};")
+        self.show_rates()
+
+    def show_rates(self) -> None:
+        from ..erp.currency import CURRENCIES
+
+        book = self._rates()
+        rows: list[list[Any]] = []
+        colours: dict[tuple[int, int], str] = {}
+        index = 0
+        for code in book.currencies():
+            for rate in book.history(code)[:6]:
+                if rate.is_stale():
+                    state, tone = "ישן", self.colours.warning
+                elif not rate.is_sourced:
+                    state, tone = "בלי מקור", self.colours.warning
+                else:
+                    state, tone = "תקף", self.colours.success
+                rows.append([
+                    f"{CURRENCIES.get(code, code)} ({code})",
+                    f"⁦{rate.per_unit:.4f}⁩ ₪",
+                    rate.on.strftime("%d/%m/%Y"),
+                    f"⁦{rate.age()}⁩ ימים",
+                    rate.source or "—",
+                    state,
+                ])
+                colours[(index, 5)] = tone
+                index += 1
+        self.fx_table.set_rows(rows, colours=colours)
 
     # -- shared company ------------------------------------------------------- #
     def _company(self):

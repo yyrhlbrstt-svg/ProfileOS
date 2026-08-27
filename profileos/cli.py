@@ -67,6 +67,11 @@ finish_app = typer.Typer(help="Anodising and paint, on the area a bath reaches."
 files_app = typer.Typer(help="The photographs and papers kept with a job.")
 hw_app = typer.Typer(help="Hardware chosen by what the sash weighs.")
 import_app = typer.Typer(help="Bring across what the shop already has.")
+backup_app = typer.Typer(help="A copy of the shop, in one file.")
+time_app = typer.Typer(help="Hours actually worked, against the job.")
+fx_app = typer.Typer(help="Buying in euros, selling in shekels.")
+count_app = typer.Typer(help="Counting the racks, and posting the difference.")
+report_app = typer.Typer(help="The numbers the owner asks for on a Sunday.")
 
 app.add_typer(geometry_app, name="section")
 app.add_typer(nest_app, name="nest")
@@ -98,6 +103,11 @@ app.add_typer(finish_app, name="finish")
 app.add_typer(files_app, name="files")
 app.add_typer(hw_app, name="hardware")
 app.add_typer(import_app, name="import")
+app.add_typer(backup_app, name="backup")
+app.add_typer(time_app, name="time")
+app.add_typer(fx_app, name="fx")
+app.add_typer(count_app, name="stocktake")
+app.add_typer(report_app, name="report")
 
 
 # --------------------------------------------------------------------------- #
@@ -3491,6 +3501,525 @@ def systems_confirmed() -> None:
             confirmation.entered_on,
         )
     console.print(table)
+
+
+@time_app.command("book")
+def time_book(
+    person: str = typer.Argument(..., help="Who did the work."),
+    job_id: str = typer.Argument(..., help="Which job."),
+    hours: str = typer.Argument(..., help="Hours, or a span like 07:30-16:15."),
+    operation: str = typer.Option("", "--operation", "-o"),
+    rate: float = typer.Option(0.0, "--rate", help="Hourly cost to the shop."),
+    rework: bool = typer.Option(False, "--rework", help="Time spent doing it twice."),
+    on: str = typer.Option("", "--on", help="Date YYYY-MM-DD; default today."),
+) -> None:
+    """Book hours against a job."""
+    from datetime import date as _date
+
+    from .erp.timesheets import default_timebook, minutes_between
+
+    if "-" in hours and ":" in hours:
+        start, _, end = hours.partition("-")
+        minutes = minutes_between(start, end)
+    else:
+        try:
+            minutes = int(round(float(hours) * 60))
+        except ValueError:
+            _fail(f"Could not read {hours!r} as hours or a span like 07:30-16:15.")
+
+    book = default_timebook()
+    try:
+        entry = book.book(
+            person, job_id, minutes, operation=operation, rate=rate,
+            rework=rework, on=_date.fromisoformat(on) if on else None,
+        )
+    except Exception as exc:  # noqa: BLE001
+        _fail(str(exc))
+    console.print(f"[green]{entry.describe()}[/green]")
+    console.print(f"[dim]{book.hours_on_job(job_id):.2f} hours on {job_id} so far[/dim]")
+
+
+@time_app.command("job")
+def time_job(
+    job_id: str = typer.Argument(..., help="The job to look at."),
+    estimate: float = typer.Option(0.0, "--estimate", help="Hours it was quoted at."),
+) -> None:
+    """Where the hours on one job went, and how that compares with the quote."""
+    from .erp.timesheets import default_timebook
+
+    book = default_timebook()
+    if not book.for_job(job_id):
+        console.print(f"[yellow]No hours booked against {job_id}.[/yellow]")
+        return
+
+    report = book.against_estimate(job_id, estimate)
+    table = Table(title=f"{job_id} — hours", header_style="dim")
+    table.add_column("What", style="cyan")
+    table.add_column("Value", justify="right")
+    for label, value in (
+        ("Booked", f"{report['actual_hours']:.2f} h"),
+        ("Quoted at", f"{report['estimated_hours']:.2f} h" if estimate else "-"),
+        ("Difference", f"{report['difference_hours']:+.2f} h" if estimate else "-"),
+        ("Rework", f"{report['rework_pct']:.0f}%"),
+        ("Cost", f"{book.cost_of_job(job_id):,.2f}"),
+    ):
+        table.add_row(label, value)
+    console.print(table)
+
+    operations = Table(header_style="dim")
+    operations.add_column("Operation", style="cyan")
+    operations.add_column("Hours", justify="right")
+    for name, value in report["by_operation"].items():
+        operations.add_row(name, f"{value:.2f}")
+    console.print(operations)
+
+    if estimate:
+        console.print(f"[cyan]{report['verdict']}[/cyan]")
+
+
+@time_app.command("week")
+def time_week(
+    start: str = typer.Option("", "--from", help="First day YYYY-MM-DD."),
+) -> None:
+    """Everybody's hours for a week."""
+    from datetime import date as _date, timedelta
+
+    from .erp.timesheets import default_timebook
+
+    first = _date.fromisoformat(start) if start else _date.today() - timedelta(days=6)
+    last = first + timedelta(days=6)
+    book = default_timebook()
+    totals = book.by_person(first, last)
+    if not totals:
+        console.print(f"[yellow]No hours booked {first} to {last}.[/yellow]")
+        return
+
+    table = Table(title=f"{first:%d/%m} - {last:%d/%m}", header_style="dim")
+    table.add_column("Person", style="cyan")
+    table.add_column("Hours", justify="right")
+    for person, value in sorted(totals.items(), key=lambda pair: -pair[1]):
+        table.add_row(person, f"{value:.2f}")
+    console.print(table)
+    console.print(f"[dim]{sum(totals.values()):.2f} hours in total[/dim]")
+
+
+@fx_app.command("set")
+def fx_set(
+    currency: str = typer.Argument(..., help="EUR, USD, GBP."),
+    per_unit: float = typer.Argument(..., help="Shekels for one unit."),
+    source: str = typer.Option(..., "--source", help="Where the rate came from."),
+    on: str = typer.Option("", "--on", help="Date YYYY-MM-DD; default today."),
+) -> None:
+    """Record an exchange rate, with the date and the source it came from."""
+    from datetime import date as _date
+
+    from .erp.currency import Rate, default_rates
+
+    book = default_rates()
+    try:
+        rate = book.record(Rate(
+            currency=currency.upper(), per_unit=per_unit,
+            on=_date.fromisoformat(on) if on else _date.today(),
+            source=source,
+        ))
+    except Exception as exc:  # noqa: BLE001
+        _fail(str(exc))
+    console.print(f"[green]{rate.describe()}[/green] — {rate.source}")
+
+
+@fx_app.command("rates")
+def fx_rates() -> None:
+    """Every rate the shop has recorded."""
+    from .erp.currency import CURRENCIES, default_rates
+
+    book = default_rates()
+    if not len(book):
+        console.print("[yellow]No exchange rates recorded.[/yellow]")
+        console.print("[dim]profileos fx set EUR 4.05 --source 'bank'[/dim]")
+        return
+
+    table = Table(title="Exchange rates", header_style="dim")
+    table.add_column("Currency", style="cyan")
+    table.add_column("Shekels per unit", justify="right")
+    table.add_column("On")
+    table.add_column("Age", justify="right")
+    table.add_column("Source")
+    for currency in book.currencies():
+        rate = book.latest(currency)
+        age = rate.age()
+        table.add_row(
+            f"{currency} — {CURRENCIES.get(currency, '')}",
+            f"{rate.per_unit:.4f}", rate.on.strftime("%d/%m/%Y"),
+            f"[yellow]{age} d[/yellow]" if rate.is_stale() else f"{age} d",
+            rate.source or "[yellow]not recorded[/yellow]",
+        )
+    console.print(table)
+
+
+@fx_app.command("convert")
+def fx_convert(
+    amount: float = typer.Argument(..., help="How much."),
+    currency: str = typer.Argument(..., help="In which currency."),
+    on: str = typer.Option("", "--on", help="At the rate of this date."),
+) -> None:
+    """Convert a figure into shekels at the rate that applied on a date."""
+    from datetime import date as _date
+
+    from .erp.currency import default_rates
+
+    conversion = default_rates().convert(
+        amount, currency.upper(), on=_date.fromisoformat(on) if on else None
+    )
+    console.print(f"[cyan]{conversion.describe()}[/cyan]")
+    for warning in conversion.warnings:
+        console.print(f"[yellow]{warning}[/yellow]")
+
+
+@backup_app.command("write")
+def backup_write(
+    destination: Optional[Path] = typer.Argument(None, help="Folder or .zip path."),
+    keep: int = typer.Option(14, "--keep", help="How many backups to keep there."),
+) -> None:
+    """Write one dated copy of everything the shop's folder holds."""
+    from .core.backup import (
+        default_backup_folder, prune, read_manifest, write_backup,
+    )
+
+    folder = destination or default_backup_folder()
+    try:
+        archive = write_backup(folder)
+    except Exception as exc:  # noqa: BLE001
+        _fail(str(exc))
+
+    manifest = read_manifest(archive)
+    console.print(f"[green]{archive}[/green]")
+    console.print(f"[dim]{manifest.describe()}[/dim]")
+
+    table = Table(header_style="dim")
+    table.add_column("What", style="cyan")
+    table.add_column("Count", justify="right")
+    for label, value in manifest.summary_rows():
+        table.add_row(label, value)
+    console.print(table)
+
+    if keep > 0 and archive.parent.is_dir():
+        removed = prune(archive.parent, keep=keep)
+        if removed:
+            console.print(f"[dim]Removed {len(removed)} older backup(s).[/dim]")
+
+
+@backup_app.command("list")
+def backup_list(
+    folder: Optional[Path] = typer.Argument(None, help="Where the backups are."),
+) -> None:
+    """Every backup in a folder, newest first."""
+    from .core.backup import default_backup_folder, list_backups
+
+    where = folder or default_backup_folder()
+    if not Path(where).is_dir():
+        console.print(f"[yellow]No backup folder at {where}.[/yellow]")
+        console.print("[dim]profileos backup write[/dim]")
+        return
+
+    found = list_backups(where)
+    if not found:
+        console.print(f"[yellow]No backups in {where}.[/yellow]")
+        return
+
+    table = Table(title=f"Backups in {where}", header_style="dim")
+    table.add_column("File", style="cyan")
+    table.add_column("Created")
+    table.add_column("Version")
+    table.add_column("Files", justify="right")
+    table.add_column("Size", justify="right")
+    for path, manifest in found:
+        table.add_row(
+            path.name, manifest.created[:16].replace("T", " "), manifest.version,
+            str(manifest.files), f"{manifest.bytes / 1_048_576:.1f} MB",
+        )
+    console.print(table)
+
+
+@backup_app.command("restore")
+def backup_restore(
+    archive: Path = typer.Argument(..., help="The backup to restore."),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Do not ask."),
+) -> None:
+    """Restore a backup, keeping the current folder aside rather than deleting it."""
+    from .core.backup import plan_restore, restore as run_restore
+
+    try:
+        plan = plan_restore(archive)
+    except Exception as exc:  # noqa: BLE001
+        _fail(str(exc))
+
+    console.print(f"[cyan]{plan.describe()}[/cyan]")
+    table = Table(header_style="dim")
+    table.add_column("What", style="cyan")
+    table.add_column("Now", justify="right")
+    table.add_column("In the backup", justify="right")
+    for label, current, inside in plan.comparison():
+        table.add_row(label, current, inside)
+    console.print(table)
+    for warning in plan.warnings:
+        console.print(f"[yellow]{warning}[/yellow]")
+
+    if not yes and not typer.confirm("Restore this backup?"):
+        console.print("[dim]Nothing was changed.[/dim]")
+        raise typer.Exit(code=1)
+
+    root, aside = run_restore(archive)
+    console.print(f"[green]Restored into {root}[/green]")
+    if aside:
+        console.print(
+            f"[dim]The folder that was there is at {aside} — move it back to "
+            f"undo this.[/dim]"
+        )
+
+
+# --------------------------------------------------------------------------- #
+# Stocktake
+# --------------------------------------------------------------------------- #
+def _stock_ledger():
+    """The shop's stock book, however this installation holds it."""
+    from .erp import company_for_brand
+
+    company = company_for_brand()
+    ledger = getattr(company, "stock", None)
+    if ledger is None:
+        _fail("This installation has no stock book yet.")
+    return company, ledger
+
+
+@count_app.command("open")
+def stocktake_open(
+    scope: str = typer.Option("", "--scope", help="What this count covers."),
+    by: str = typer.Option("", "--by", help="Who opened it."),
+    sheet: Optional[Path] = typer.Option(
+        None, "--sheet", help="Write the count sheet here as CSV."
+    ),
+) -> None:
+    """Freeze what the book claims, as a sheet to carry to the racks."""
+    import csv
+
+    from .erp.stocktake import default_stocktakes, open_stocktake
+
+    _company, ledger = _stock_ledger()
+    take = open_stocktake(ledger, scope=scope, by=by)
+    default_stocktakes().add(take)
+
+    console.print(f"[green]{take.sheet_id}[/green] — {len(take)} lines")
+    if sheet is not None:
+        # windows-1255 with a BOM-less UTF-8 fallback: the sheet gets opened in
+        # whatever the office has, and a count sheet full of question marks is
+        # a count that does not happen.
+        with Path(sheet).open("w", newline="", encoding="utf-8-sig") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(take.COUNT_SHEET_HEADERS)
+            writer.writerows(take.count_sheet_rows())
+        console.print(f"[dim]{sheet}[/dim]")
+
+
+@count_app.command("enter")
+def stocktake_enter(
+    sheet_id: str = typer.Argument(..., help="Which sheet."),
+    code: str = typer.Argument(..., help="Item code."),
+    counted: float = typer.Argument(..., help="What was actually found."),
+    by: str = typer.Option("", "--by"),
+) -> None:
+    """Write a counted quantity against one line."""
+    from .erp.stocktake import default_stocktakes
+
+    book = default_stocktakes()
+    take = book.get(sheet_id)
+    try:
+        line = take.enter(code, counted, by=by)
+    except Exception as exc:  # noqa: BLE001
+        _fail(str(exc))
+    book.save()
+    console.print(line.describe())
+
+
+@count_app.command("show")
+def stocktake_show(
+    sheet_id: str = typer.Argument(..., help="Which sheet."),
+) -> None:
+    """What the sheet says so far."""
+    from .erp.stocktake import default_stocktakes
+
+    take = default_stocktakes().get(sheet_id)
+    console.print(take.describe())
+
+    table = Table(header_style="dim")
+    for heading in ("Code", "Book", "Counted", "Difference", "Value"):
+        table.add_column(heading, justify="right" if heading != "Code" else "left")
+    for line in take.differences:
+        table.add_row(
+            line.code, f"{line.book:g}", f"{line.counted:g}",
+            f"{line.difference:+g}", f"{line.value_difference:,.2f}",
+        )
+    if take.differences:
+        console.print(table)
+    for warning in take.warnings():
+        console.print(f"[yellow]{warning}[/yellow]")
+
+
+@count_app.command("post")
+def stocktake_post(
+    sheet_id: str = typer.Argument(..., help="Which sheet."),
+    by: str = typer.Option("", "--by"),
+    yes: bool = typer.Option(False, "--yes", help="Post without confirming."),
+) -> None:
+    """Bring the book into line with what was counted. Counted lines only."""
+    from .erp.stocktake import default_stocktakes
+
+    book = default_stocktakes()
+    take = book.get(sheet_id)
+    for warning in take.warnings():
+        console.print(f"[yellow]{warning}[/yellow]")
+    if not yes and not typer.confirm(
+        f"Post {len(take.counted)} counted lines, {take.net_value:,.2f} value change?"
+    ):
+        raise typer.Abort()
+
+    _company, ledger = _stock_ledger()
+    try:
+        movements = take.post(ledger, by=by)
+    except Exception as exc:  # noqa: BLE001
+        _fail(str(exc))
+    book.save()
+    console.print(
+        f"[green]{len(movements)} movements written, "
+        f"{take.net_value:,.2f} value change[/green]"
+    )
+
+
+@count_app.command("list")
+def stocktake_list() -> None:
+    """Every count sheet, newest first."""
+    from .erp.stocktake import default_stocktakes
+
+    book = default_stocktakes()
+    if not len(book):
+        console.print("[dim]No stocktakes yet.[/dim]")
+        return
+    table = Table(header_style="dim")
+    for heading in ("Sheet", "Opened", "Scope", "State", "Counted", "Accuracy"):
+        table.add_column(heading)
+    for take in book:
+        table.add_row(
+            take.sheet_id, take.opened.isoformat(), take.scope or "—",
+            take.status.value, f"{len(take.counted)}/{len(take)}",
+            f"{take.accuracy:.0f}%" if take.counted else "—",
+        )
+    console.print(table)
+
+
+# --------------------------------------------------------------------------- #
+# Reports
+# --------------------------------------------------------------------------- #
+def _all_jobs():
+    from .projects import default_store
+
+    return list(default_store().all())
+
+
+@report_app.command("sales")
+def report_sales(
+    of_year: int = typer.Option(0, "--year", help="Which year; default this one."),
+) -> None:
+    """Quoted, ordered and lost, with the win rate both ways."""
+    from datetime import date as _date
+
+    from . import reports
+
+    which = of_year or _date.today().year
+    report = reports.sales(_all_jobs(), reports.year(which))
+    console.print(report.describe())
+
+    table = Table(header_style="dim")
+    for heading in ("What", "Jobs", "Value"):
+        table.add_column(heading)
+    for row in report.rows():
+        table.add_row(*row)
+    console.print(table)
+
+    for figure in (report.win_rate(), report.value_win_rate(), report.average_order()):
+        console.print(f"[cyan]{figure.label}[/cyan]: {figure.format()}")
+    for warning in report.warnings():
+        console.print(f"[yellow]{warning}[/yellow]")
+
+
+@report_app.command("months")
+def report_months(
+    of_year: int = typer.Option(0, "--year"),
+) -> None:
+    """A year as twelve rows, so it reads as a shape rather than a total."""
+    from datetime import date as _date
+
+    from . import reports
+
+    which = of_year or _date.today().year
+    table = Table(header_style="dim", title=f"{which}")
+    for heading in ("Month", "Quoted", "Value", "Won", "Value", "Win %"):
+        table.add_column(heading)
+    for row in reports.by_month(_all_jobs(), which):
+        table.add_row(
+            row["label"], str(row["quoted"]), f"{row['quoted_value']:,.0f}",
+            str(row["won"]), f"{row['won_value']:,.0f}",
+            f"{row['win_rate_pct']:.0f}",
+        )
+    console.print(table)
+
+
+@report_app.command("customers")
+def report_customers(
+    limit: int = typer.Option(20, "--limit"),
+) -> None:
+    """Every customer, best first by what they have actually ordered."""
+    from . import reports
+
+    lines = reports.by_customer(_all_jobs())
+    if not lines:
+        console.print("[dim]No customers yet.[/dim]")
+        return
+    table = Table(header_style="dim")
+    for heading in ("Customer", "Jobs", "Won", "Lost", "Value", "Win %", "Margin"):
+        table.add_column(heading)
+    for line in lines[:limit]:
+        table.add_row(
+            line.name or "—", str(line.jobs), str(line.won), str(line.lost),
+            f"{line.value:,.0f}", f"{line.win_rate:.0f}",
+            "—" if line.margin is None else f"{line.margin:.1f}%",
+        )
+    console.print(table)
+    console.print(
+        "[dim]A margin of — means nothing was ever costed against that "
+        "customer's jobs, which is not the same as no margin.[/dim]"
+    )
+
+
+@report_app.command("pipeline")
+def report_pipeline() -> None:
+    """Live work by stage, and what has passed its date."""
+    from . import reports
+
+    live = reports.pipeline(_all_jobs())
+    console.print(live.describe())
+
+    table = Table(header_style="dim")
+    for heading in ("Stage", "Jobs", "Value"):
+        table.add_column(heading)
+    for row in live.rows():
+        table.add_row(*row)
+    console.print(table)
+
+    for job_id, name, days in live.overdue[:10]:
+        console.print(f"[red]{job_id} {name} — {days} days late[/red]")
+    for job_id, name, days in live.due_this_week[:10]:
+        console.print(f"[yellow]{job_id} {name} — due in {days} days[/yellow]")
+    if live.undated:
+        console.print(f"[dim]{live.undated} open jobs have no due date.[/dim]")
 
 
 @app.command()
