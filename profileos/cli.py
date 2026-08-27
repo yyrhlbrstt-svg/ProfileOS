@@ -4082,6 +4082,84 @@ def erp_purchase_order(
         console.print(f"[yellow]{problem}[/yellow]")
 
 
+@element_app.command("shape")
+def element_shape(
+    shape: str = typer.Argument(
+        ..., help="rectangle | raked | triangle | arched | half_round | circle"
+    ),
+    width: float = typer.Argument(..., help="Width [mm]."),
+    height: float = typer.Argument(..., help="Height [mm]; left height if raked."),
+    height_right: float = typer.Option(
+        0.0, "--height-right", help="Right-hand height of a raked opening [mm]."
+    ),
+    rise: float = typer.Option(
+        0.0, "--rise", help="Arch rise above the springing [mm]."
+    ),
+    min_radius: float = typer.Option(
+        0.0, "--min-radius", help="Smallest radius the profile bends to [mm]."
+    ),
+    grip: float = typer.Option(
+        0.0, "--grip", help="Straight length the bender grips at each end [mm]."
+    ),
+    source: str = typer.Option(
+        "", "--bend-source", help="Where the bending figures came from."
+    ),
+    min_mitre: float = typer.Option(
+        22.5, "--min-mitre", help="Smallest angle the saw will swing [deg]."
+    ),
+) -> None:
+    """Work out a shaped opening: real area, members, corners and cuts."""
+    from .elements.shapes import Bending, outline
+
+    bending = Bending(
+        minimum_radius=min_radius or None,
+        grip_allowance=grip if grip or min_radius else None,
+        source=source,
+    )
+    try:
+        shaped = outline(
+            shape, width=width, height=height,
+            height_right=height_right or None, rise=rise or None,
+            bending=bending, min_mitre=min_mitre,
+        )
+    except Exception as exc:  # noqa: BLE001
+        _fail(str(exc))
+
+    console.print(shaped.describe())
+
+    table = Table(header_style="dim")
+    for heading in ("What", "Length", "Start", "End", "Radius", "Note"):
+        table.add_column(heading)
+    for member in shaped.members:
+        table.add_row(
+            member.role,
+            f"{member.length:.1f}" if member.is_orderable else "—",
+            "—" if member.is_curved else f"{member.angle_start:g}",
+            "—" if member.is_curved else f"{member.angle_end:g}",
+            f"{member.radius:.0f}" if member.radius else "—",
+            member.note,
+        )
+    console.print(table)
+
+    corners = Table(header_style="dim")
+    for heading in ("Corner", "Included", "Mitre each side"):
+        corners.add_column(heading)
+    for corner in shaped.corners:
+        corners.add_row(
+            corner.name, f"{corner.included:.2f}", f"{corner.mitre:.2f}"
+        )
+    if shaped.corners:
+        console.print(corners)
+
+    for warning in shaped.warnings:
+        console.print(f"[yellow]{warning}[/yellow]")
+    if not shaped.is_orderable:
+        console.print(
+            "[red]Not orderable: a bar cut to a guessed developed length is a "
+            "bar in the skip.[/red]"
+        )
+
+
 @app.command()
 def ifc(
     job_id: str = typer.Argument(..., help="Which job's openings to export."),

@@ -415,6 +415,7 @@ class ElevationView(CanvasView):
     def __init__(self, palette: Palette = DARK, parent: QWidget | None = None) -> None:
         super().__init__(palette, parent)
         self._build: Any = None
+        self._shape_clip: Any = None
         self.show_dimensions = True
         self.show_grid = False
 
@@ -444,17 +445,48 @@ class ElevationView(CanvasView):
         rules = build.rules
         rects = ElementBuilder().cell_rects(opening, rules)
 
-        # Outer frame.
-        outer = QRectF(self.to_screen(0, opening.height), self.to_screen(opening.width, 0))
+        # Outer frame. A shaped opening is drawn as its real outline, because
+        # a gable or an arch drawn as the box it fits inside is a drawing that
+        # gets approved and then made wrong.
+        shaped = getattr(opening, "outline", None)
         painter.setBrush(QBrush(_colour(palette.draw_frame, 130)))
         painter.setPen(QPen(_colour(palette.draw_material_edge), 1.8))
-        painter.drawRect(outer)
+        if shaped is not None and shaped.points:
+            path = QPainterPath()
+            first = True
+            for x, y in shaped.points:
+                point = self.to_screen(x, y)
+                if first:
+                    path.moveTo(point)
+                    first = False
+                else:
+                    path.lineTo(point)
+            path.closeSubpath()
+            painter.drawPath(path)
+            self._shape_clip = path
+        else:
+            outer = QRectF(
+                self.to_screen(0, opening.height),
+                self.to_screen(opening.width, 0),
+            )
+            painter.drawRect(outer)
+            self._shape_clip = None
 
+        if self._shape_clip is not None:
+            painter.save()
+            painter.setClipPath(self._shape_clip)
         for cell in opening.all_cells():
             rect = rects.get(cell.key)
             if rect is None or rect.width <= 0 or rect.height <= 0:
                 continue
             self._paint_cell(painter, build, cell, rect, rules)
+        if self._shape_clip is not None:
+            painter.restore()
+            # Re-draw the outline over the cells so the shape reads as the
+            # frame rather than as a mask sitting on top of a grid.
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.setPen(QPen(_colour(palette.draw_material_edge), 2.2))
+            painter.drawPath(self._shape_clip)
 
         if self.show_dimensions:
             self._paint_dimensions(painter, opening)

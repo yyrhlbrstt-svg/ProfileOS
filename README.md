@@ -101,6 +101,16 @@ between one profile system and another.
 Safety-glass regulation is enforced: door leaves, low sills and large panes are
 flagged when the specified build-up is not safety glass.
 
+### Shaped openings — `profileos.elements.shapes`
+Arched, half-round, circular, raked and gable openings with their **real**
+enclosed area rather than the bounding box — a gable priced on its box is
+priced at twice what it is. Each corner's included angle and the mitre the saw
+must swing, refused by name where it lies outside the machine's range. A curved
+member gets no orderable length at all until somebody has confirmed the
+profile's minimum bend radius and the bender's grip allowance: a bar cut to a
+guessed developed length is a bar in the skip, and a bent one costs four times
+as much to guess at.
+
 ### Glazing — `profileos.glazing`
 EN 673 centre-pane U-values — radiative plus gas conductance per cavity, so a
 low-E coating shows its real effect. Verified against published figures:

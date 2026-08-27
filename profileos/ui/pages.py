@@ -1579,6 +1579,34 @@ class ElementPage(Page):
         self.sill_height = QDoubleSpinBox(); self.sill_height.setRange(0, 100000)
         self.sill_height.setValue(900); self.sill_height.setSuffix(" mm")
 
+        # Most openings are rectangles. The ones that are not are the ones a
+        # customer remembers and a competitor wins, and pricing them on the
+        # bounding box is how a gable ends up quoted at twice what it is.
+        self.shape = QComboBox()
+        from ..elements.shapes import Shape as _Shape
+
+        for entry in _Shape:
+            self.shape.addItem(entry.hebrew, entry.value)
+        self.shape.currentIndexChanged.connect(self._shape_changed)
+
+        self.height_right = QDoubleSpinBox()
+        self.height_right.setRange(0, 6000)
+        self.height_right.setSuffix(" mm")
+        self.height_right.setSpecialValueText("—")
+        self.height_right.setToolTip(
+            "גובה הצד הימני בפתח משופע. הגובה הרגיל הוא הצד השמאלי."
+        )
+
+        self.rise = QDoubleSpinBox()
+        self.rise.setRange(0, 4000)
+        self.rise.setSuffix(" mm")
+        self.rise.setSpecialValueText("—")
+        self.rise.setToolTip(
+            "גובה הקשת מעל קו הזינוק — לא הגובה הכולל, שהוא הזינוק ועוד "
+            "גובה הקשת."
+        )
+        self._shape_changed()
+
         # Where it is fitted. Two small fields, and they are what turns a pile
         # of finished units into a loading list somebody can work from.
         self.location = QLineEdit()
@@ -1641,6 +1669,8 @@ class ElementPage(Page):
             ("גובה", self.height), ("כמות", self.quantity), ("עמודות", self.columns),
             ("שורות", self.rows), ("עמודת כנף", self.sash_column), ("שורת כנף", self.sash_row),
             ("סוג פתיחה", self.sash_type), ("גובה סף", self.sill_height),
+            ("צורה", self.shape), ("גובה ימין", self.height_right),
+            ("גובה קשת", self.rise),
             ("סדרה", self.system), ("זכוכית", self.glass),
             ("תריס", self.shutter), ("רשת", self.screen), ("אדן", self.sill),
             ("מיקום", self.location), ("קומה", self.floor),
@@ -1874,6 +1904,18 @@ class ElementPage(Page):
             self.status(
                 f"שים לב: {template.price_line()}"
             )
+
+    def _shape_changed(self) -> None:
+        """Only ask for the figures the chosen shape actually needs."""
+        from ..elements.shapes import Shape as _Shape
+
+        chosen = _Shape(self.shape.currentData() or "rectangle")
+        self.height_right.setEnabled(chosen is _Shape.RAKED)
+        self.rise.setEnabled(chosen is _Shape.ARCHED)
+        if chosen is not _Shape.RAKED:
+            self.height_right.setValue(0.0)
+        if chosen is not _Shape.ARCHED:
+            self.rise.setValue(0.0)
 
     def next_mark(self, kind: str) -> str:
         """The next free mark for this kind of opening in this job."""
@@ -2132,6 +2174,9 @@ class ElementPage(Page):
                 quantity=self.quantity.value(),
                 glass_spec_id=self.glass.currentData(),
                 system_id=self.system.currentData() or "generic",
+                shape=self.shape.currentData() or "rectangle",
+                height_right=self.height_right.value() or None,
+                rise=self.rise.value() or None,
             )
             opening.metadata["accessories"] = self._fittings()
             if self.location.text().strip() or self.floor.value():
@@ -2190,15 +2235,32 @@ class ElementPage(Page):
         self.hardware.set_rows(
             [[h.code, h.name, h.quantity, h.unit] for h in build.hardware], numeric_columns=(2,)
         )
-        self.warnings.setPlainText(
-            "\n".join(f"• {w}" for w in build.warnings) or "אין אזהרות."
-        )
+        # A shaped opening carries its own geometry findings: the real area
+        # against the box it was probably priced on, the corner angles the saw
+        # has to swing, and — for anything curved — the fact that nobody has
+        # confirmed what the profile will bend to.
+        notes = [f"• {w}" for w in build.warnings]
+        shaped = opening.outline
+        if shaped is not None:
+            notes.insert(0, f"• {shaped.describe()}")
+            for member in shaped.members:
+                notes.append(f"  – {member.describe()}")
+            notes += [f"• {w}" for w in shaped.warnings]
+            from ..elements.shapes import SHAPED_GLASS_NOTE
+
+            notes.append(f"• {SHAPED_GLASS_NOTE}")
+        self.warnings.setPlainText("\n".join(notes) or "אין אזהרות.")
         self.show_feasibility(build)
         self.show_accessories(build)
         self.show_performance(build)
         self.show_hardware_check(build)
+        shape_note = (
+            f"{shaped.shape.hebrew} · שטח \u2066{shaped.area:.3f}\u2069 מ״ר · "
+            if shaped is not None else ""
+        )
         self.header.set_subtitle(
             f"{opening.name}: \u2066{opening.width:.0f} × {opening.height:.0f}\u2069 מ״מ · "
+            f"{shape_note}"
             f"רשת \u2066{opening.column_count}×{opening.row_count}\u2069 · "
             f"{len(self.session.builds)} פתחים בפרויקט"
         )

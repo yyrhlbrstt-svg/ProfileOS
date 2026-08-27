@@ -260,9 +260,13 @@ def order_from_builds(
 
     from ..elements.feasibility import hebrew_safety_reason
 
+    shaped_marks: list[str] = []
+
     for build in builds:
         element = getattr(build, "opening", None) or getattr(build, "element", None)
         prefix = str(getattr(element, "name", "") or "")
+        if getattr(element, "is_shaped", False):
+            shaped_marks.append(prefix or "—")
         # An element ordered four times needs four sets of panes. The builder
         # works out one element; the quantity lives on the opening, and losing
         # it here is a job that arrives three windows short.
@@ -305,6 +309,22 @@ def order_from_builds(
                     getattr(panel, "safety_reason", "")
                 ),
             ))
+
+    if shaped_marks:
+        # A glazier sent a width and a height for an arched head sends back a
+        # rectangle. Saying so on the order is cheaper than saying it after.
+        from ..elements.shapes import SHAPED_GLASS_NOTE
+
+        order.note = " · ".join(
+            part for part in (
+                order.note,
+                f"פתחים מעוצבים ({', '.join(sorted(set(shaped_marks)))}): "
+                + SHAPED_GLASS_NOTE,
+            ) if part
+        )
+        for pane in order.panes:
+            if any(pane.mark.startswith(mark) for mark in shaped_marks):
+                pane.note = (pane.note + " · " if pane.note else "") + "לפי תבנית"
 
     _log.info(
         "Glass order %s built for %s: %d panes, %.2f m2",

@@ -738,7 +738,6 @@ CAPABILITIES: tuple[Capability, ...] = (
         "on one carries the warning with it. Nothing is fetched: a rate "
         "exists because somebody entered it.",
         probe="profileos.erp.currency:RateBook",
-        differentiator=True,
     ),
     Capability(
         "stocktake", Area.ADJACENT,
@@ -748,7 +747,6 @@ CAPABILITIES: tuple[Capability, ...] = (
         "somebody actually counted — a blank is never posted as a zero. "
         "Shortage and surplus are reported apart rather than netted.",
         probe="profileos.erp.stocktake:open_stocktake",
-        differentiator=True,
     ),
     Capability(
         "management_reports", Area.ADJACENT,
@@ -780,7 +778,6 @@ CAPABILITIES: tuple[Capability, ...] = (
         "clears. A date that assumes something not yet in hand is printed as "
         "provisional, on the customer's copy.",
         probe="profileos.erp.order_confirmation:confirm_order",
-        differentiator=True,
     ),
     Capability(
         "piece_labels", Area.SHOPFLOOR,
@@ -815,7 +812,6 @@ CAPABILITIES: tuple[Capability, ...] = (
         "rounded into the batch, and no frame size is offered at all without "
         "a clearance from the catalogue.",
         probe="profileos.delivery.survey:survey_for_job",
-        differentiator=True,
     ),
     Capability(
         "glass_order", Area.GLASS,
@@ -828,7 +824,6 @@ CAPABILITIES: tuple[Capability, ...] = (
         "confirmed it prints the panes with the sizes blank, because an "
         "insulating unit cannot be recut.",
         probe="profileos.glazing.order:order_from_builds",
-        differentiator=True,
     ),
     Capability(
         "job_templates", Area.ELEMENTS,
@@ -853,7 +848,6 @@ CAPABILITIES: tuple[Capability, ...] = (
         "stated, because a warranty is a commercial promise and not a fact "
         "this software knows.",
         probe="profileos.delivery.handover:pack_from_job",
-        differentiator=True,
     ),
     Capability(
         "follow_ups", Area.COMMERCIAL,
@@ -864,7 +858,6 @@ CAPABILITIES: tuple[Capability, ...] = (
         "quoted but what was quoted and then forgotten — the open quotations "
         "nobody is chasing.",
         probe="profileos.projects.followups:TaskBook",
-        differentiator=True,
     ),
     Capability(
         "ifc_export", Area.PLATFORM,
@@ -887,7 +880,18 @@ CAPABILITIES: tuple[Capability, ...] = (
         "source is marked on the order itself, and a coating order is priced "
         "on the shop's own computed area so the coater's invoice is arguable.",
         probe="profileos.erp.po_document:document_from_order",
-        differentiator=True,
+    ),
+    Capability(
+        "shaped_openings", Area.ELEMENTS,
+        "Arched, raked and shaped openings", "פתחים מעוצבים: קשת, שיפוע, משולש",
+        "Arched, half-round, circular, raked and gable openings with their "
+        "real enclosed area rather than the bounding box — a gable priced on "
+        "its box is priced at twice what it is. Each corner's included angle "
+        "and the mitre the saw must swing, refused by name where it is "
+        "outside the machine's range. A curved member gets no orderable "
+        "length at all until somebody has confirmed the profile's minimum "
+        "bend radius and the bender's grip allowance.",
+        probe="profileos.elements.shapes:outline",
     ),
     Capability(
         "capacity_planning", Area.ADJACENT,

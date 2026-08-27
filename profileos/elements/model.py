@@ -143,6 +143,15 @@ class Opening(RoundTrips):
     height: float = Field(gt=0, description="Outer frame height [mm]")
     quantity: int = Field(default=1, ge=1)
 
+    #: Outline: most openings are rectangles, the memorable ones are not.
+    #: See :mod:`profileos.elements.shapes` for what each one implies.
+    shape: str = "rectangle"
+    #: Right-hand height of a raked opening [mm]; ``height`` is then the left.
+    height_right: float | None = Field(default=None, gt=0)
+    #: How far an arched head stands above its springing line [mm]. Not the
+    #: overall height — that is the springing plus the rise.
+    rise: float | None = Field(default=None, gt=0)
+
     #: Mullion centre positions, measured from the frame's inner left edge [mm].
     mullion_positions: list[float] = Field(default_factory=list)
     #: Transom centre positions, measured from the frame's inner bottom edge [mm].
@@ -199,8 +208,40 @@ class Opening(RoundTrips):
         return len(self.transom_positions) + 1
 
     @property
+    def is_shaped(self) -> bool:
+        return self.shape != "rectangle"
+
+    @property
+    def outline(self):
+        """The worked-out geometry, for anything that is not a rectangle.
+
+        Returns ``None`` for a plain rectangle, so the common path costs
+        nothing and the callers that care can ask.
+        """
+        if not self.is_shaped:
+            return None
+        from .shapes import outline as _outline
+
+        try:
+            return _outline(
+                self.shape, width=self.width, height=self.height,
+                height_right=self.height_right, rise=self.rise,
+            )
+        except Exception:  # noqa: BLE001 - a bad shape must not break a list
+            return None
+
+    @property
     def area(self) -> float:
-        """Outer frame area [m^2] — the unit facade work is priced in."""
+        """Enclosed elevation area [m²] — the unit facade work is priced in.
+
+        For a shaped opening this is the **real** enclosed area, not the
+        bounding box: an arched head priced on its box is priced on glass and
+        coating the shop will never buy, and a gable triangle on its box is
+        priced at twice what it is.
+        """
+        shaped = self.outline
+        if shaped is not None:
+            return shaped.area
         return self.width * self.height / 1_000_000.0
 
     def cell_at(self, column: int, row: int) -> Cell:
