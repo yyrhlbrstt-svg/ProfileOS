@@ -19,7 +19,6 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDialog,
-    QHeaderView,
     QInputDialog,
     QDoubleSpinBox,
     QFileDialog,
@@ -270,6 +269,28 @@ class HomePage(Page):
         setup.add(self.readiness_more)
         self.body.addWidget(setup)
 
+        # What somebody has to do today. It sits above the order book because
+        # a follow-up nobody sees on the morning it is due is a follow-up that
+        # never happens, and a quotation nobody chases is a job lost to a habit
+        # rather than to a price.
+        today = Card("להיום")
+        self.today_headline = QLabel("")
+        self.today_headline.setObjectName("StatLabel")
+        self.today_headline.setWordWrap(True)
+        today.add(self.today_headline)
+        self.today_table = DataTable(
+            ["", "מתי", "על מה", "מה לעשות", "אחראי"],
+            empty_text="אין משימות להיום",
+        )
+        self.today_table.stretch(3)
+        self.today_table.setFixedHeight(METRICS.row_height * 5)
+        today.add(self.today_table)
+        open_tasks = QPushButton("כל המשימות")
+        open_tasks.setObjectName("Ghost")
+        open_tasks.clicked.connect(lambda: self._go("Projects"))
+        today.add(open_tasks)
+        self.body.addWidget(today)
+
         recent = Card("פרויקטים אחרונים")
         self.recent_table = DataTable(
             ["מספר", "שם", "לקוח", "סטטוס", "עודכן"],
@@ -324,6 +345,54 @@ class HomePage(Page):
             page = window.go_to_page("Profile")
             if hasattr(page, "load_sample"):
                 page.load_sample()
+
+    def show_today(self) -> None:
+        """What is due, worst-late first, and what nobody is chasing."""
+        from datetime import date as _date
+
+        from ..projects.followups import default_tasks
+
+        try:
+            book = default_tasks()
+            tasks = book.due_by()
+        except Exception as exc:  # noqa: BLE001
+            self.today_table.set_rows([])
+            self.today_headline.setText(str(exc))
+            return
+
+        tasks.sort(key=lambda task: task.due)
+        rows: list[list[Any]] = []
+        colours: dict[tuple[int, int], str] = {}
+        for task in tasks[:5]:
+            colours[(len(rows), 0)] = (
+                self.colours.danger if task.is_overdue()
+                else self.colours.warning
+            )
+            rows.append([
+                "●", task.due.strftime("%d/%m"),
+                task.subject_name or task.about or "—",
+                task.what, task.assigned_to or "—",
+            ])
+        self.today_table.set_rows(rows, colours=colours)
+
+        summary = book.summary()
+        line = (
+            f"פתוחות ⁦{summary['open']}⁩ · להיום ⁦{summary['due_today']}⁩"
+            + (
+                f" · באיחור ⁦{summary['overdue']}⁩" if summary["overdue"] else ""
+            )
+        )
+        try:
+            from ..projects import default_store
+
+            forgotten = book.unchased_quotes(list(default_store().all()))
+        except Exception:  # noqa: BLE001
+            forgotten = []
+        if forgotten:
+            line += (
+                f" · ⁦{len(forgotten)}⁩ הצעות פתוחות שאיש אינו עוקב אחריהן"
+            )
+        self.today_headline.setText(line)
 
     def show_readiness(self) -> None:
         """The setup list, worst first — the things that block real work."""
@@ -403,6 +472,7 @@ class HomePage(Page):
         )
         self.greeting.setText(f"{part}, {self._brand_name}")
         self.show_readiness()
+        self.show_today()
         when = (
             f"יום {hebrew_days[now.weekday()]}, "
             f"{now.day} ב{hebrew_months[now.month - 1]} {now.year}"
@@ -515,8 +585,161 @@ class ProjectsPage(Page):
         tabs.addTab(self._customers_tab(), "לקוחות")
         tabs.addTab(self._costing_tab(), "רווחיות")
         tabs.addTab(self._files_tab(), "מסמכים")
+        tabs.addTab(self._tasks_tab(), "מעקב ומשימות")
         self.body.addWidget(tabs, 1)
         self.tabs = tabs
+
+    # -- follow-ups -------------------------------------------------------- #
+    def _tasks_tab(self) -> QWidget:
+        """What somebody has to do today, and what nobody is chasing.
+
+        A shop that never sets these concludes its prices are too high, when
+        what it has is a habit of not ringing back.
+        """
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, METRICS.space(3), 0, 0)
+        layout.setSpacing(METRICS.space(3))
+
+        bar = QHBoxLayout()
+        bar.setSpacing(METRICS.space(2))
+
+        chase = QPushButton("קבע מעקב להצעה שנשלחה")
+        chase.setObjectName("Primary")
+        chase.clicked.connect(self.schedule_chase)
+        bar.addWidget(chase)
+
+        close = QPushButton("סגור משימה נבחרת")
+        close.clicked.connect(self.close_task)
+        bar.addWidget(close)
+
+        self.task_note = QLineEdit()
+        self.task_note.setPlaceholderText("מה קרה בשיחה — נשמר עם סגירת המשימה")
+        bar.addWidget(self.task_note, 1)
+        layout.addLayout(bar)
+
+        self.task_headline = QLabel("")
+        self.task_headline.setObjectName("StatLabel")
+        self.task_headline.setWordWrap(True)
+        layout.addWidget(self.task_headline)
+
+        self.task_table = DataTable(
+            ["", "מתי", "סוג", "על מה", "מה לעשות", "אחראי", "מצב"],
+            empty_text="אין משימות פתוחות",
+        )
+        self.task_table.stretch(4)
+        layout.addWidget(self.task_table, 1)
+
+        self.unchased_table = DataTable(
+            ["תיק", "לקוח", "סכום", "נשלחה"],
+            empty_text="כל ההצעות הפתוחות במעקב",
+        )
+        unchased = Card("הצעות שאיש אינו עוקב אחריהן")
+        unchased.add(self.unchased_table, 1)
+        layout.addWidget(unchased, 1)
+
+        self._tasks = None
+        self.show_tasks()
+        return page
+
+    def _task_book(self) -> Any:
+        if self._tasks is None:
+            from ..projects.followups import default_tasks
+
+            self._tasks = default_tasks()
+        return self._tasks
+
+    def schedule_chase(self) -> None:
+        from datetime import date as _date
+
+        job = getattr(self.session, "job", None)
+        if job is None:
+            self.report(
+                ProfileOSError("פתח תיק עבודה קודם"), "אין למה לקבוע מעקב"
+            )
+            return
+        try:
+            made = self._task_book().chase_quote(
+                job, sent_on=_date.today()
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "לא ניתן לקבוע מעקב")
+            return
+        self.status(
+            f"נקבעו ⁦{len(made)}⁩ תזכורות מעקב" if made
+            else "כבר קיים מעקב פתוח להצעה הזאת"
+        )
+        self.show_tasks()
+
+    def close_task(self) -> None:
+        from ..projects.followups import Outcome
+
+        row = self.task_table.currentRow()
+        if row < 0 or row >= len(self._task_rows):
+            self.report(
+                ProfileOSError("בחר משימה בטבלה"), "לא נבחרה משימה"
+            )
+            return
+        try:
+            self._task_book().close(
+                self._task_rows[row], Outcome.DONE,
+                result=self.task_note.text().strip(),
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "לא ניתן לסגור את המשימה")
+            return
+        self.task_note.clear()
+        self.show_tasks()
+
+    def show_tasks(self) -> None:
+        from datetime import date as _date
+
+        book = self._task_book()
+        rows: list[list[Any]] = []
+        colours: dict[tuple[int, int], str] = {}
+        self._task_rows: list[str] = []
+
+        for task in book.open_tasks:
+            late = task.is_overdue()
+            colours[(len(rows), 0)] = (
+                self.colours.danger if late
+                else self.colours.warning if task.due <= _date.today()
+                else self.colours.success
+            )
+            rows.append([
+                "●",
+                task.due.strftime("%d/%m/%Y"),
+                task.kind.hebrew,
+                task.subject_name or task.about or "—",
+                task.what,
+                task.assigned_to or "—",
+                f"⁦{task.days_late()}⁩ ימי איחור" if late else "פתוחה",
+            ])
+            self._task_rows.append(task.task_id)
+        self.task_table.set_rows(rows, colours=colours)
+
+        summary = book.summary()
+        self.task_headline.setText(
+            f"פתוחות ⁦{summary['open']}⁩ · להיום ⁦{summary['due_today']}⁩ · "
+            f"באיחור ⁦{summary['overdue']}⁩"
+            + (
+                f" · ⁦{summary['closed_silently']}⁩ נסגרו בלי לרשום מה קרה"
+                if summary["closed_silently"] else ""
+            )
+        )
+
+        try:
+            jobs = list(self._store().all())
+        except Exception:  # noqa: BLE001
+            jobs = []
+        self.unchased_table.set_rows([
+            [
+                job.job_id, job.customer_name or "—",
+                f"⁦{job.quote_total:,.0f}⁩ ₪" if job.quote_total else "—",
+                job.quoted_on[:10] if job.quoted_on else "—",
+            ]
+            for job in book.unchased_quotes(jobs)
+        ])
 
     # -- storage ----------------------------------------------------------- #
     def _store(self) -> Any:
@@ -5886,9 +6109,7 @@ class SystemPage(Page):
         # Capability names carry the meaning; the support columns are three
         # characters wide. Stretching all of them equally truncates the only
         # column a reader actually has to read.
-        table.horizontalHeader().setSectionResizeMode(
-            0, QHeaderView.ResizeMode.ResizeToContents
-        )
+        table.stretch(0)
         layout.addWidget(table, 1)
 
         legend = QLabel(

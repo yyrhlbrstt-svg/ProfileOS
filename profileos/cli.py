@@ -75,6 +75,7 @@ report_app = typer.Typer(help="The numbers the owner asks for on a Sunday.")
 audit_app = typer.Typer(help="Who changed what, in a chain that cannot lose a line.")
 measure_app = typer.Typer(help="Measuring the hole in the wall, properly.")
 template_app = typer.Typer(help="Making another one of those.")
+task_app = typer.Typer(help="Chasing the quotation, and everything else owed.")
 
 app.add_typer(geometry_app, name="section")
 app.add_typer(nest_app, name="nest")
@@ -114,6 +115,7 @@ app.add_typer(report_app, name="report")
 app.add_typer(audit_app, name="audit")
 app.add_typer(measure_app, name="measure")
 app.add_typer(template_app, name="template")
+app.add_typer(task_app, name="task")
 
 
 # --------------------------------------------------------------------------- #
@@ -4024,6 +4026,154 @@ def deliver_handover(
         console.print(entry.describe())
     for problem in pack.problems():
         console.print(f"[yellow]{problem}[/yellow]")
+
+
+# --------------------------------------------------------------------------- #
+# Follow-ups
+# --------------------------------------------------------------------------- #
+@task_app.command("today")
+def task_today(
+    person: str = typer.Option("", "--person", help="Only this person's list."),
+    week: bool = typer.Option(False, "--week", help="The next seven days too."),
+) -> None:
+    """What has to be done, oldest first."""
+    from .projects.followups import default_tasks
+
+    book = default_tasks()
+    tasks = (
+        book.for_person(person) if person
+        else (book.this_week() if week else book.due_by())
+    )
+    if not tasks:
+        console.print("[green]Nothing outstanding.[/green]")
+        return
+
+    table = Table(header_style="dim")
+    for heading in ("Due", "Kind", "About", "What", "Who", "State"):
+        table.add_column(heading)
+    for task in tasks:
+        table.add_row(
+            task.due.isoformat(), task.kind.value,
+            task.subject_name or task.about or "—", task.what,
+            task.assigned_to or "—",
+            f"{task.days_late()}d late" if task.is_overdue() else "open",
+        )
+    console.print(table)
+
+    summary = book.summary()
+    console.print(
+        f"[dim]{summary['open']} open · {summary['overdue']} overdue[/dim]"
+    )
+
+
+@task_app.command("chase")
+def task_chase(
+    job_id: str = typer.Argument(..., help="The job whose quotation went out."),
+    by: str = typer.Option("", "--by", help="Who is chasing it."),
+    sent_on: str = typer.Option("", "--sent", help="When it was sent."),
+) -> None:
+    """Schedule the follow-up touches for a quotation that has gone out."""
+    from datetime import date as _date
+
+    from .projects import default_store
+    from .projects.followups import default_tasks
+
+    try:
+        job = default_store().load(job_id)
+    except Exception as exc:  # noqa: BLE001
+        _fail(str(exc))
+
+    made = default_tasks().chase_quote(
+        job, sent_on=_date.fromisoformat(sent_on) if sent_on else None,
+        assigned_to=by,
+    )
+    if not made:
+        console.print("[dim]This quotation already has open follow-ups.[/dim]")
+        return
+    for task in made:
+        console.print(task.describe())
+
+
+@task_app.command("add")
+def task_add(
+    what: str = typer.Argument(..., help="What has to be done."),
+    about: str = typer.Option("", "--about", help="job:2026-114 or customer:C-1."),
+    kind: str = typer.Option("other", "--kind"),
+    due: str = typer.Option("", "--due", help="YYYY-MM-DD; default today."),
+    by: str = typer.Option("", "--by", help="Who is doing it."),
+) -> None:
+    """Add one thing to the list."""
+    from datetime import date as _date
+
+    from .projects.followups import Kind, default_tasks
+
+    try:
+        which = Kind(kind)
+    except ValueError:
+        _fail(f"Unknown kind {kind!r}; one of: " + ", ".join(k.value for k in Kind))
+
+    task = default_tasks().create(
+        which, what, about=about,
+        due=_date.fromisoformat(due) if due else None,
+        assigned_to=by,
+    )
+    console.print(f"[green]{task.task_id}[/green] {task.describe()}")
+
+
+@task_app.command("close")
+def task_close(
+    task_id: str = typer.Argument(..., help="Which task."),
+    outcome: str = typer.Option("done", "--outcome"),
+    result: str = typer.Option("", "--result", help="What actually happened."),
+) -> None:
+    """Close a task with what happened, which is worth more than a tick."""
+    from .projects.followups import Outcome, default_tasks
+
+    try:
+        how = Outcome(outcome)
+    except ValueError:
+        _fail(
+            f"Unknown outcome {outcome!r}; one of: "
+            + ", ".join(o.value for o in Outcome if o is not Outcome.OPEN)
+        )
+    try:
+        task = default_tasks().close(task_id, how, result=result)
+    except Exception as exc:  # noqa: BLE001
+        _fail(str(exc))
+    console.print(f"[green]{task.describe()}[/green]")
+    if task.closed_silently:
+        console.print(
+            "[dim]Closed without a note. Allowed, but next year nobody will "
+            "know what was said.[/dim]"
+        )
+
+
+@task_app.command("forgotten")
+def task_forgotten() -> None:
+    """Quotations sitting with a customer that nobody is chasing."""
+    from .projects import default_store
+    from .projects.followups import default_tasks
+
+    jobs = list(default_store().all())
+    forgotten = default_tasks().unchased_quotes(jobs)
+    if not forgotten:
+        console.print("[green]Every open quotation has a follow-up.[/green]")
+        return
+
+    table = Table(header_style="dim")
+    for heading in ("Job", "Customer", "Value", "Quoted"):
+        table.add_column(heading)
+    for job in forgotten:
+        table.add_row(
+            job.job_id, job.customer_name or "—",
+            f"{job.quote_total:,.0f}" if job.quote_total else "—",
+            job.quoted_on[:10] if job.quoted_on else "—",
+        )
+    console.print(table)
+    console.print(
+        "[yellow]A shop that never sets these concludes its prices are too "
+        "high.[/yellow]"
+    )
 
 
 # --------------------------------------------------------------------------- #

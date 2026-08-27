@@ -856,6 +856,17 @@ CAPABILITIES: tuple[Capability, ...] = (
         differentiator=True,
     ),
     Capability(
+        "follow_ups", Area.COMMERCIAL,
+        "Quotation follow-ups", "מעקב אחרי הצעות מחיר",
+        "Sending a quotation creates its chase: three touches on the shop's "
+        "own working days, then stop. Tasks are closed with what happened "
+        "rather than ticked, and the report that matters is not what was "
+        "quoted but what was quoted and then forgotten — the open quotations "
+        "nobody is chasing.",
+        probe="profileos.projects.followups:TaskBook",
+        differentiator=True,
+    ),
+    Capability(
         "capacity_planning", Area.ADJACENT,
         "Capacity and delivery planning", "תכנון קיבולת ומועדי אספקה",
         "Finite-capacity scheduling across work centres on the shop's own "

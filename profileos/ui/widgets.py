@@ -253,6 +253,22 @@ class DataTable(QTableWidget):
                     item.setForeground(QColor(colours[(row_index, column_index)]))
                 self.setItem(row_index, column_index, item)
 
+    def stretch(self, column: int) -> None:
+        """Give one column the slack and size the rest to their contents.
+
+        Stretching every column equally is right for a table of figures and
+        wrong for one where a single column carries the sentence: the sentence
+        gets an equal share and is truncated, while six columns of dates sit
+        half empty beside it.
+        """
+        header = self.horizontalHeader()
+        for index in range(self.columnCount()):
+            header.setSectionResizeMode(
+                index,
+                QHeaderView.ResizeMode.Stretch if index == column
+                else QHeaderView.ResizeMode.ResizeToContents,
+            )
+
     def clear_rows(self) -> None:
         self.setRowCount(0)
 
