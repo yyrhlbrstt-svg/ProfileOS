@@ -72,6 +72,7 @@ time_app = typer.Typer(help="Hours actually worked, against the job.")
 fx_app = typer.Typer(help="Buying in euros, selling in shekels.")
 count_app = typer.Typer(help="Counting the racks, and posting the difference.")
 report_app = typer.Typer(help="The numbers the owner asks for on a Sunday.")
+audit_app = typer.Typer(help="Who changed what, in a chain that cannot lose a line.")
 
 app.add_typer(geometry_app, name="section")
 app.add_typer(nest_app, name="nest")
@@ -108,6 +109,7 @@ app.add_typer(time_app, name="time")
 app.add_typer(fx_app, name="fx")
 app.add_typer(count_app, name="stocktake")
 app.add_typer(report_app, name="report")
+app.add_typer(audit_app, name="audit")
 
 
 # --------------------------------------------------------------------------- #
@@ -3775,6 +3777,108 @@ def backup_restore(
             f"[dim]The folder that was there is at {aside} — move it back to "
             f"undo this.[/dim]"
         )
+
+
+# --------------------------------------------------------------------------- #
+# Audit
+# --------------------------------------------------------------------------- #
+@audit_app.command("show")
+def audit_show(
+    subject: Optional[str] = typer.Option(
+        None, "--subject", help="Only this record, e.g. quote:2026-114."
+    ),
+    person: Optional[str] = typer.Option(None, "--person"),
+    limit: int = typer.Option(40, "--limit"),
+) -> None:
+    """What has been changed, newest first."""
+    from .core.audit import audit
+
+    log = audit()
+    if subject:
+        entries = list(reversed(log.for_subject(subject)))
+    elif person:
+        entries = list(reversed(log.by_person(person)))
+    else:
+        entries = log.recent(limit)
+
+    if not entries:
+        console.print("[dim]Nothing recorded yet.[/dim]")
+        return
+    for entry in entries[:limit]:
+        console.print(entry.describe())
+
+
+@audit_app.command("verify")
+def audit_verify() -> None:
+    """Walk the chain and say whether a line has been removed or edited."""
+    from .core.audit import audit
+
+    result = audit().verify()
+    console.print(result.describe())
+    if not result.ok:
+        raise typer.Exit(code=1)
+
+
+# --------------------------------------------------------------------------- #
+# Labels
+# --------------------------------------------------------------------------- #
+@app.command()
+def labels(
+    source: Optional[str] = typer.Argument(
+        None, help="Job id whose pieces to label."
+    ),
+    out: Path = typer.Option(
+        Path("labels.html"), "--out", "-o", help="Where to write the sheet."
+    ),
+    stock: str = typer.Option(
+        "a4-24", "--stock", help="Which label sheet; see --list-stock."
+    ),
+    start_at: int = typer.Option(
+        0, "--start-at", help="Skip this many places on the first sheet."
+    ),
+    list_stock: bool = typer.Option(
+        False, "--list-stock", help="Show the label sheets this knows."
+    ),
+) -> None:
+    """One label per piece: job, position, length, end cuts and a barcode."""
+    from .elements import build_elements
+    from .mes import work_order_from_builds
+    from .mes.labels import STOCKS, labels_for_order, write_labels
+    from .projects import default_store
+
+    if list_stock:
+        table = Table(header_style="dim")
+        for heading in ("Key", "Sheet", "Per sheet"):
+            table.add_column(heading)
+        for key, sheet in sorted(STOCKS.items()):
+            table.add_row(key, sheet.name, str(sheet.per_sheet))
+        console.print(table)
+        return
+
+    if source is None:
+        _fail("Name a job id, or pass --list-stock to see the sheets.")
+
+    try:
+        job = default_store().load(str(source))
+    except Exception:  # noqa: BLE001
+        job = None
+    if job is None or job.schedule is None:
+        _fail(f"No job schedule found for {source}.")
+
+    builds = build_elements(job.schedule.openings)
+    order = work_order_from_builds(builds, project_id=job.job_id, name=job.name)
+    pieces = labels_for_order(order)
+    if not pieces:
+        _fail("That job has no pieces to label.")
+
+    try:
+        run = write_labels(pieces, out, stock=stock, start_at=start_at)
+    except Exception as exc:  # noqa: BLE001
+        _fail(str(exc))
+    console.print(f"[green]{out}[/green]")
+    console.print(f"[dim]{run.describe()}[/dim]")
+    for warning in run.warnings:
+        console.print(f"[yellow]{warning}[/yellow]")
 
 
 # --------------------------------------------------------------------------- #

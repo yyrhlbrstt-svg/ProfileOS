@@ -783,6 +783,28 @@ CAPABILITIES: tuple[Capability, ...] = (
         differentiator=True,
     ),
     Capability(
+        "piece_labels", Area.SHOPFLOOR,
+        "Labels for every piece", "מדבקה לכל פריט",
+        "One label per physical piece — job, position, profile, finished "
+        "length, both end cuts drawn with each angle standing at its own end "
+        "of the bar, and the barcode the terminal already scans. Laid out on "
+        "the label stock an office supplier actually sells, and a part-used "
+        "sheet can be started partway in.",
+        probe="profileos.mes.labels:render_labels",
+    ),
+    Capability(
+        "audit_trail", Area.PLATFORM,
+        "Tamper-evident audit trail", "יומן שינויים עם שרשרת חתימות",
+        "Every change records the value it moved from and to, by whom and "
+        "when, and each entry carries a hash of the one before it — so a line "
+        "removed from the middle, or a figure edited in place afterwards, "
+        "breaks the chain and the check names the line where it broke. "
+        "Confirming a series, posting a stocktake, revising a price and "
+        "restoring a backup all write to it.",
+        probe="profileos.core.audit:AuditLog",
+        differentiator=True,
+    ),
+    Capability(
         "capacity_planning", Area.ADJACENT,
         "Capacity and delivery planning", "תכנון קיבולת ומועדי אספקה",
         "Finite-capacity scheduling across work centres on the shop's own "

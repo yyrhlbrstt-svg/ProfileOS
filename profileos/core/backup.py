@@ -324,6 +324,14 @@ def restore(
             with archive.open(name) as source, target.open("wb") as sink:
                 shutil.copyfileobj(source, sink)
 
+    from .audit import Action, try_record
+
+    try_record(
+        Action.RESTORED, f"data:{root.name}",
+        before=str(aside) if aside else None,
+        after=str(Path(archive_path).name),
+        note=manifest.describe(),
+    )
     _log.info("Restored %s into %s", manifest.describe(), root)
     return root, aside
 

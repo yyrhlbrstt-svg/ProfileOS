@@ -761,6 +761,118 @@ class NestingView(QWidget):
 # Clamp / machining view
 # --------------------------------------------------------------------------- #
 
+
+class BarChart(QWidget):
+    """A year as twelve bars, so a shape is visible where a total is not.
+
+    Two series on the same axis: what was quoted and what was ordered out of
+    it. Drawn rather than tabulated because the question the owner is actually
+    asking — "is it getting better or worse?" — is a question about a shape,
+    and twelve rows of figures do not have one.
+
+    Right to left, like everything else here: January is on the right.
+    """
+
+    def __init__(self, palette: Palette = DARK, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.palette_colours = palette
+        self.setObjectName("Canvas")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setMinimumHeight(200)
+        self.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
+
+        self._labels: list[str] = []
+        self._background: list[float] = []
+        self._foreground: list[float] = []
+        self._unit = ""
+        self._empty_text = "אין נתונים להצגה"
+
+    def set_series(
+        self,
+        labels: Sequence[str],
+        background: Sequence[float],
+        foreground: Sequence[float] = (),
+        *,
+        unit: str = "",
+    ) -> None:
+        self._labels = list(labels)
+        self._background = [float(value) for value in background]
+        self._foreground = [float(value) for value in foreground]
+        self._unit = unit
+        self.update()
+
+    def paintEvent(self, event: Any) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        palette = self.palette_colours
+        painter.fillRect(self.rect(), _colour(palette.surface_sunken))
+
+        peak = max(self._background + self._foreground + [0.0])
+        if not self._labels or peak <= 0:
+            painter.setPen(QPen(_colour(palette.text_faint)))
+            painter.setFont(QFont("Heebo", 11))
+            painter.drawText(
+                self.rect(), Qt.AlignmentFlag.AlignCenter, self._empty_text
+            )
+            painter.end()
+            return
+
+        margin = 16.0
+        label_band = 22.0
+        width = self.width() - margin * 2
+        height = self.height() - margin * 2 - label_band
+        if width <= 0 or height <= 0:
+            painter.end()
+            return
+
+        count = len(self._labels)
+        slot = width / count
+        bar_width = min(slot * 0.62, 46.0)
+        base = margin + height
+
+        # Four faint gridlines, so a bar can be read against something.
+        painter.setPen(QPen(_colour(palette.border, 90), 1))
+        painter.setFont(QFont("Heebo", 8))
+        for step in range(1, 5):
+            y = base - height * step / 4.0
+            painter.drawLine(QPointF(margin, y), QPointF(margin + width, y))
+
+        font = QFont("Heebo", 8)
+        painter.setFont(font)
+        for index, label in enumerate(self._labels):
+            # Right to left: the first month sits at the right-hand edge.
+            centre = margin + width - (index + 0.5) * slot
+            left = centre - bar_width / 2.0
+
+            quoted = self._background[index] if index < len(self._background) else 0.0
+            won = self._foreground[index] if index < len(self._foreground) else 0.0
+
+            if quoted > 0:
+                bar_height = height * quoted / peak
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.setBrush(QBrush(_colour(palette.accent, 60)))
+                painter.drawRoundedRect(
+                    QRectF(left, base - bar_height, bar_width, bar_height), 3, 3
+                )
+            if won > 0:
+                bar_height = height * won / peak
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.setBrush(QBrush(_colour(palette.accent)))
+                painter.drawRoundedRect(
+                    QRectF(left, base - bar_height, bar_width, bar_height), 3, 3
+                )
+
+            painter.setPen(QPen(_colour(palette.text_muted)))
+            painter.drawText(
+                QRectF(centre - slot / 2.0, base + 4, slot, label_band),
+                Qt.AlignmentFlag.AlignCenter,
+                label,
+            )
+        painter.end()
+
+
 class ClampView(QWidget):
     """Shows a bar with its clamps and machining operations along its length.
 
@@ -1108,6 +1220,7 @@ class SheetView(QWidget):
 
 
 __all__ = [
+    "BarChart",
     "CanvasView", "SectionView", "ElevationView", "NestingView", "ClampView",
     "SheetView",
 ]

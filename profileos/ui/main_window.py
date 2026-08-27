@@ -29,7 +29,7 @@ _log = get_logger("ui.window")
 
 #: Sidebar grouping. Navigation follows the order work moves through the shop.
 NAV_SECTIONS: list[tuple[str, list[int]]] = [
-    ("סקירה", [0, 1]),
+    ("סקירה", [0, 18, 1]),
     ("תכנון", [2, 3, 4, 5]),
     ("ייצור", [6, 7, 8]),
     ("מסחרי", [9, 10, 11]),

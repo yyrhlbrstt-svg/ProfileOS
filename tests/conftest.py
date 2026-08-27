@@ -21,6 +21,18 @@ def _quiet_logging() -> None:
     configure_logging("ERROR", use_rich=False, force=True)
 
 
+@pytest.fixture(autouse=True)
+def _isolated_audit(tmp_path, monkeypatch) -> None:
+    """Tests write audit entries as a side effect of doing real work.
+
+    Confirming a series, posting a stocktake and taking a quotation revision
+    all record who did it. That is the point of them — but a test run must not
+    append hundreds of lines to the chain of whatever installation happens to
+    be on this machine.
+    """
+    monkeypatch.setenv("PROFILEOS_AUDIT_LOG", str(tmp_path / "audit.jsonl"))
+
+
 @pytest.fixture(scope="session")
 def sample_dir() -> Path:
     """Directory holding the generated sample DXF drawings.

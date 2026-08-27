@@ -356,6 +356,17 @@ class QuoteHistory:
             currency=str(getattr(quotation, "currency", "ILS")),
         )
         self.revisions.append(revision)
+
+        from ..core.audit import Action, try_record
+
+        previous = self.revisions[-2] if len(self.revisions) > 1 else None
+        try_record(
+            Action.CREATED, f"quote:{self.job_id}",
+            field_name=f"revision {number}",
+            before=previous.net_price if previous else None,
+            after=revision.net_price,
+            person=by, note=reason,
+        )
         _log.info(
             "Quote %s revision %d taken: %.2f %s",
             self.job_id, number, revision.net_price, revision.currency,
@@ -367,6 +378,14 @@ class QuoteHistory:
         if revision.is_sent:
             raise ProfileOSError(f"גרסה ⁦{number}⁩ כבר נשלחה")
         revision.sent_on = on or date.today()
+
+        from ..core.audit import Action, try_record
+
+        try_record(
+            Action.ISSUED, f"quote:{self.job_id}",
+            field_name=f"revision {number}", after=revision.net_price,
+            note="נשלחה ללקוח",
+        )
         return revision
 
     def compare(self, earlier: int, later: int) -> Comparison:

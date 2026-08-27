@@ -311,6 +311,17 @@ class Stocktake:
         self.status = Status.POSTED
         self.posted_on = when
         self.posted_by = by
+
+        from ..core.audit import Action, try_record
+
+        try_record(
+            Action.POSTED, f"stocktake:{self.sheet_id}",
+            field_name="stock_value", before=0.0, after=self.net_value,
+            person=by, note=(
+                f"{len(movements)} תנועות · חוסר {self.shrinkage:,.2f} · "
+                f"עודף {self.surplus:,.2f}"
+            ),
+        )
         _log.info(
             "Stocktake %s posted: %d movements, %.2f value change",
             self.sheet_id, len(movements), self.net_value,

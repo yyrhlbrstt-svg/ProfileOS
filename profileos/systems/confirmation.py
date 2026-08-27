@@ -352,9 +352,24 @@ class ConfirmationBook:
         problems = confirmation.problems()
         if problems:
             raise ProfileOSError("אי אפשר לאשר: " + " · ".join(problems))
+        previous = self._entries.get(confirmation.entry_id)
         self._entries[confirmation.entry_id] = confirmation
         self.save()
         self.apply_one(confirmation)
+
+        # Confirming a series is the act that lets a saw cut to these figures.
+        # If a bar comes out wrong six months from now, the first question is
+        # who vouched for the deduction and out of which catalogue.
+        from ..core.audit import Action, try_record
+
+        try_record(
+            Action.CONFIRMED, f"system:{confirmation.entry_id}",
+            field_name="values",
+            before=dict(previous.values) if previous else None,
+            after=dict(confirmation.values),
+            person=confirmation.entered_by,
+            note=confirmation.source,
+        )
         return confirmation
 
     def forget(self, entry_id: str) -> None:
@@ -366,8 +381,16 @@ class ConfirmationBook:
         """
         if entry_id not in self._entries:
             return
-        del self._entries[entry_id]
+        forgotten = self._entries.pop(entry_id)
         self.save()
+
+        from ..core.audit import Action, try_record
+
+        try_record(
+            Action.DELETED, f"system:{entry_id}", field_name="values",
+            before=dict(forgotten.values), after=None,
+            note="הסדרה חזרה למצב ״לא לייצור״",
+        )
         from . import DIRECTORY
 
         try:

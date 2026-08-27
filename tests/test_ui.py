@@ -74,7 +74,8 @@ class TestTheme:
 class TestWindow:
     def test_all_pages_are_present(self, window):
         assert [p.title for p in window.pages] == [
-            "Home", "Projects", "Profile", "Element", "3D view", "Drawings",
+            "Home", "Reports", "Projects", "Profile", "Element", "3D view",
+            "Drawings",
             "Nesting", "Glass", "Machining", "Quotation", "Accounts",
             "Collection", "Shop floor", "Delivery", "Service", "Plumbing",
             "Catalogue", "System",

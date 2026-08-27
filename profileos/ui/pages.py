@@ -39,10 +39,52 @@ from PySide6.QtWidgets import (
 from ..core.errors import ProfileOSError
 from ..core.logging_setup import get_logger
 from .theme import METRICS, Palette
-from .views import ClampView, ElevationView, NestingView, SectionView, SheetView
+from .views import (
+    BarChart,
+    ClampView,
+    ElevationView,
+    NestingView,
+    SectionView,
+    SheetView,
+)
 from .widgets import Badge, Card, DataTable, FieldGrid, PageHeader, StatRow, page_layout
 
 _log = get_logger("ui.pages")
+
+
+#: Field names that turn up in the audit log, in the words the shop uses.
+#: A log written in the code's vocabulary is a log only the author can read.
+_AUDIT_FIELDS: dict[str, str] = {
+    "values": "ערכי הסדרה",
+    "stock_value": "שווי המלאי",
+    "quote_total": "סכום ההצעה",
+    "net_price": "מחיר לפני מע״מ",
+    "payment_terms": "תנאי תשלום",
+    "status": "סטטוס",
+    "due_date": "מועד אספקה",
+    "customer_id": "לקוח",
+    "name": "שם",
+}
+
+
+def _audit_field(name: str) -> str:
+    if not name:
+        return "—"
+    if name.startswith("revision "):
+        return f"גרסה ⁦{name.split()[-1]}⁩"
+    return _AUDIT_FIELDS.get(name, name)
+
+
+def _audit_value(value: Any) -> str:
+    """One recorded value, short enough for a table cell."""
+    if value is None:
+        return "—"
+    if isinstance(value, float):
+        return f"⁦{value:,.2f}⁩"
+    if isinstance(value, (int, bool)):
+        return f"⁦{value}⁩"
+    text = str(value)
+    return text if len(text) <= 48 else text[:45] + "…"
 
 
 class Page(QWidget):
@@ -2757,6 +2799,10 @@ class ShopFloorPage(Page):
         card.clicked.connect(self.export_card)
         self.header.add_action(card)
 
+        labels = QPushButton("הדפס מדבקות...")
+        labels.clicked.connect(self.export_labels)
+        self.header.add_action(labels)
+
         self.stats = StatRow([
             ("items", "פריטים"), ("progress", "התקדמות"), ("stage", "צוואר בקבוק"),
             ("rework", "לתיקון"), ("scrap", "פסולים"),
@@ -3011,6 +3057,41 @@ class ShopFloorPage(Page):
             return
         write_job_card(order, path, self.session.builds)
         self.status(f"נשמר {path}")
+
+    def export_labels(self) -> None:
+        """One label per physical piece, laid out on real label stock.
+
+        Two hundred cut bars leave the saw in a morning, all silver and most
+        within a few millimetres of each other. This is what stops the
+        afternoon going on working out which four belong to which window.
+        """
+        from ..mes.labels import STOCKS, labels_for_order, write_labels
+
+        order = self.session.work_order
+        if order is None:
+            self.report(
+                ProfileOSError("שחרר פקודת עבודה קודם"), "אין מה להדפיס"
+            )
+            return
+
+        pieces = labels_for_order(order)
+        if not pieces:
+            self.report(
+                ProfileOSError("אין פריטים בפקודת העבודה"), "אין מה להדפיס"
+            )
+            return
+
+        path, _ = QFileDialog.getSaveFileName(
+            self, "שמירת גיליון מדבקות", "labels.html", "HTML (*.html)"
+        )
+        if not path:
+            return
+        try:
+            run = write_labels(pieces, path, stock=STOCKS["a4-24"])
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "הדפסת המדבקות נכשלה")
+            return
+        self.status(f"{run.describe()} · {path}")
 
 
 
@@ -4783,6 +4864,7 @@ class SystemPage(Page):
         tabs.addTab(self._brand_tab(), "מפעיל")
         tabs.addTab(self._plugins_tab(), "תוספים")
         tabs.addTab(self._backup_tab(), "גיבוי ושחזור")
+        tabs.addTab(self._audit_tab(), "יומן שינויים")
 
         # The comparison verifies every capability claim, which means importing
         # every engine in the suite — OR-Tools, sectionproperties, FastAPI and
@@ -5440,6 +5522,94 @@ class SystemPage(Page):
         )
         self.show_backups()
 
+    # -- audit ------------------------------------------------------------------ #
+    def _audit_tab(self) -> QWidget:
+        """What changed, by whom, and whether the record is still intact."""
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, METRICS.space(3), 0, 0)
+        layout.setSpacing(METRICS.space(3))
+
+        bar = QHBoxLayout()
+        bar.setSpacing(METRICS.space(2))
+        check = QPushButton("בדוק שלמות")
+        check.setObjectName("Primary")
+        check.clicked.connect(self.verify_audit)
+        bar.addWidget(check)
+
+        self.audit_filter = QLineEdit()
+        self.audit_filter.setPlaceholderText("סינון: שם עובד, תיק או סדרה")
+        self.audit_filter.textChanged.connect(self.show_audit)
+        bar.addWidget(self.audit_filter, 1)
+        layout.addLayout(bar)
+
+        self.audit_verdict = QLabel("")
+        self.audit_verdict.setObjectName("StatLabel")
+        self.audit_verdict.setWordWrap(True)
+        layout.addWidget(self.audit_verdict)
+
+        self.audit_table = DataTable(
+            ["מתי", "מי", "מה", "על מה", "שדה", "לפני", "אחרי"],
+            empty_text="עדיין לא נרשם שינוי",
+        )
+        layout.addWidget(self.audit_table, 1)
+
+        note = QLabel(
+            "כל רשומה נושאת את טביעת האצבע של הרשומה שלפניה, כך שמחיקה של "
+            "שורה מהאמצע או עריכה של מספר בדיעבד שוברות את השרשרת ו״בדוק "
+            "שלמות״ אומר בדיוק היכן. זה תיעוד ולא הרשאות: הוא אומר מה קרה, "
+            "הוא לא מונע דבר."
+        )
+        note.setObjectName("Hint")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+
+        self.show_audit()
+        return page
+
+    def show_audit(self) -> None:
+        from ..core.audit import audit
+
+        needle = self.audit_filter.text().strip().casefold()
+        try:
+            entries = audit().recent(400)
+        except Exception as exc:  # noqa: BLE001
+            self.audit_table.set_rows([])
+            self.audit_verdict.setText(str(exc))
+            return
+
+        rows: list[list[Any]] = []
+        for entry in entries:
+            haystack = " ".join([
+                entry.person, entry.subject, entry.field_name, entry.note
+            ]).casefold()
+            if needle and needle not in haystack:
+                continue
+            rows.append([
+                entry.at[:16].replace("T", " "),
+                entry.person,
+                entry.action.hebrew,
+                entry.subject,
+                _audit_field(entry.field_name),
+                _audit_value(entry.before),
+                _audit_value(entry.after),
+            ])
+        self.audit_table.set_rows(rows[:200])
+
+    def verify_audit(self) -> None:
+        from ..core.audit import audit
+
+        try:
+            result = audit().verify()
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "לא ניתן לבדוק את היומן")
+            return
+        self.audit_verdict.setText(result.describe())
+        self.audit_verdict.setStyleSheet(
+            f"color: {self.colours.success if result.ok else self.colours.danger};"
+        )
+        self.show_audit()
+
     # -- comparison ------------------------------------------------------------ #
     def _build_comparison(self) -> None:
         if self._compare_built:
@@ -5510,6 +5680,259 @@ class SystemPage(Page):
         legend.setWordWrap(True)
         layout.addWidget(legend)
 
+
+
+
+# --------------------------------------------------------------------------- #
+# Reports
+# --------------------------------------------------------------------------- #
+
+class ReportsPage(Page):
+    """The page the owner opens on a Sunday morning.
+
+    Every other screen answers a question about one job. This one answers
+    questions about the shop, and it is deliberately blunt about how much it
+    knows: a percentage over four quotations says so beside itself rather than
+    printing the same confident figure as one over four hundred.
+    """
+
+    title = "Reports"
+    hebrew = "דוחות"
+    subtitle = "מכירות, אחוזי סגירה, רווחיות לקוח וצבר העבודה"
+
+    def build(self) -> None:
+        refresh = QPushButton("רענן")
+        refresh.setObjectName("Primary")
+        refresh.clicked.connect(self.refresh)
+        self.header.add_action(refresh)
+
+        chooser = QHBoxLayout()
+        chooser.setSpacing(METRICS.space(2))
+        caption = QLabel("שנה")
+        caption.setObjectName("FieldLabel")
+        self.year_picker = QComboBox()
+        from datetime import date as _date
+
+        this_year = _date.today().year
+        for offset in range(0, 6):
+            self.year_picker.addItem(f"⁦{this_year - offset}⁩", this_year - offset)
+        self.year_picker.currentIndexChanged.connect(self.refresh)
+        chooser.addWidget(caption)
+        chooser.addWidget(self.year_picker)
+        chooser.addStretch(1)
+        self.body.addLayout(chooser)
+
+        self.stats = StatRow([
+            ("won", "הוזמן"), ("rate", "אחוז סגירה"), ("average", "הזמנה ממוצעת"),
+            ("backlog", "צבר פתוח"), ("late", "באיחור"),
+        ])
+        self.body.addWidget(self.stats)
+
+        tabs = QTabWidget()
+        tabs.addTab(self._sales_tab(), "מכירות")
+        tabs.addTab(self._customers_tab(), "לקוחות")
+        tabs.addTab(self._pipeline_tab(), "צבר ואיחורים")
+        self.body.addWidget(tabs, 1)
+        self.tabs = tabs
+
+        self._loaded = False
+
+    # -- tabs ------------------------------------------------------------------ #
+    def _sales_tab(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, METRICS.space(3), 0, 0)
+        layout.setSpacing(METRICS.space(3))
+
+        chart_card = Card("הצעות מול הזמנות, לפי חודש")
+        self.months_chart = BarChart(self.colours)
+        chart_card.add(self.months_chart, 1)
+        layout.addWidget(chart_card, 1)
+
+        legend = QLabel(
+            "העמודה החיוורת היא מה שהוצע, המלאה היא מה שנסגר מתוכו. "
+            "תיק נספר בחודש שבו נשלחה ההצעה, לא בחודש שבו נסגר — כי זו "
+            "השאלה שהחודש נמדד בה."
+        )
+        legend.setObjectName("Hint")
+        legend.setWordWrap(True)
+        layout.addWidget(legend)
+
+        self.sales_table = DataTable(
+            ["חודש", "הצעות", "שווי", "הוזמנו", "שווי", "אחוז סגירה"],
+            empty_text="אין תיקי עבודה בשנה הזאת",
+        )
+        layout.addWidget(self.sales_table, 1)
+
+        self.sales_note = QLabel("")
+        self.sales_note.setObjectName("Hint")
+        self.sales_note.setWordWrap(True)
+        layout.addWidget(self.sales_note)
+        return page
+
+    def _customers_tab(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, METRICS.space(3), 0, 0)
+        layout.setSpacing(METRICS.space(3))
+
+        self.customers_table = DataTable(
+            ["לקוח", "תיקים", "נסגרו", "לא נסגרו", "שווי", "אחוז סגירה", "רווחיות"],
+            empty_text="אין עדיין לקוחות",
+        )
+        layout.addWidget(self.customers_table, 1)
+
+        self.customers_note = QLabel(
+            "רווחיות ״—״ פירושה שלא נרשמו שעות או חומרים מול התיקים של "
+            "הלקוח הזה — וזה לא אותו דבר כמו רווחיות אפס."
+        )
+        self.customers_note.setObjectName("Hint")
+        self.customers_note.setWordWrap(True)
+        layout.addWidget(self.customers_note)
+        return page
+
+    def _pipeline_tab(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, METRICS.space(3), 0, 0)
+        layout.setSpacing(METRICS.space(3))
+
+        split = QHBoxLayout()
+        split.setSpacing(METRICS.space(3))
+
+        stage_card = Card("לפי שלב")
+        self.stage_table = DataTable(
+            ["שלב", "תיקים", "שווי"], empty_text="אין עבודה פתוחה"
+        )
+        stage_card.add(self.stage_table, 1)
+        split.addWidget(stage_card, 1)
+
+        late_card = Card("איחורים ומועדים קרובים")
+        self.late_table = DataTable(
+            ["תיק", "שם", "מצב"], empty_text="אין תיק שעבר את מועדו"
+        )
+        late_card.add(self.late_table, 1)
+        split.addWidget(late_card, 1)
+        layout.addLayout(split, 1)
+
+        self.pipeline_note = QLabel("")
+        self.pipeline_note.setObjectName("Hint")
+        self.pipeline_note.setWordWrap(True)
+        layout.addWidget(self.pipeline_note)
+        return page
+
+    # -- filling it ------------------------------------------------------------ #
+    def refresh(self) -> None:
+        from datetime import date as _date
+
+        from .. import reports
+        from ..projects import default_store
+
+        try:
+            jobs = list(default_store().all())
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "לא ניתן לקרוא את תיקי העבודה")
+            return
+
+        chosen = self.year_picker.currentData() or _date.today().year
+        report = reports.sales(jobs, reports.year(chosen))
+        live = reports.pipeline(jobs)
+        months = reports.by_month(jobs, chosen)
+
+        rate = report.win_rate()
+        average = report.average_order()
+        self.stats.update_many({
+            "won": (
+                f"⁦{report.won_value:,.0f}⁩ ₪",
+                f"⁦{report.won_count}⁩ תיקים",
+            ),
+            "rate": (
+                f"⁦{rate.value:.0f}%⁩",
+                f"מתוך ⁦{report.decided}⁩ שהוכרעו" if report.decided else "טרם הוכרע",
+            ),
+            "average": (f"⁦{average.value:,.0f}⁩ ₪", ""),
+            "backlog": (
+                f"⁦{live.open_value:,.0f}⁩ ₪",
+                f"⁦{sum(live.counts.values())}⁩ תיקים",
+            ),
+            "late": (
+                f"⁦{len(live.overdue)}⁩",
+                "תיקים שעברו את מועדם" if live.overdue else "הכול בזמן",
+            ),
+        })
+
+        self.months_chart.set_series(
+            [row["label"][:3] for row in months],
+            [row["quoted_value"] for row in months],
+            [row["won_value"] for row in months],
+        )
+        self.sales_table.set_rows(
+            [
+                [
+                    row["label"], f"⁦{row['quoted']}⁩",
+                    f"⁦{row['quoted_value']:,.0f}⁩",
+                    f"⁦{row['won']}⁩", f"⁦{row['won_value']:,.0f}⁩",
+                    f"⁦{row['win_rate_pct']:.0f}%⁩" if row["quoted"] else "—",
+                ]
+                for row in months
+            ],
+        )
+        self.sales_note.setText(
+            " · ".join(report.warnings())
+            or f"{report.describe()} · {report.value_win_rate().label}: "
+               f"{report.value_win_rate().format()}"
+        )
+
+        customers = reports.by_customer(jobs, costs=self._booked_costs(jobs))
+        colours: dict[tuple[int, int], str] = {}
+        rows: list[list[Any]] = []
+        for index, line in enumerate(customers):
+            margin = "—" if line.margin is None else f"⁦{line.margin:.1f}%⁩"
+            rows.append([
+                line.name or "—", f"⁦{line.jobs}⁩", f"⁦{line.won}⁩",
+                f"⁦{line.lost}⁩", f"⁦{line.value:,.0f}⁩ ₪",
+                f"⁦{line.win_rate:.0f}%⁩", margin,
+            ])
+            if line.margin is not None:
+                colours[(index, 6)] = (
+                    self.colours.success if line.margin >= 20
+                    else self.colours.warning if line.margin >= 8
+                    else self.colours.danger
+                )
+        self.customers_table.set_rows(rows, colours=colours)
+
+        self.stage_table.set_rows([list(row) for row in live.rows()])
+        late_rows: list[list[Any]] = []
+        late_colours: dict[tuple[int, int], str] = {}
+        for job_id, name, days in live.overdue[:20]:
+            late_colours[(len(late_rows), 2)] = self.colours.danger
+            late_rows.append([job_id, name, f"⁦{days}⁩ ימי איחור"])
+        for job_id, name, days in live.due_this_week[:20]:
+            late_colours[(len(late_rows), 2)] = self.colours.warning
+            late_rows.append([job_id, name, f"בעוד ⁦{days}⁩ ימים"])
+        self.late_table.set_rows(late_rows, colours=late_colours)
+        self.pipeline_note.setText(
+            live.describe()
+            + (
+                f" · ⁦{live.undated}⁩ תיקים פתוחים בלי מועד אספקה"
+                if live.undated else ""
+            )
+        )
+        self._loaded = True
+
+    def _booked_costs(self, jobs: list[Any]) -> dict[str, float]:
+        """What each job actually cost, where hours were booked against it."""
+        try:
+            from ..erp.timesheets import default_timebook
+
+            book = default_timebook()
+        except Exception:  # noqa: BLE001
+            return {}
+        return {
+            job.job_id: book.cost_of_job(job.job_id)
+            for job in jobs
+            if book.cost_of_job(job.job_id)
+        }
 
 
 # --------------------------------------------------------------------------- #
@@ -6180,11 +6603,12 @@ PAGES: list[type[Page]] = [
     ShopFloorPage, DeliveryPage, ServicePage, PlumbingPage,
     CataloguePage,
     SystemPage,
+    ReportsPage,
 ]
 
 __all__ = [
     "Page", "HomePage", "ProjectsPage", "ProfilePage", "ElementPage", "ViewPage",
     "DrawingsPage", "NestingPage", "GlassPage", "MachiningPage", "QuotePage", "AccountsPage",
     "ShopFloorPage", "DeliveryPage", "ServicePage", "CollectionPage", "PlumbingPage",
-    "CataloguePage", "SystemPage", "PAGES",
+    "CataloguePage", "SystemPage", "ReportsPage", "PAGES",
 ]
