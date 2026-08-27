@@ -190,6 +190,39 @@ Code 128 (implemented directly) and QR labels, a validated production stage
 machine with append-only history, bottleneck detection, and self-contained
 tablet job cards with assembly sequences derived from the element's own content.
 
+### Site measurement — `profileos.delivery.survey`
+Three widths, three heights and both diagonals per opening — the measurements
+the trade actually takes — with the frame size derived from the **smallest**
+dimension less the system's own fitting clearance. An opening out of square,
+not parallel, or measured off an unfinished floor is named and left out of
+production rather than rounded into the batch. No clearance from the
+catalogue means no frame size is offered at all.
+
+### Documents the shop sends — `profileos.erp`, `profileos.glazing.order`
+Order confirmations that carry what the shop is still waiting on from the
+customer, each with a date, and a delivery date counted in working days from
+when the last blocker clears — printed as provisional while anything is
+outstanding. Glass orders generated from the same panes the machining came
+from, with the sizes left blank where the series' rebate is unconfirmed,
+because an insulating unit cannot be recut. Handover packs with care
+instructions for the finishes actually on the job and a warranty per part of
+the work whose clock starts on a stated date.
+
+### The office — `profileos.reports`, `profileos.erp.stocktake`, `profileos.erp.timesheets`
+Quoted against ordered by month, win rate by count and by money, margin by
+customer, the live pipeline and what is late — every percentage carrying the
+number of records behind it. Stocktake sheets that go to the racks without the
+expected figure printed on them and post only the lines somebody counted.
+Hours booked by person, job and operation, with rework separated, feeding the
+job costing so margin is measured rather than repeated.
+
+### Keeping the shop — `profileos.core.backup`, `profileos.core.audit`
+One dated archive of everything, with a restore that says what it would
+replace and moves the current folder aside rather than deleting it. A
+hash-chained audit trail where each entry carries a digest of the one before
+it, so a line removed from the middle or a figure edited afterwards breaks the
+chain and the check names the line.
+
 ### Continuous updates — `profileos.core`
 Plugins load and reload without restarting. Python plugins are statically
 validated with `ast` **before execution** — `eval`, `exec`, `subprocess`,
@@ -230,7 +263,7 @@ claim no longer resolves.
 ## Testing
 
 ```bash
-pytest                                  # 571 tests
+pytest                                  # the whole suite
 QT_QPA_PLATFORM=offscreen pytest        # includes the UI suite
 ```
 
@@ -297,7 +330,10 @@ profileos/
   plumbing/    hydraulics, pipe catalogues, network analysis
   catalogue/   supplier table parsing, drawing ingestion, cross-verification
   quoting/     bill of materials, suppliers, pricing
-  mes/         barcodes, production tracking, job cards
+  mes/         barcodes, production tracking, job cards, piece labels
+  delivery/    site measurement, loading, installation days, handover packs
+  projects/    job files, costing, attachments, saved templates
+  reports.py   sales, win rate, margin by customer, the pipeline
   api/         FastAPI service
   ui/          PySide6 desktop application
   updates/     signed manifests, atomic install, rollback
@@ -306,5 +342,5 @@ profileos/
 tools/         sample DXF generator, site build
 site/          the public comparison page
 examples/      plugin examples and a sample elevation set
-tests/         571 tests
+tests/         the suite
 ```

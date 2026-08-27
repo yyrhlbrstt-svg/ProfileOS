@@ -73,6 +73,8 @@ fx_app = typer.Typer(help="Buying in euros, selling in shekels.")
 count_app = typer.Typer(help="Counting the racks, and posting the difference.")
 report_app = typer.Typer(help="The numbers the owner asks for on a Sunday.")
 audit_app = typer.Typer(help="Who changed what, in a chain that cannot lose a line.")
+measure_app = typer.Typer(help="Measuring the hole in the wall, properly.")
+template_app = typer.Typer(help="Making another one of those.")
 
 app.add_typer(geometry_app, name="section")
 app.add_typer(nest_app, name="nest")
@@ -110,6 +112,8 @@ app.add_typer(fx_app, name="fx")
 app.add_typer(count_app, name="stocktake")
 app.add_typer(report_app, name="report")
 app.add_typer(audit_app, name="audit")
+app.add_typer(measure_app, name="measure")
+app.add_typer(template_app, name="template")
 
 
 # --------------------------------------------------------------------------- #
@@ -3777,6 +3781,373 @@ def backup_restore(
             f"[dim]The folder that was there is at {aside} — move it back to "
             f"undo this.[/dim]"
         )
+
+
+@glass_app.command("order")
+def glass_order(
+    job_id: str = typer.Argument(..., help="Which job's glazing to order."),
+    supplier: str = typer.Option("", "--supplier", help="Which glazier."),
+    wanted_by: str = typer.Option("", "--by", help="Wanted by YYYY-MM-DD."),
+    out: Path = typer.Option(
+        Path("glass-order.html"), "--out", "-o", help="Where to write it."
+    ),
+    provisional: bool = typer.Option(
+        False, "--provisional",
+        help="The series figures behind these sizes are not confirmed.",
+    ),
+) -> None:
+    """The order to the glazier: sizes, make-up, toughening and mass."""
+    from datetime import date as _date
+
+    from .elements import build_elements
+    from .glazing.order import order_from_builds, write_glass_order
+    from .projects import default_store
+
+    try:
+        job = default_store().load(job_id)
+    except Exception as exc:  # noqa: BLE001
+        _fail(str(exc))
+    if job.schedule is None:
+        _fail(f"Job {job_id} has no openings scheduled.")
+
+    order = order_from_builds(
+        build_elements(job.schedule.openings),
+        job_id=job.job_id, job_name=job.name, supplier=supplier,
+        wanted_by=_date.fromisoformat(wanted_by) if wanted_by else None,
+        sizes_confirmed=not provisional,
+        provisional_reason="נתוני הסדרה לא אושרו" if provisional else "",
+    )
+    write_glass_order(order, out)
+    console.print(f"[green]{out}[/green]")
+    console.print(f"[dim]{order.describe()}[/dim]")
+
+    table = Table(header_style="dim")
+    for heading in ("Build-up", "Panes", "m2", "kg"):
+        table.add_column(heading)
+    for row in order.by_build_up():
+        table.add_row(
+            row["build_up"], str(row["panes"]),
+            f"{row['area']:.3f}", f"{row['mass']:.1f}",
+        )
+    console.print(table)
+    for problem in order.problems():
+        console.print(f"[yellow]{problem}[/yellow]")
+
+
+# --------------------------------------------------------------------------- #
+# Site measurement
+# --------------------------------------------------------------------------- #
+@measure_app.command("open")
+def measure_open(
+    job_id: str = typer.Argument(..., help="Which job to measure."),
+    clearance: float = typer.Option(
+        0.0, "--clearance", help="Fitting clearance per side [mm], from the system."
+    ),
+    sheet: Optional[Path] = typer.Option(
+        None, "--sheet", help="Write the blank site sheet here as CSV."
+    ),
+) -> None:
+    """Open a measurement sheet with a blank line per opening in the job."""
+    import csv
+
+    from .delivery.survey import Survey, default_surveys, survey_for_job
+    from .projects import default_store
+
+    try:
+        job = default_store().load(job_id)
+    except Exception as exc:  # noqa: BLE001
+        _fail(str(exc))
+
+    survey = survey_for_job(job, clearance_per_side=clearance or None)
+    if not len(survey):
+        _fail(f"Job {job_id} has no openings scheduled to measure.")
+    default_surveys().add(survey)
+
+    console.print(f"[green]{survey.survey_id}[/green] — {len(survey)} openings")
+    if clearance <= 0:
+        console.print(
+            "[yellow]No fitting clearance given, so no frame size will be "
+            "derived. It is a figure from the system's own catalogue.[/yellow]"
+        )
+    if sheet is not None:
+        with Path(sheet).open("w", newline="", encoding="utf-8-sig") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(Survey.SHEET_HEADERS)
+            writer.writerows(survey.sheet_rows())
+        console.print(f"[dim]{sheet}[/dim]")
+
+
+@measure_app.command("enter")
+def measure_enter(
+    survey_id: str = typer.Argument(..., help="Which sheet."),
+    reference: str = typer.Argument(..., help="Which opening."),
+    widths: str = typer.Option(
+        ..., "--widths", help="Head, middle and sill, e.g. 1502,1496,1488."
+    ),
+    heights: str = typer.Option(
+        ..., "--heights", help="Left, middle and right."
+    ),
+    diagonals: str = typer.Option(
+        "", "--diagonals", help="Both diagonals, e.g. 1921,1939."
+    ),
+    by: str = typer.Option("", "--by"),
+) -> None:
+    """Write one opening's measurements onto the sheet."""
+    from datetime import date as _date
+
+    from .delivery.survey import default_surveys
+
+    def numbers(text: str, wanted: int, what: str) -> list[float]:
+        parts = [part.strip() for part in text.split(",") if part.strip()]
+        try:
+            values = [float(part) for part in parts]
+        except ValueError:
+            _fail(f"Could not read {what} from {text!r}.")
+        if values and len(values) != wanted:
+            _fail(f"Give {wanted} figures for {what}, not {len(values)}.")
+        return values
+
+    book = default_surveys()
+    survey = book.get(survey_id)
+    entry = survey.opening(reference)
+
+    three = numbers(widths, 3, "widths")
+    entry.width_head, entry.width_middle, entry.width_sill = three
+    three = numbers(heights, 3, "heights")
+    entry.height_left, entry.height_middle, entry.height_right = three
+    if diagonals:
+        entry.diagonal_a, entry.diagonal_b = numbers(diagonals, 2, "diagonals")
+    entry.measured_by = by
+    entry.measured_on = _date.today()
+    book.save()
+
+    console.print(entry.describe())
+    for problem in entry.problems():
+        console.print(f"[yellow]{problem}[/yellow]")
+
+
+@measure_app.command("show")
+def measure_show(
+    survey_id: str = typer.Argument(..., help="Which sheet."),
+) -> None:
+    """What the sheet says, and what still stands between it and a saw."""
+    from .delivery.survey import default_surveys
+
+    survey = default_surveys().get(survey_id)
+    console.print(survey.describe())
+
+    table = Table(header_style="dim")
+    for heading in ("Mark", "Width", "Height", "Diagonals", "Frame", "By", "State"):
+        table.add_column(heading)
+    for entry in survey:
+        frame = entry.frame_size()
+        square = entry.out_of_square
+        table.add_row(
+            entry.reference or "—",
+            f"{entry.smallest_width:g}" if entry.smallest_width else "—",
+            f"{entry.smallest_height:g}" if entry.smallest_height else "—",
+            f"{square:g}" if square is not None else "—",
+            f"{frame[0]:g}×{frame[1]:g}" if frame else "—",
+            entry.measured_by or "—",
+            "ready" if entry.may_be_made
+            else ("unmeasured" if not entry.is_measured else "check"),
+        )
+    console.print(table)
+    for problem in survey.problems():
+        console.print(f"[yellow]{problem}[/yellow]")
+
+
+@deliver_app.command("handover")
+def deliver_handover(
+    job_id: str = typer.Argument(..., help="Which job is being handed over."),
+    out: Path = typer.Option(
+        Path("handover.html"), "--out", "-o", help="Where to write the pack."
+    ),
+    on: str = typer.Option("", "--on", help="Handover date YYYY-MM-DD."),
+    profile_months: int = typer.Option(
+        0, "--profile-months", help="Warranty on the aluminium."
+    ),
+    finish_months: int = typer.Option(0, "--finish-months"),
+    glass_months: int = typer.Option(0, "--glass-months"),
+    hardware_months: int = typer.Option(0, "--hardware-months"),
+    sealing_months: int = typer.Option(0, "--sealing-months"),
+    installation_months: int = typer.Option(0, "--installation-months"),
+) -> None:
+    """The handover pack: what was fitted, how to look after it, and the warranty.
+
+    Warranty periods are the shop's own promise. Any left at zero print as
+    "not stated" rather than as a figure this software made up.
+    """
+    from datetime import date as _date
+
+    from .delivery.handover import Cover, pack_from_job, write_handover
+    from .elements import build_elements
+    from .projects import default_store
+
+    try:
+        job = default_store().load(job_id)
+    except Exception as exc:  # noqa: BLE001
+        _fail(str(exc))
+    if job.schedule is None:
+        _fail(f"Job {job_id} has no openings scheduled.")
+
+    months = {
+        cover: value
+        for cover, value in (
+            (Cover.PROFILE, profile_months),
+            (Cover.FINISH, finish_months),
+            (Cover.GLASS, glass_months),
+            (Cover.HARDWARE, hardware_months),
+            (Cover.SEALING, sealing_months),
+            (Cover.INSTALLATION, installation_months),
+        )
+        if value > 0
+    }
+
+    from .branding import active_brand
+
+    brand = active_brand()
+    pack = pack_from_job(
+        job,
+        builds=build_elements(job.schedule.openings),
+        handed_over_on=_date.fromisoformat(on) if on else _date.today(),
+        warranty_months=months,
+        service_contact=" · ".join(
+            part for part in (brand.display_name, getattr(brand, "phone", ""))
+            if part
+        ),
+    )
+    write_handover(pack, out)
+    console.print(f"[green]{out}[/green]")
+    console.print(f"[dim]{pack.describe()}[/dim]")
+    for entry in pack.warranties:
+        console.print(entry.describe())
+    for problem in pack.problems():
+        console.print(f"[yellow]{problem}[/yellow]")
+
+
+# --------------------------------------------------------------------------- #
+# Templates
+# --------------------------------------------------------------------------- #
+@template_app.command("list")
+def template_list(
+    search: str = typer.Argument("", help="Words from the name, in any order."),
+) -> None:
+    """Every saved configuration, most used first."""
+    from .projects.templates import default_templates
+
+    book = default_templates()
+    found = book.search(search) if search else book.popular()
+    if not found:
+        console.print("[dim]No templates saved yet.[/dim]")
+        return
+
+    table = Table(header_style="dim")
+    for heading in ("Id", "Name", "System", "Used", "Price/m2", "Priced"):
+        table.add_column(heading)
+    for template in found:
+        age = template.price_age_days
+        table.add_row(
+            template.template_id, template.name, template.system_id,
+            str(template.times_used),
+            f"{template.last_price_per_m2:,.0f}"
+            if template.last_price_per_m2 else "—",
+            "—" if age is None else (
+                f"{age}d{' STALE' if template.price_is_stale else ''}"
+            ),
+        )
+    console.print(table)
+
+
+@template_app.command("save")
+def template_save(
+    job_id: str = typer.Argument(..., help="Job holding the opening."),
+    mark: str = typer.Argument(..., help="Which opening in it."),
+    name: str = typer.Option("", "--name", help="What to call the template."),
+    price: float = typer.Option(0.0, "--price", help="Charged per square metre."),
+) -> None:
+    """Save one of a job's openings as a template."""
+    from .projects import default_store
+    from .projects.templates import default_templates, template_from_opening
+
+    try:
+        job = default_store().load(job_id)
+    except Exception as exc:  # noqa: BLE001
+        _fail(str(exc))
+    if job.schedule is None:
+        _fail(f"Job {job_id} has no openings.")
+
+    for opening in job.schedule.openings:
+        if opening.name == mark or opening.reference == mark:
+            break
+    else:
+        _fail(f"No opening {mark!r} in {job_id}.")
+
+    book = default_templates()
+    template = book.add(template_from_opening(
+        opening, name=name or opening.name, from_job=job.job_id,
+        price_per_m2=price or None,
+    ))
+    console.print(f"[green]{template.template_id}[/green] {template.describe()}")
+
+
+@template_app.command("use")
+def template_use(
+    template_id: str = typer.Argument(..., help="Which template."),
+    width: float = typer.Argument(..., help="Width [mm]."),
+    height: float = typer.Argument(..., help="Height [mm]."),
+) -> None:
+    """Build an opening from a template at a new size."""
+    from .projects.templates import default_templates
+
+    book = default_templates()
+    try:
+        opening = book.use(template_id, width, height)
+    except Exception as exc:  # noqa: BLE001
+        _fail(str(exc))
+
+    console.print(
+        f"[green]{opening.name}[/green] {opening.width:g}×{opening.height:g} "
+        f"{opening.system_id}"
+    )
+    if opening.mullion_positions:
+        console.print(
+            "[dim]mullions at "
+            + ", ".join(f"{p:g}" for p in opening.mullion_positions)
+            + "[/dim]"
+        )
+    template = book.get(template_id)
+    if template.price_is_stale and template.last_price_per_m2:
+        console.print(f"[yellow]{template.price_line()}[/yellow]")
+
+
+@template_app.command("reprice")
+def template_reprice(
+    template_id: Optional[str] = typer.Argument(None, help="Which template."),
+    price: float = typer.Option(0.0, "--price", help="New price per square metre."),
+) -> None:
+    """Update a template's remembered price, or list what needs it."""
+    from datetime import date as _date
+
+    from .projects.templates import default_templates
+
+    book = default_templates()
+    if template_id is None:
+        stale = book.needing_repricing()
+        if not stale:
+            console.print("[green]Every priced template is current.[/green]")
+            return
+        for template in stale:
+            console.print(f"{template.template_id} {template.describe()}")
+        return
+
+    if price <= 0:
+        _fail("Give a price per square metre with --price.")
+    template = book.get(template_id)
+    template.last_price_per_m2 = price
+    template.priced_on = _date.today()
+    book.save()
+    console.print(f"[green]{template.describe()}[/green]")
 
 
 # --------------------------------------------------------------------------- #

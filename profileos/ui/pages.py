@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
     QHeaderView,
+    QInputDialog,
     QDoubleSpinBox,
     QFileDialog,
     QHBoxLayout,
@@ -1322,6 +1323,14 @@ class ElementPage(Page):
         build_button.clicked.connect(self.build_element)
         self.header.add_action(build_button)
 
+        template_button = QPushButton("תבניות")
+        template_button.clicked.connect(self.use_template)
+        self.header.add_action(template_button)
+
+        save_template = QPushButton("שמור כתבנית")
+        save_template.clicked.connect(self.save_as_template)
+        self.header.add_action(save_template)
+
         splitter = QSplitter(Qt.Orientation.Horizontal)
 
         form_card = Card("פתח")
@@ -1550,6 +1559,98 @@ class ElementPage(Page):
         preset = find_opening(self)
         if preset is not None:
             self.apply_preset(preset)
+
+    # -- templates -------------------------------------------------------- #
+    def save_as_template(self) -> None:
+        """Keep this configuration so the next one of these is two clicks.
+
+        Half the errors in a quotation are in the half that was typed rather
+        than chosen, and a shop that fits fifty of the same window a year
+        types it fifty times.
+        """
+        from ..projects.templates import default_templates, template_from_opening
+
+        build = self.session.builds[-1] if self.session.builds else None
+        opening = getattr(build, "opening", None)
+        if opening is None:
+            self.report(
+                ProfileOSError("בנה פתח קודם, ואז אפשר לשמור אותו כתבנית"),
+                "אין מה לשמור",
+            )
+            return
+
+        name, ok = QInputDialog.getText(
+            self, "שמירת תבנית", "שם התבנית, כפי שהיו קוראים לה בבית המלאכה:",
+            text=str(getattr(opening, "name", "") or ""),
+        )
+        if not ok or not name.strip():
+            return
+
+        job = getattr(self.session, "job", None)
+        try:
+            book = default_templates()
+            template = book.add(template_from_opening(
+                opening, name=name.strip(),
+                from_job=str(getattr(job, "job_id", "") or ""),
+            ))
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "שמירת התבנית נכשלה")
+            return
+        self.status(f"נשמרה תבנית: {template.describe()}")
+
+    def use_template(self) -> None:
+        """Pick a saved configuration and make it at the size on the form."""
+        from ..projects.templates import default_templates
+
+        try:
+            book = default_templates()
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "לא ניתן לקרוא את התבניות")
+            return
+
+        templates = book.popular()
+        if not templates:
+            self.report(
+                ProfileOSError(
+                    "עדיין אין תבניות. בנה פתח ולחץ ״שמור כתבנית״."
+                ),
+                "אין תבניות",
+            )
+            return
+
+        labels = [template.describe() for template in templates]
+        chosen, ok = QInputDialog.getItem(
+            self, "תבניות", "איזו תבנית?", labels, 0, False
+        )
+        if not ok:
+            return
+        template = templates[labels.index(chosen)]
+
+        try:
+            opening = book.use(
+                template.template_id,
+                self.width.value() or template.typical_width or 1000.0,
+                self.height.value() or template.typical_height or 1000.0,
+                name=self.next_mark(template.kind),
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "לא ניתן להשתמש בתבנית")
+            return
+
+        self.name.setCurrentText(opening.name)
+        index = self.kind.findData(template.kind)
+        if index >= 0:
+            self.kind.setCurrentIndex(index)
+        self.width.setValue(opening.width)
+        self.height.setValue(opening.height)
+        self.columns.setValue(len(template.mullion_fractions) + 1)
+        self.rows.setValue(len(template.transom_fractions) + 1)
+        self.build_element()
+
+        if template.price_is_stale and template.last_price_per_m2:
+            self.status(
+                f"שים לב: {template.price_line()}"
+            )
 
     def next_mark(self, kind: str) -> str:
         """The next free mark for this kind of opening in this job."""
@@ -3117,6 +3218,10 @@ class GlassPage(Page):
         export.clicked.connect(self.export_maps)
         self.header.add_action(export)
 
+        order = QPushButton("הזמנה לספק זכוכית...")
+        order.clicked.connect(self.export_glass_order)
+        self.header.add_action(order)
+
         self.stats = StatRow([
             ("sheets", "לוחות"), ("panes", "שמשות"), ("yield", "ניצולת"),
             ("offcuts", "שאריות"), ("stages", "שלבי חיתוך"),
@@ -3337,6 +3442,60 @@ class GlassPage(Page):
                 path.write_text(render_layout_svg(layout), encoding="utf-8")
                 written += 1
         self.status(f"נשמרו {written} מפות חיתוך אל {target}")
+
+
+    def export_glass_order(self) -> None:
+        """The order that goes to the glazier — the one item that cannot be recut.
+
+        Built from the same panes the machining came from rather than retyped
+        from a cutting list, which is how a pane four millimetres out gets
+        paid for twice.
+        """
+        from ..glazing.order import (
+            order_from_builds, render_glass_order, write_glass_order,
+        )
+
+        builds = self.session.builds
+        if not builds:
+            self.report(
+                ProfileOSError(
+                    "אין פתחים בעבודה. תכנן פתחים בעמוד ״פתח״ ואז חזור לכאן."
+                ),
+                "אין מה להזמין",
+            )
+            return
+
+        job = getattr(self.session, "job", None)
+        order = order_from_builds(
+            builds,
+            job_id=str(getattr(job, "job_id", "") or ""),
+            job_name=str(getattr(job, "name", "") or ""),
+        )
+
+        problems = order.problems()
+        if problems:
+            box = QMessageBox(self)
+            box.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
+            box.setWindowTitle("הזמנת זכוכית")
+            box.setText(
+                "ההזמנה לא עברה בדיקה:\n\n"
+                + "\n".join(f"• {problem}" for problem in problems[:8])
+                + "\n\nלשמור בכל זאת? המסמך יישא באנר ״לא לשליחה״."
+            )
+            box.setStandardButtons(
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            )
+            box.setDefaultButton(QMessageBox.StandardButton.No)
+            if box.exec() != QMessageBox.StandardButton.Yes:
+                return
+
+        path, _ = QFileDialog.getSaveFileName(
+            self, "שמירת הזמנת זכוכית", "glass-order.html", "HTML (*.html)"
+        )
+        if not path:
+            return
+        write_glass_order(order, path)
+        self.status(f"{order.describe()} · {path}")
 
 
 # --------------------------------------------------------------------------- #
@@ -4267,6 +4426,10 @@ class DeliveryPage(Page):
         plan.clicked.connect(self.replan)
         self.header.add_action(plan)
 
+        handover = QPushButton("תיק מסירה...")
+        handover.clicked.connect(self.export_handover)
+        self.header.add_action(handover)
+
         self.stats = StatRow([
             ("loads", "הובלות"), ("pieces", "יחידות"), ("mass", "משקל ק״ג"),
             ("days", "ימי הרכבה"), ("finish", "סיום צפוי"),
@@ -4426,6 +4589,64 @@ class DeliveryPage(Page):
                 plan.finish.strftime("%Y") if plan.finish else "",
             ),
         })
+
+
+    def export_handover(self) -> None:
+        """The folder the customer keeps, and the warranty that starts with it.
+
+        Written at handover rather than reconstructed three years later from
+        whatever anybody remembers, which is how a claim in year four is
+        currently settled.
+        """
+        from datetime import date as _date
+
+        from ..delivery.handover import pack_from_job, write_handover
+
+        builds = self.session.builds
+        if not builds:
+            self.report(
+                ProfileOSError(
+                    "אין פתחים בעבודה. תכנן פתחים בעמוד ״פתח״ ואז חזור לכאן."
+                ),
+                "אין מה למסור",
+            )
+            return
+
+        job = getattr(self.session, "job", None)
+        from ..branding import active_brand
+
+        brand = active_brand()
+        contact = " · ".join(
+            part for part in (brand.display_name, getattr(brand, "phone", ""))
+            if part
+        )
+        pack = pack_from_job(
+            job if job is not None else _EmptyJob(),
+            builds=builds,
+            handed_over_on=_date.today(),
+            service_contact=contact,
+        )
+
+        problems = pack.problems()
+        if problems:
+            self.status(" · ".join(problems[:3]))
+
+        path, _ = QFileDialog.getSaveFileName(
+            self, "שמירת תיק מסירה", "handover.html", "HTML (*.html)"
+        )
+        if not path:
+            return
+        write_handover(pack, path)
+        self.status(f"{pack.describe()} · {path}")
+
+
+class _EmptyJob:
+    """Stands in when work is on the table but no job file is open."""
+
+    job_id = ""
+    name = ""
+    customer_name = ""
+    site_address = ""
 
 
 # --------------------------------------------------------------------------- #
@@ -5683,6 +5904,277 @@ class SystemPage(Page):
 
 
 
+
+# --------------------------------------------------------------------------- #
+# Site measurement
+# --------------------------------------------------------------------------- #
+
+class SurveyPage(Page):
+    """The one screen where the software meets a building.
+
+    Everything upstream is arithmetic on numbers somebody typed. This is where
+    the expensive mistakes are made, so it asks for the measurements the trade
+    actually takes — three widths, three heights, both diagonals — rather than
+    one width and one height, which is what makes a non-parallel opening look
+    fine until the frame is welded.
+    """
+
+    title = "Survey"
+    hebrew = "מדידה באתר"
+    subtitle = "שלושה רוחבים, שלושה גבהים, שני אלכסונים — ומידת המסגרת שיוצאת מהם"
+
+    #: Which attribute each editable column writes to.
+    _COLUMNS: tuple[tuple[str, str], ...] = (
+        ("width_head", "רוחב עליון"),
+        ("width_middle", "רוחב אמצע"),
+        ("width_sill", "רוחב תחתון"),
+        ("height_left", "גובה שמאל"),
+        ("height_middle", "גובה אמצע"),
+        ("height_right", "גובה ימין"),
+        ("diagonal_a", "אלכסון א"),
+        ("diagonal_b", "אלכסון ב"),
+    )
+
+    def build(self) -> None:
+        take = QPushButton("פתח גיליון מדידה")
+        take.setObjectName("Primary")
+        take.clicked.connect(self.open_sheet)
+        self.header.add_action(take)
+
+        export = QPushButton("ייצא גיליון ריק...")
+        export.clicked.connect(self.export_sheet)
+        self.header.add_action(export)
+
+        self.stats = StatRow([
+            ("openings", "פתחים"), ("measured", "נמדדו"),
+            ("makeable", "מוכנים לייצור"), ("square", "מחוץ לזווית"),
+            ("clearance", "מרווח התקנה"),
+        ])
+        self.body.addWidget(self.stats)
+
+        entry = Card("רישום מדידה")
+        row = QHBoxLayout()
+        row.setSpacing(METRICS.space(3))
+
+        self.survey_opening = QComboBox()
+        row.addWidget(self._caption("פתח"))
+        row.addWidget(self.survey_opening)
+
+        self._boxes: dict[str, QDoubleSpinBox] = {}
+        for key, label in self._COLUMNS:
+            box = QDoubleSpinBox()
+            box.setRange(0.0, 20_000.0)
+            box.setDecimals(1)
+            box.setSingleStep(1.0)
+            box.setMaximumWidth(METRICS.space(22))
+            box.setSpecialValueText("—")
+            self._boxes[key] = box
+            row.addWidget(self._caption(label))
+            row.addWidget(box)
+        row.addStretch(1)
+        entry.add_layout(row)
+
+        second = QHBoxLayout()
+        second.setSpacing(METRICS.space(3))
+        self.survey_by = QComboBox()
+        self.survey_by.setEditable(True)
+        self.survey_by.addItems(["יוסי", "דנה", "מאיה"])
+        second.addWidget(self._caption("מדד"))
+        second.addWidget(self.survey_by)
+
+        self.survey_clearance = QDoubleSpinBox()
+        self.survey_clearance.setRange(0.0, 60.0)
+        self.survey_clearance.setDecimals(1)
+        self.survey_clearance.setSpecialValueText("—")
+        self.survey_clearance.setSuffix(" מ״מ לצד")
+        second.addWidget(self._caption("מרווח התקנה"))
+        second.addWidget(self.survey_clearance)
+
+        self.floor_finished = QCheckBox("הרצפה גמורה")
+        second.addWidget(self.floor_finished)
+
+        record = QPushButton("רשום מדידה")
+        record.setObjectName("Primary")
+        record.clicked.connect(self.record_measurement)
+        second.addWidget(record)
+        second.addStretch(1)
+        entry.add_layout(second)
+
+        self.survey_result = QLabel("—")
+        self.survey_result.setObjectName("StatLabel")
+        self.survey_result.setWordWrap(True)
+        entry.add(self.survey_result)
+        self.body.addWidget(entry)
+
+        self.survey_table = DataTable(
+            ["סימון", "חדר", "רוחב", "גובה", "אלכסונים", "מסגרת", "מדד", "מצב"],
+            empty_text="פתח גיליון מדידה מתוך תיק עבודה עם רשימת פתחים",
+        )
+        self.body.addWidget(self.survey_table, 1)
+
+        self.survey_problems = QLabel("")
+        self.survey_problems.setObjectName("Hint")
+        self.survey_problems.setWordWrap(True)
+        self.body.addWidget(self.survey_problems)
+
+        note = QLabel(
+            "המסגרת נגזרת מהמידה הקטנה ביותר פחות מרווח ההתקנה משני הצדדים. "
+            "מרווח ההתקנה הוא נתון של הסדרה — בלעדיו לא תוצג מידת מסגרת, "
+            "כי ניחוש כאן הוא החלון שנכנס לפח."
+        )
+        note.setObjectName("Hint")
+        note.setWordWrap(True)
+        self.body.addWidget(note)
+
+        self._survey = None
+
+    def _caption(self, text: str) -> QLabel:
+        label = QLabel(text)
+        label.setObjectName("FieldLabel")
+        return label
+
+    # -- the sheet -------------------------------------------------------------- #
+    def open_sheet(self) -> None:
+        """Open a blank sheet with a line per opening the job already has."""
+        from ..delivery.survey import survey_for_job
+
+        job = getattr(self.session, "job", None)
+        if job is None or getattr(job, "schedule", None) is None:
+            self.report(
+                ProfileOSError(
+                    "פתח תיק עבודה עם רשימת פתחים בעמוד ״פרויקטים״ ואז חזור לכאן"
+                ),
+                "אין ממה לפתוח גיליון",
+            )
+            return
+
+        clearance = self.survey_clearance.value() or None
+        self._survey = survey_for_job(job, clearance_per_side=clearance)
+        self.survey_opening.clear()
+        for entry in self._survey:
+            self.survey_opening.addItem(entry.reference or "—", entry.reference)
+        self.show_survey()
+        self.status(self._survey.describe())
+
+    def record_measurement(self) -> None:
+        from datetime import date as _date
+
+        if self._survey is None:
+            self.report(ProfileOSError("פתח גיליון מדידה קודם"), "אין מה לרשום")
+            return
+
+        reference = self.survey_opening.currentData()
+        try:
+            entry = self._survey.opening(reference or "")
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "לא נמצא הפתח")
+            return
+
+        for key, _label in self._COLUMNS:
+            value = self._boxes[key].value()
+            setattr(entry, key, value if value > 0 else None)
+        entry.measured_by = self.survey_by.currentText()
+        entry.measured_on = _date.today()
+        entry.floor_is_finished = self.floor_finished.isChecked()
+        clearance = self.survey_clearance.value()
+        if clearance > 0:
+            entry.clearance_per_side = clearance
+
+        problems = entry.problems()
+        self.survey_result.setText(
+            entry.describe() + (" · " + " · ".join(problems) if problems else "")
+        )
+        self.survey_result.setStyleSheet(
+            f"color: {self.colours.danger if problems else self.colours.success};"
+        )
+        self.show_survey()
+
+    def show_survey(self) -> None:
+        from ..delivery.survey import SQUARE_TOLERANCE_MM
+
+        survey = self._survey
+        if survey is None:
+            return
+
+        rows: list[list[Any]] = []
+        colours: dict[tuple[int, int], str] = {}
+        racked = 0
+        for index, entry in enumerate(survey):
+            frame = entry.frame_size()
+            square = entry.out_of_square
+            if square is not None and square > SQUARE_TOLERANCE_MM:
+                racked += 1
+
+            if not entry.is_measured:
+                state, tone = "לא נמדד", self.colours.warning
+            elif entry.may_be_made:
+                state, tone = "מוכן", self.colours.success
+            else:
+                state, tone = "לבדיקה", self.colours.danger
+            colours[(index, 7)] = tone
+
+            rows.append([
+                entry.reference or "—", entry.room or "—",
+                f"⁦{entry.smallest_width:g}⁩" if entry.smallest_width else "—",
+                f"⁦{entry.smallest_height:g}⁩" if entry.smallest_height else "—",
+                f"⁦{square:g}⁩" if square is not None else "—",
+                f"⁦{frame[0]:g}×{frame[1]:g}⁩" if frame else "—",
+                entry.measured_by or "—",
+                state,
+            ])
+        self.survey_table.set_rows(rows, colours=colours)
+
+        clearances = {
+            entry.clearance_per_side for entry in survey
+            if entry.clearance_per_side
+        }
+        self.stats.update_many({
+            "openings": (f"⁦{len(survey)}⁩", survey.job_name or survey.job_id),
+            "measured": (
+                f"⁦{len(survey.measured)}⁩",
+                f"⁦{survey.progress:.0f}%⁩ מהגיליון",
+            ),
+            "makeable": (f"⁦{len(survey.makeable)}⁩", ""),
+            "square": (
+                f"⁦{racked}⁩",
+                f"מעל ⁦{SQUARE_TOLERANCE_MM:g}⁩ מ״מ" if racked else "הכול בזווית",
+            ),
+            "clearance": (
+                f"⁦{sorted(clearances)[0]:g}⁩ מ״מ" if len(clearances) == 1
+                else ("מעורב" if clearances else "—"),
+                "לצד" if clearances else "חסר נתון סדרה",
+            ),
+        })
+
+        problems = survey.problems()
+        self.survey_problems.setText(
+            " · ".join(problems[:6])
+            + (f" · ועוד ⁦{len(problems) - 6}⁩" if len(problems) > 6 else "")
+        )
+
+    def export_sheet(self) -> None:
+        """Write the blank sheet somebody carries to the site."""
+        import csv
+
+        from ..delivery.survey import Survey
+
+        if self._survey is None:
+            self.report(ProfileOSError("פתח גיליון מדידה קודם"), "אין מה לייצא")
+            return
+
+        path, _ = QFileDialog.getSaveFileName(
+            self, "שמירת גיליון מדידה", "measurements.csv", "CSV (*.csv)"
+        )
+        if not path:
+            return
+        # utf-8-sig so Excel in a Hebrew office opens it without a dialogue.
+        with open(path, "w", newline="", encoding="utf-8-sig") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(Survey.SHEET_HEADERS)
+            writer.writerows(self._survey.sheet_rows())
+        self.status(f"נשמר {path}")
+
+
 # --------------------------------------------------------------------------- #
 # Reports
 # --------------------------------------------------------------------------- #
@@ -6604,11 +7096,12 @@ PAGES: list[type[Page]] = [
     CataloguePage,
     SystemPage,
     ReportsPage,
+    SurveyPage,
 ]
 
 __all__ = [
     "Page", "HomePage", "ProjectsPage", "ProfilePage", "ElementPage", "ViewPage",
     "DrawingsPage", "NestingPage", "GlassPage", "MachiningPage", "QuotePage", "AccountsPage",
     "ShopFloorPage", "DeliveryPage", "ServicePage", "CollectionPage", "PlumbingPage",
-    "CataloguePage", "SystemPage", "ReportsPage", "PAGES",
+    "CataloguePage", "SystemPage", "ReportsPage", "SurveyPage", "PAGES",
 ]

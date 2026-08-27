@@ -805,6 +805,57 @@ CAPABILITIES: tuple[Capability, ...] = (
         differentiator=True,
     ),
     Capability(
+        "site_survey", Area.ELEMENTS,
+        "Site measurement sheets", "גיליון מדידה באתר",
+        "Three widths, three heights and both diagonals per opening — the "
+        "measurements the trade actually takes — with the frame size derived "
+        "from the smallest dimension less the system's own fitting clearance. "
+        "An opening out of square, not parallel, or measured off an "
+        "unfinished floor is named and left out of production rather than "
+        "rounded into the batch, and no frame size is offered at all without "
+        "a clearance from the catalogue.",
+        probe="profileos.delivery.survey:survey_for_job",
+        differentiator=True,
+    ),
+    Capability(
+        "glass_order", Area.GLASS,
+        "Order to the glazier", "הזמנת זכוכית לספק",
+        "Generated from the same panes the machining came from rather than "
+        "retyped from a cutting list: sizes, make-up in words, which panes "
+        "must be toughened and why, area totalled by make-up so the glazier "
+        "can price it, and the mass of each pane so the shop knows what needs "
+        "two people. Where the series' rebate and edge clearance are not "
+        "confirmed it prints the panes with the sizes blank, because an "
+        "insulating unit cannot be recut.",
+        probe="profileos.glazing.order:order_from_builds",
+        differentiator=True,
+    ),
+    Capability(
+        "job_templates", Area.ELEMENTS,
+        "Saved configurations", "תבניות פתחים שמורות",
+        "A configuration the shop has made before, saved under a name a "
+        "person would say and used again at any size — divisions are kept as "
+        "fractions so a mullion in the middle stays in the middle. It "
+        "remembers what was charged per square metre and when, and past a few "
+        "months shows that figure as needing repricing rather than offering "
+        "it, because a template quoted at last year's metal price loses money "
+        "repeatedly.",
+        probe="profileos.projects.templates:template_from_opening",
+    ),
+    Capability(
+        "handover_pack", Area.ADJACENT,
+        "Handover pack and warranty", "תיק מסירה ואחריות",
+        "What was fitted and where, the glazing certificates, care "
+        "instructions for the finishes actually on this job, and a warranty "
+        "per part of the work whose clock starts on a stated date — so a call "
+        "in year four is answered from what was written rather than from what "
+        "anybody remembers. A period the shop has not stated prints as not "
+        "stated, because a warranty is a commercial promise and not a fact "
+        "this software knows.",
+        probe="profileos.delivery.handover:pack_from_job",
+        differentiator=True,
+    ),
+    Capability(
         "capacity_planning", Area.ADJACENT,
         "Capacity and delivery planning", "תכנון קיבולת ומועדי אספקה",
         "Finite-capacity scheduling across work centres on the shop's own "

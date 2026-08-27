@@ -389,7 +389,7 @@ def _default_mass_lookup(profile_id: str) -> float | None:
     return None
 
 
-def _hebrew_reason(reason: str | None) -> str:
+def hebrew_safety_reason(reason: str | None) -> str:
     """The safety-glass reason in Hebrew.
 
     The builder states its reasons in English because that is where the
@@ -495,7 +495,7 @@ def check_glass(
                 severity=Severity.BLOCKER,
                 code="glass.safety_required",
                 hebrew=(
-                    f"נדרשת זכוכית בטיחותית — {_hebrew_reason(panel.safety_reason)} — "
+                    f"נדרשת זכוכית בטיחותית — {hebrew_safety_reason(panel.safety_reason)} — "
                     "והמפרט אינו כזה."
                 ),
                 english=(
@@ -746,6 +746,7 @@ def check_elements(
 
 
 __all__ = [
+    "hebrew_safety_reason",
     "DEFAULT_LIMITS",
     "FabricationLimits",
     "FeasibilityReport",
