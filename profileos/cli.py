@@ -4028,6 +4028,101 @@ def deliver_handover(
         console.print(f"[yellow]{problem}[/yellow]")
 
 
+@erp_app.command("po")
+def erp_purchase_order(
+    order_id: str = typer.Argument(..., help="Which purchase order."),
+    supplier: str = typer.Option("", "--supplier", help="The supplier's name."),
+    alloy: str = typer.Option("", "--alloy", help="e.g. 6063."),
+    temper: str = typer.Option("", "--temper", help="e.g. T6."),
+    mill_length: float = typer.Option(
+        0.0, "--mill-length", help="Bar length ordered [mm]."
+    ),
+    finish: str = typer.Option("", "--finish"),
+    price_source: str = typer.Option(
+        "", "--price-source", help="Where the prices came from."
+    ),
+    out: Path = typer.Option(
+        Path("purchase-order.html"), "--out", "-o"
+    ),
+) -> None:
+    """Print a purchase order the way the supplier receives it.
+
+    The extrusion specification matters: a supplier sent a code and a quantity
+    sends whatever that code means in their catalogue. Anything not given here
+    is printed on the order as a question rather than left blank.
+    """
+    from .erp import company_for_brand
+    from .erp.po_document import (
+        Specification, document_from_order, write_purchase_order,
+    )
+
+    company = company_for_brand()
+    orders = getattr(company, "purchase_orders", None) or {}
+    order = orders.get(order_id) if isinstance(orders, dict) else None
+    if order is None:
+        _fail(f"No purchase order {order_id!r} in this installation.")
+
+    spec = Specification(
+        alloy=alloy, temper=temper,
+        mill_length=mill_length or None, finish=finish,
+    )
+    codes = [line.item for line in order.lines]
+    document = document_from_order(
+        order, supplier_name=supplier,
+        specifications={code: spec for code in codes} if alloy or temper
+        or mill_length else None,
+        price_sources=(
+            {code: price_source for code in codes} if price_source else None
+        ),
+    )
+    write_purchase_order(document, out)
+    console.print(f"[green]{out}[/green]")
+    console.print(f"[dim]{document.describe()}[/dim]")
+    for problem in document.problems():
+        console.print(f"[yellow]{problem}[/yellow]")
+
+
+@app.command()
+def ifc(
+    job_id: str = typer.Argument(..., help="Which job's openings to export."),
+    out: Path = typer.Option(
+        Path("model.ifc"), "--out", "-o", help="Where to write the model."
+    ),
+    storey: str = typer.Option("Ground floor", "--storey"),
+    elevation: float = typer.Option(
+        0.0, "--elevation", help="Storey level above the datum [mm]."
+    ),
+    properties: bool = typer.Option(
+        True, "--properties/--no-properties",
+        help="Attach the system, glazing and U-value as a property set.",
+    ),
+) -> None:
+    """Export the openings as IFC2x3, for the architect's own software."""
+    from .elements import build_elements
+    from .exchange.ifc import LIMITATIONS_HE, IfcOptions, write_ifc
+    from .projects import default_store
+
+    try:
+        job = default_store().load(job_id)
+    except Exception as exc:  # noqa: BLE001
+        _fail(str(exc))
+    if job.schedule is None:
+        _fail(f"Job {job_id} has no openings scheduled.")
+
+    target = write_ifc(
+        build_elements(job.schedule.openings), out,
+        IfcOptions(
+            project_name=job.name or job.job_id,
+            site_name=job.site_address or "Site",
+            storey_name=storey, storey_elevation=elevation,
+            include_properties=properties,
+        ),
+    )
+    console.print(f"[green]{target}[/green]")
+    for limit in LIMITATIONS_HE:
+        console.print(f"[dim]{limit}[/dim]")
+
+
 # --------------------------------------------------------------------------- #
 # Follow-ups
 # --------------------------------------------------------------------------- #

@@ -6671,6 +6671,10 @@ class ViewPage(Page):
         export.clicked.connect(self.export_scene)
         self.header.add_action(export)
 
+        ifc = QPushButton("ייצא IFC...")
+        ifc.clicked.connect(self.export_ifc)
+        self.header.add_action(ifc)
+
         self.stats = StatRow([
             ("parts", "חלקים"), ("triangles", "משולשים"),
             ("metal", "מתכת"), ("size", "מידה"), ("panes", "שמשות"),
@@ -6807,6 +6811,57 @@ class ViewPage(Page):
             self.report(exc, "לא ניתן להציג את המבט")
             return
         self.canvas.load(svg.encode("utf-8"))
+
+    def export_ifc(self) -> None:
+        """Hand the openings to the architect's own software.
+
+        What goes across is where each opening is and how big it is, not the
+        profile geometry — which is what a coordinating architect wants, and
+        what almost every window IFC export actually contains.
+        """
+        from ..exchange.ifc import LIMITATIONS_HE, IfcOptions, write_ifc
+
+        builds = self.session.builds
+        if not builds:
+            self.report(
+                ProfileOSError(
+                    "אין פתחים בעבודה. תכנן פתחים בעמוד ״פתח״ ואז חזור לכאן."
+                ),
+                "אין מה לייצא",
+            )
+            return
+
+        box = QMessageBox(self)
+        box.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
+        box.setWindowTitle("ייצוא IFC")
+        box.setText(
+            "מה עובר לקובץ:\n\n"
+            + "\n".join(f"• {limit}" for limit in LIMITATIONS_HE)
+            + "\n\nלייצא?"
+        )
+        box.setStandardButtons(
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        box.setDefaultButton(QMessageBox.StandardButton.Yes)
+        if box.exec() != QMessageBox.StandardButton.Yes:
+            return
+
+        path, _ = QFileDialog.getSaveFileName(
+            self, "שמירת מודל IFC", "model.ifc", "IFC (*.ifc)"
+        )
+        if not path:
+            return
+
+        job = getattr(self.session, "job", None)
+        try:
+            target = write_ifc(builds, path, IfcOptions(
+                project_name=str(getattr(job, "name", "") or "ProfileOS"),
+                site_name=str(getattr(job, "site_address", "") or "Site"),
+            ))
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "ייצוא ה-IFC נכשל")
+            return
+        self.status(f"נשמר {target}")
 
     def export_scene(self) -> None:
         from ..viz3d import RenderOptions, render_viewer, render_views, write_gltf

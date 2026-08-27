@@ -867,6 +867,29 @@ CAPABILITIES: tuple[Capability, ...] = (
         differentiator=True,
     ),
     Capability(
+        "ifc_export", Area.PLATFORM,
+        "IFC export", "ייצוא IFC",
+        "Each opening as a placed block at its real size, on a storey in a "
+        "building on a site, with a property set carrying the system, the "
+        "glazing, the U-value and the shop's mark. IFC2x3 STEP, in metres, "
+        "with compressed GUIDs and Hebrew written in the extended encoding "
+        "the format defines. What it is not — the profile geometry — is "
+        "stated wherever the export is offered rather than implied.",
+        probe="profileos.exchange.ifc:render_ifc",
+    ),
+    Capability(
+        "purchase_documents", Area.COMMERCIAL,
+        "Purchase orders to suppliers", "הזמנות רכש לספקים",
+        "The order as the supplier receives it, not only as a row in a "
+        "table. Extrusion carries alloy, temper, mill length, finish and bar "
+        "marking — and anything the shop has not stated is printed as a "
+        "question, because a blank reads as \"as usual\". A price with no "
+        "source is marked on the order itself, and a coating order is priced "
+        "on the shop's own computed area so the coater's invoice is arguable.",
+        probe="profileos.erp.po_document:document_from_order",
+        differentiator=True,
+    ),
+    Capability(
         "capacity_planning", Area.ADJACENT,
         "Capacity and delivery planning", "תכנון קיבולת ומועדי אספקה",
         "Finite-capacity scheduling across work centres on the shop's own "

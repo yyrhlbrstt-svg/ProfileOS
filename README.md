@@ -223,6 +223,22 @@ hash-chained audit trail where each entry carries a digest of the one before
 it, so a line removed from the middle or a figure edited afterwards breaks the
 chain and the check names the line.
 
+### Buying — `profileos.erp.purchasing`, `profileos.erp.po_document`
+A requirements run, orders raised from it, three-way matching of the invoice
+against the order and the goods received — and the order as the supplier
+actually receives it. Extrusion carries alloy, temper, mill length, finish and
+bar marking, and anything the shop has not stated is printed as a question
+rather than left blank, because a blank reads as "as usual". A price with no
+source is marked on the order itself, and a coating order is priced on the
+shop's own computed area so the coater's invoice is arguable.
+
+### Handing it on — `profileos.exchange`
+IFC2x3 export of the openings as placed blocks at their real size, on a storey
+in a building on a site, with a property set carrying the system, the glazing
+and the U-value — in metres, with compressed GUIDs and Hebrew in the extended
+encoding the format defines. What does **not** cross — the profile geometry —
+is stated wherever the export is offered rather than implied.
+
 ### Continuous updates — `profileos.core`
 Plugins load and reload without restarting. Python plugins are statically
 validated with `ast` **before execution** — `eval`, `exec`, `subprocess`,
@@ -334,6 +350,7 @@ profileos/
   delivery/    site measurement, loading, installation days, handover packs
   projects/    job files, costing, attachments, saved templates
   reports.py   sales, win rate, margin by customer, the pipeline
+  exchange/    IFC export
   api/         FastAPI service
   ui/          PySide6 desktop application
   updates/     signed manifests, atomic install, rollback
