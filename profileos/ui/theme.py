@@ -306,6 +306,15 @@ QToolTip {{
     color: {p.text_faint}; letter-spacing: 0.08em;
     padding: {m.space(4)}px {m.space(4)}px {m.space(1)}px;
 }}
+#SidebarScroll, #SidebarScroll > QWidget > QWidget, #SidebarNavBody {{
+    background: transparent; border: none;
+}}
+#SidebarFooter {{
+    font-size: {m.font_size_small}px; color: {p.text_faint};
+    padding: {m.space(2)}px {m.space(4)}px;
+    border-top: {m.border_width}px solid {p.border};
+    letter-spacing: 0.03em;
+}}
 QPushButton#NavButton {{
     background: transparent; border: none; border-radius: {m.radius_small}px;
     color: {p.text_muted}; text-align: right;

@@ -160,4 +160,41 @@ def page_icon(title: str, colour: str, active_colour: str = "", size: int = 18) 
     return icon(name, colour, active_colour, size) if name else QIcon()
 
 
-__all__ = ["PAGE_ICONS", "icon", "page_icon", "pixmap"]
+#: The window mark, filled: the same frame-mullion-transom glyph used for the
+#: "Element" nav item, on a solid tile instead of transparent. A taskbar icon
+#: needs to read at 16px against any wallpaper, which a stroke-only glyph
+#: cannot do — it needs a filled ground under it.
+_APP_ICON_SVG = (
+    "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'>"
+    "<rect x='0' y='0' width='24' height='24' rx='5.2' fill='{bg}'/>"
+    "<g fill='none' stroke='{fg}' stroke-width='2.1' "
+    "stroke-linecap='round' stroke-linejoin='round'>"
+    "<rect x='5.6' y='5.6' width='12.8' height='12.8' rx='1.1'/>"
+    "<path d='M12 5.6v12.8M5.6 12h12.8'/>"
+    "</g></svg>"
+)
+
+
+@lru_cache(maxsize=8)
+def app_icon(bg: str = "#D07E2F", fg: str = "#17140F") -> QIcon:
+    """The window mark used for the title bar and the taskbar.
+
+    A shop looking for ProfileOS among a dozen other open windows should
+    recognise its own product's icon, not the default Python feather every
+    unbranded PySide app shows.
+    """
+    svg = _APP_ICON_SVG.format(bg=bg, fg=fg)
+    renderer = QSvgRenderer(QByteArray(svg.encode("utf-8")))
+    result = QIcon()
+    for size in (16, 24, 32, 48, 64, 128, 256):
+        image = QPixmap(size, size)
+        image.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(image)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        renderer.render(painter)
+        painter.end()
+        result.addPixmap(image)
+    return result
+
+
+__all__ = ["PAGE_ICONS", "app_icon", "icon", "page_icon", "pixmap"]

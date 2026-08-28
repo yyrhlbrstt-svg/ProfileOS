@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QMainWindow,
     QPushButton,
+    QScrollArea,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
@@ -20,6 +21,7 @@ from PySide6.QtWidgets import (
 
 from .. import __version__
 from ..core.logging_setup import get_logger
+from .icons import app_icon
 from .pages import PAGES, Page
 from .session import Session
 from ..design import BRAND
@@ -113,9 +115,9 @@ class Sidebar(QWidget):
         self.setFixedWidth(METRICS.sidebar_width)
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, METRICS.space(3))
-        layout.setSpacing(0)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
 
         from ..branding import active_brand
 
@@ -125,8 +127,26 @@ class Sidebar(QWidget):
         self.logo.setWordWrap(True)
         self.version = QLabel(brand.tagline or f"v{__version__}")
         self.version.setObjectName("SidebarVersion")
-        layout.addWidget(self.logo)
-        layout.addWidget(self.version)
+        outer.addWidget(self.logo)
+        outer.addWidget(self.version)
+
+        # The navigation scrolls on its own. Eight sections and twenty pages
+        # do not reliably fit a laptop's vertical pixels, and a sidebar that
+        # silently clips its last button is worse than one with a scrollbar —
+        # this stays correct as more pages are added, without retuning pixel
+        # budgets by hand every time.
+        scroll = QScrollArea()
+        scroll.setObjectName("SidebarScroll")
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        nav_body = QWidget()
+        nav_body.setObjectName("SidebarNavBody")
+        layout = QVBoxLayout(nav_body)
+        layout.setContentsMargins(0, 0, 0, METRICS.space(3))
+        layout.setSpacing(0)
+        scroll.setWidget(nav_body)
+        outer.addWidget(scroll, 1)
 
         self.group = QButtonGroup(self)
         self.group.setExclusive(True)
@@ -139,6 +159,18 @@ class Sidebar(QWidget):
         self._icon_colour = DARK.text_muted
         self._icon_active = BRAND.x300
         self._layout = layout
+
+        # A quiet brand mark, pinned below the scrolling navigation. The
+        # operator's own company name sits at the top so it is clear whose
+        # install this is; ProfileOS's own name sits at the bottom so the
+        # product itself stays recognisable to somebody seeing it for the
+        # first time — which is exactly who is standing in front of it during
+        # a demonstration.
+        footer = QLabel(f"ProfileOS · גרסה {__version__}")
+        footer.setObjectName("SidebarFooter")
+        footer.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.footer = footer
+        outer.addWidget(footer)
 
     def refresh_brand(self) -> None:
         """Re-read the operator, so the sidebar follows a change on the System page."""
@@ -179,6 +211,7 @@ class Sidebar(QWidget):
         self.setFixedWidth(56 if collapsed else METRICS.sidebar_width)
         self.logo.setVisible(not collapsed)
         self.version.setVisible(not collapsed)
+        self.footer.setVisible(not collapsed)
         for label in self._section_labels:
             label.setVisible(not collapsed)
         for button in self.buttons:
@@ -196,6 +229,7 @@ class MainWindow(QMainWindow):
         from ..branding import active_brand
 
         self.setWindowTitle(active_brand().window_title())
+        self.setWindowIcon(app_icon())
         self._size_to_screen()
 
         central = QWidget()

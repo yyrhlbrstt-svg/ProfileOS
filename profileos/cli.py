@@ -4821,6 +4821,51 @@ def report_pipeline() -> None:
 
 
 @app.command()
+def reset(
+    yes: bool = typer.Option(
+        False, "--yes", help="Clear it without asking. For scripts, not for shops."
+    ),
+) -> None:
+    """Clear the sample jobs and customers `seed` put in, before real work starts.
+
+    `seed` exists so a brand-new installation is not an empty screen — it
+    writes a handful of realistic-looking jobs, customers and figures. Real
+    ones, exactly because they look real, are the wrong thing to still be on
+    screen the first time an actual customer looks at it. This removes them
+    and nothing else: confirmed series, hardware, licensing and the audit
+    trail are untouched.
+    """
+    from .projects import default_customers, default_store
+
+    store, book = default_store(), default_customers()
+    jobs = store.all()
+    customers = book.all()
+    if not jobs and not customers:
+        console.print("[dim]Nothing to clear — no jobs or customers on file.[/dim]")
+        return
+
+    console.print(f"This removes {len(jobs)} job(s) and {len(customers)} customer(s):")
+    for job in jobs[:10]:
+        console.print(f"  · {job.job_id} — {job.name}")
+    if len(jobs) > 10:
+        console.print(f"  · … and {len(jobs) - 10} more")
+    for customer in customers[:10]:
+        console.print(f"  · {customer.name}")
+    if len(customers) > 10:
+        console.print(f"  · … and {len(customers) - 10} more")
+
+    if not yes and not typer.confirm("Remove all of it?"):
+        raise typer.Abort()
+
+    for job in jobs:
+        store.delete(job.job_id)
+    book.save_all([])
+    console.print(
+        f"[green]Cleared {len(jobs)} job(s) and {len(customers)} customer(s).[/green]"
+    )
+
+
+@app.command()
 def readiness() -> None:
     """What this installation can actually do this morning, and what is missing.
 

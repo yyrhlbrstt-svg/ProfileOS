@@ -43,6 +43,10 @@ def run(argv: Sequence[str] | None = None, *, theme: str = "dark") -> int:
     application.setApplicationName("ProfileOS")
     application.setOrganizationName("ProfileOS")
 
+    from .icons import app_icon
+
+    application.setWindowIcon(app_icon())
+
     # Hebrew is the working language, so the whole application runs mirrored.
     # Numbers inside text stay left-to-right on their own; that is bidi, not
     # layout, and Qt handles it per text run.
