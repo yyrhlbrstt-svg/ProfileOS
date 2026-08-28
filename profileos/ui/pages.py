@@ -3208,6 +3208,10 @@ class QuotePage(Page):
             return
         from ..projects import JobStatus, default_store
 
+        # The design itself, not only its price: a job priced from this page
+        # without ever visiting "פרויקטים" must not come back empty the next
+        # time it is opened, with a real quoted figure sitting on top of it.
+        job.schedule = self.session.to_schedule(name=job.name, system_id=job.system_id)
         totals = self.draft.totals()
         job.record_quote(float(totals["net"]), self.draft.quotation.currency)
         if job.status is JobStatus.ENQUIRY:

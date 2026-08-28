@@ -128,14 +128,19 @@ class Session:
         self.glass_report = None
         self.bom = None
         self.quote = None
+        self.machining_job = None
+        self.post_results = []
         self._notify("builds")
 
     def clear_builds(self) -> None:
         self.builds = []
         self.nesting_report = None
+        self.glass_report = None
         self.bom = None
         self.quote = None
         self.work_order = None
+        self.machining_job = None
+        self.post_results = []
         self._notify("builds")
 
     def set_nesting(self, project: Any, report: Any) -> None:
@@ -217,6 +222,8 @@ class Session:
         self.bom = None
         self.quote = None
         self.work_order = None
+        self.machining_job = None
+        self.post_results = []
         self._notify("builds")
         return problems
 
