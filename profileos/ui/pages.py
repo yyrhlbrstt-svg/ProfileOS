@@ -1903,7 +1903,19 @@ class ElementPage(Page):
         self.height.setValue(opening.height)
         self.columns.setValue(len(template.mullion_fractions) + 1)
         self.rows.setValue(len(template.transom_fractions) + 1)
-        self.build_element()
+        # The form is synced for display and for the next edit, but the
+        # element itself is built from ``opening`` as the template made it —
+        # not reassembled from the form, which would trade the template's own
+        # series, glazing and per-cell sash plan for whatever was last on
+        # screen.
+        system_index = self.system.findData(opening.system_id)
+        if system_index >= 0:
+            self.system.setCurrentIndex(system_index)
+        if opening.glass_spec_id:
+            glass_index = self.glass.findData(opening.glass_spec_id)
+            if glass_index >= 0:
+                self.glass.setCurrentIndex(glass_index)
+        self._build_and_display(opening)
 
         if template.price_is_stale and template.last_price_per_m2:
             self.status(
@@ -2211,7 +2223,22 @@ class ElementPage(Page):
                 column = min(self.sash_column.value(), opening.column_count - 1)
                 row = min(self.sash_row.value(), opening.row_count - 1)
                 opening.set_cell(Cell(column=column, row=row, sash=Sash(opening_type=sash_type)))
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "לא ניתן לבנות את הפתח")
+            return
 
+        self._build_and_display(opening)
+
+    def _build_and_display(self, opening: Any) -> None:
+        """Build ``opening`` exactly as given, and show it.
+
+        Kept separate from :meth:`build_element` so a template's own series,
+        glazing and per-cell sash plan can be built as saved rather than
+        reconstructed from whatever the form currently shows — an opening
+        made from a template is the object the template already carries, not
+        a new one assembled from the form around it.
+        """
+        try:
             build = self._builder(opening).build(opening, sill_height=self.sill_height.value())
         except Exception as exc:  # noqa: BLE001
             self.report(exc, "לא ניתן לבנות את הפתח")
@@ -3221,6 +3248,17 @@ class QuotePage(Page):
         except Exception:  # noqa: BLE001 - the documents are already written
             _log.exception("Could not record the quotation on job %s", job.job_id)
             return
+
+        # Sending a quotation creates its own chase, as the follow-up module
+        # promises — an operator should not have to remember a second click
+        # on Home for the reminders to exist at all.
+        try:
+            from ..projects.followups import default_tasks
+
+            default_tasks().chase_quote(job)
+        except Exception:  # noqa: BLE001 - the quotation itself already went out
+            _log.exception("Could not schedule follow-ups for %s", job.job_id)
+
         self.status(f"{job.job_id} עודכן: {job.status.hebrew}")
 
 
