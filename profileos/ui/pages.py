@@ -1622,8 +1622,13 @@ class ElementPage(Page):
         self.system.addItem("רגיל — ערכים טיפוסיים", "generic")
         from ..systems import DIRECTORY as _DIRECTORY
 
-        for entry in sorted(_DIRECTORY, key=lambda e: (e.manufacturer, e.series)):
-            self.system.addItem(entry.display, entry.id)
+        # Classified series first, so the ones that will actually build sort
+        # ahead of the ones named but not yet placed in a family — picking
+        # the latter is still allowed, but the label says so up front rather
+        # than after a build is refused.
+        for entry in sorted(_DIRECTORY, key=lambda e: (e.family is None, e.manufacturer, e.series)):
+            label = entry.display if entry.family else f"{entry.display} — טרם סווגה"
+            self.system.addItem(label, entry.id)
 
         # What is fitted to the window. On an Israeli flat this is not an
         # extra — a bedroom window without a shutter is unfinished — so it is
@@ -2766,6 +2771,15 @@ class MachiningPage(Page):
         self._results: list[Any] = []
 
     def _build_job(self) -> Any:
+        """The pieces to post: the shop's own cut list when there is one.
+
+        A machine cannot be handed a program for a piece nobody designed. Once
+        an element has been built on the ``Element`` page, every one of its
+        real cuts — real profile, real length, real angles — becomes a piece
+        here. The demo mullion below (length/angles from this page's own
+        fields) is a fallback for opening this page on its own, not something
+        that should ever stand in for a job that already has real cuts.
+        """
         from ..cnc import MachiningJob, PieceProgram, expand_macros
         from ..models.machines import Clamp, MachineDefinition, Tool, ToolLibrary, ToolType
         from ..models.profile import Face, MachiningMacro
@@ -2783,24 +2797,51 @@ class MachiningPage(Page):
             clamps=[Clamp(id=f"C{i}", position=p, width=120.0)
                     for i, p in enumerate([400.0, 1200.0, 2000.0], 1)],
         )
-        length = self.length.value()
-        macros = [
-            MachiningMacro(macro_id="lock.euro_cylinder", face=Face.FRONT,
-                           position_x=length * 0.5, position_y=30.0, depth=25.0, tool_id=5),
-            MachiningMacro(macro_id="hinge.standard", face=Face.FRONT,
-                           position_x=length * 0.16, position_y=30.0, depth=12.0, tool_id=9),
-            MachiningMacro(macro_id="drainage.slots", face=Face.BOTTOM, position_x=length * 0.12,
-                           position_y=0.0, depth=8.0, tool_id=7,
-                           parameters={"count": 2, "spacing": length * 0.35}),
-            MachiningMacro(macro_id="notch.akm", face=Face.TOP, position_x=0.0, position_y=0.0,
-                           depth=18.0, tool_id=9, from_right_end=True, parameters={"length": 25.0}),
-        ]
-        piece = PieceProgram(
-            piece_id="PC-101", profile_id="MB70-MULLION", length=length,
-            angle_left=self.angle_left.value(), angle_right=self.angle_right.value(),
-            operations=expand_macros(macros, bar_length=length), mark="mullion",
-        )
-        return MachiningJob(machine=machine, name="Project", pieces=[piece], tool_library=tools)
+
+        def macros_for(length: float) -> list["MachiningMacro"]:
+            # A typical fixture set, scaled to the piece it is cut for. Which
+            # hardware actually sits where is a per-accessory placement this
+            # software does not compute yet; until it does, this is offered
+            # the same way nesting offers typical deductions — openly, not
+            # claimed as the supplier's own figures.
+            return [
+                MachiningMacro(macro_id="lock.euro_cylinder", face=Face.FRONT,
+                               position_x=length * 0.5, position_y=30.0, depth=25.0, tool_id=5),
+                MachiningMacro(macro_id="hinge.standard", face=Face.FRONT,
+                               position_x=length * 0.16, position_y=30.0, depth=12.0, tool_id=9),
+                MachiningMacro(macro_id="drainage.slots", face=Face.BOTTOM, position_x=length * 0.12,
+                               position_y=0.0, depth=8.0, tool_id=7,
+                               parameters={"count": 2, "spacing": length * 0.35}),
+                MachiningMacro(macro_id="notch.akm", face=Face.TOP, position_x=0.0, position_y=0.0,
+                               depth=18.0, tool_id=9, from_right_end=True, parameters={"length": 25.0}),
+            ]
+
+        pieces: list[Any] = []
+        if self.session.builds:
+            for build in self.session.builds:
+                for index, cut in enumerate(build.cuts, 1):
+                    for copy in range(1, cut.quantity + 1):
+                        suffix = f"-{copy}" if cut.quantity > 1 else ""
+                        pieces.append(PieceProgram(
+                            piece_id=f"{build.opening.element_id}-{cut.role}-{index}{suffix}",
+                            profile_id=cut.profile_id, length=cut.length,
+                            angle_left=cut.angle_left, angle_right=cut.angle_right,
+                            operations=expand_macros(macros_for(cut.length), bar_length=cut.length),
+                            mark=cut.mark or cut.role, element_ref=build.opening.element_id,
+                        ))
+            job = self.session.job
+            name = job.name if job else "; ".join(
+                dict.fromkeys(build.opening.name for build in self.session.builds)
+            )
+        else:
+            length = self.length.value()
+            pieces.append(PieceProgram(
+                piece_id="PC-101", profile_id="MB70-MULLION", length=length,
+                angle_left=self.angle_left.value(), angle_right=self.angle_right.value(),
+                operations=expand_macros(macros_for(length), bar_length=length), mark="mullion",
+            ))
+            name = "Project"
+        return MachiningJob(machine=machine, name=name, pieces=pieces, tool_library=tools)
 
     def post(self) -> None:
         from ..cnc import detect_collisions, get_driver
@@ -2902,8 +2943,9 @@ class QuotePage(Page):
         from ..systems import DIRECTORY
 
         self.system.addItem("רגיל — ערכים טיפוסיים", "generic")
-        for entry in sorted(DIRECTORY, key=lambda e: e.id):
-            self.system.addItem(entry.display, entry.id)
+        for entry in sorted(DIRECTORY, key=lambda e: (e.family is None, e.id)):
+            label = entry.display if entry.family else f"{entry.display} — טרם סווגה"
+            self.system.addItem(label, entry.id)
         self.glass = QComboBox()
         from ..glazing.glass import STANDARD_BUILDUPS
 
@@ -3392,7 +3434,12 @@ class ShopFloorPage(Page):
         if not self.session.builds:
             self.report(ProfileOSError("עדיין לא תוכננו פתחים. תכנן פתח בעמוד ״פתח״ ואז חזור לכאן."), "אין מה לשחרר")
             return
-        order = work_order_from_builds(self.session.builds, project_id="PRJ", name="פרויקט")
+        job = self.session.job
+        order = work_order_from_builds(
+            self.session.builds,
+            project_id=job.job_id if job else "PRJ",
+            name=job.name if job else "פרויקט",
+        )
         self.session.set_work_order(order)
 
         self.item.clear()

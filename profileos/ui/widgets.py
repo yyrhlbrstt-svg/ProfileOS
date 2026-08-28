@@ -493,9 +493,17 @@ def show_toast(window: QWidget, message: str, kind: str = "info") -> None:
 
 
 def reposition_toasts(window: QWidget) -> None:
-    y = METRICS.space(3)
+    """Stack toasts up from the bottom edge.
+
+    The header and the stat tiles below it are the numbers a shop points at
+    while a page is talking to it — a toast anchored at the top used to land
+    squarely on top of them for its whole lifetime. The bottom edge has
+    nothing to say over.
+    """
+    y = window.height() - METRICS.space(3)
     for toast in getattr(window, "_toasts", []):
         toast.adjustSize()
+        y -= toast.height()
         toast.move((window.width() - toast.width()) // 2, y)
         toast.raise_()
-        y += toast.height() + METRICS.space(1)
+        y -= METRICS.space(1)
