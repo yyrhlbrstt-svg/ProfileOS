@@ -162,6 +162,19 @@ def write_backup(destination: Path, *, root: Path | None = None) -> Path:
     if not root.is_dir():
         raise ProfileOSError(f"אין תיקיית נתונים ב-{root}")
 
+    # A destination inside the folder being zipped writes the archive into
+    # its own subtree while it is still being built — the walk below picks
+    # the half-written file back up as one more thing to include, and the
+    # zip grows into itself until something gives out. Refused up front,
+    # rather than left to whoever is watching the window not respond.
+    resolved_root = root.resolve()
+    resolved_destination = Path(destination).resolve()
+    if resolved_destination == resolved_root or resolved_root in resolved_destination.parents:
+        raise ProfileOSError(
+            "אי אפשר לשמור גיבוי בתוך תיקיית הנתונים עצמה — "
+            "הוא יכלול את עצמו וימשיך לתפוח. בחר תיקייה מחוץ לתיקיית הנתונים."
+        )
+
     # Anything that is not named like an archive is a folder to put one in —
     # including a folder that does not exist yet. Treating it as a filename
     # would write a backup with no extension that nothing later finds, which

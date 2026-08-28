@@ -55,6 +55,40 @@ SERVICE_HEBREW: dict[str, str] = {
     "gas": "גז",
 }
 
+#: How a material reads in Hebrew on the list, matching :data:`STOCK_LENGTH`.
+MATERIAL_HEBREW: dict[str, str] = {
+    "copper": "נחושת",
+    "ppr": "PPR",
+    "pex": "PEX",
+    "steel": "פלדה",
+    "pvc": "PVC",
+    "hdpe": "פוליאתילן (HDPE)",
+    "multilayer": "רב-שכבתי",
+}
+
+#: How a fitting reads in Hebrew, keyed the same as
+#: :data:`~profileos.plumbing.hydraulics.FITTING_K`.
+FITTING_HEBREW: dict[str, str] = {
+    "elbow_90_long": "מרפק ⁦90°⁩ רדיוס ארוך",
+    "elbow_90_short": "מרפק ⁦90°⁩ רדיוס קצר",
+    "elbow_45": "מרפק ⁦45°⁩",
+    "tee_through": "מסעף — ישר",
+    "tee_branch": "מסעף — צד",
+    "gate_valve_open": "שסתום שער פתוח",
+    "globe_valve_open": "שסתום כדורי-ישר פתוח",
+    "ball_valve_open": "ברז כדורי פתוח",
+    "check_valve_swing": "אל-חוזר מטוטלת",
+    "check_valve_spring": "אל-חוזר קפיצי",
+    "butterfly_valve_open": "ברז פרפר פתוח",
+    "strainer": "מסנן",
+    "entrance_sharp": "כניסה חדה",
+    "entrance_rounded": "כניסה מעוגלת",
+    "exit": "יציאה",
+    "reducer": "מצמצם",
+    "expander": "מרחיב",
+    "water_meter": "שעון מים",
+}
+
 
 @dataclass
 class PipeRun:
@@ -167,9 +201,10 @@ def take_off(
         with_waste = metres * (1.0 + waste_pct / 100.0)
         count, offcut = _stock_lengths(with_waste, material)
         service_name = SERVICE_HEBREW.get(service, service)
+        material_name = MATERIAL_HEBREW.get(material, material)
         takeoff.lines.append(TakeoffLine(
             kind="צנרת",
-            description=f"{service_name} · {designation} · {material}",
+            description=f"{service_name} · {designation} · {material_name}",
             quantity=round(metres, 1),
             unit="מ'",
             note=(
@@ -212,9 +247,10 @@ def take_off(
             key = (fitting, run.designation)
             fittings[key] = fittings.get(key, 0) + count
     for (fitting, designation), count in sorted(fittings.items()):
+        fitting_name = FITTING_HEBREW.get(fitting, fitting.replace("_", " "))
         takeoff.lines.append(TakeoffLine(
             kind="אביזרים",
-            description=f"{fitting.replace('_', ' ')} · {designation}",
+            description=f"{fitting_name} · {designation}",
             quantity=count,
             unit="יח'",
         ))

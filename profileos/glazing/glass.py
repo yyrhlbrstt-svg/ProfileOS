@@ -389,7 +389,7 @@ def make_double_glazing(
     """A standard double-glazed unit with a low-E coating on surface 3."""
     return GlassBuildUp(
         id=f"dgu-{outer:g}-{cavity:g}-{inner:g}",
-        name=f"{outer:g}/{cavity:g}/{inner:g} double glazing",
+        name=f"זיגוג כפול ⁦{outer:g}/{cavity:g}/{inner:g}⁩",
         panes=[
             _pane(outer, toughened=toughened),
             # Surface 3 is the cavity-facing surface of the inner pane.
@@ -414,7 +414,7 @@ def make_triple_glazing(
     """A triple unit with low-E coatings on surfaces 2 and 5."""
     return GlassBuildUp(
         id=f"tgu-{outer:g}-{cavity_1:g}-{middle:g}-{cavity_2:g}-{inner:g}",
-        name=f"{outer:g}/{cavity_1:g}/{middle:g}/{cavity_2:g}/{inner:g} triple glazing",
+        name=f"זיגוג משולש ⁦{outer:g}/{cavity_1:g}/{middle:g}/{cavity_2:g}/{inner:g}⁩",
         panes=[
             _pane(outer, emissivity_inner=low_e_emissivity),
             _pane(middle),
@@ -441,7 +441,7 @@ def make_monolithic(thickness: float = 6.0, *, toughened: bool = False) -> Glass
     """A single pane, as used for internal screens and shopfront infill."""
     return GlassBuildUp(
         id=f"mono-{thickness:g}",
-        name=f"{thickness:g} mm monolithic",
+        name=f"⁦{thickness:g}⁩ מ\"מ חד-שכבתי",
         panes=[_pane(thickness, toughened=toughened)],
         cavities=[],
     )

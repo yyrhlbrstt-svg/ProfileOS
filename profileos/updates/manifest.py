@@ -83,6 +83,20 @@ class PackageKind(StrEnum):
             PackageKind.PROFILE_LIBRARY: "macros",
         }[self]
 
+    @property
+    def hebrew(self) -> str:
+        """What this kind is called on the ״עדכונים״ tab, not its wire value."""
+        return {
+            PackageKind.SYSTEM_RULES: "כללי מערכת",
+            PackageKind.PRICE_LIST: "מחירון",
+            PackageKind.PIPE_CATALOGUE: "קטלוג צנרת",
+            PackageKind.MACRO_LIBRARY: "ספריית מאקרו",
+            PackageKind.POST_PROCESSOR: "מעבד פוסט",
+            PackageKind.TOOL_LIBRARY: "ספריית כלים",
+            PackageKind.MACHINE: "הגדרת מכונה",
+            PackageKind.PROFILE_LIBRARY: "ספריית פרופילים",
+        }[self]
+
 
 class Version(BaseModel):
     """A semantic version, comparable and orderable."""

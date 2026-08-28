@@ -4488,14 +4488,18 @@ class ServicePage(Page):
         from ..service import Cause
 
         values = dialog.values()
-        call.close(
-            _date.today(),
-            Cause(values["cause"]),
-            minutes=values["minutes"],
-            engineer=values["engineer"],
-            note=values["note"],
-            charged=values["charged"],
-        )
+        try:
+            call.close(
+                _date.today(),
+                Cause(values["cause"]),
+                minutes=values["minutes"],
+                engineer=values["engineer"],
+                note=values["note"],
+                charged=values["charged"],
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "הסגירה נכשלה")
+            return
         self._register().update(call)
         self.refresh()
         self.status(f"נסגרה {call.call_id} — {call.cause.hebrew}")
@@ -5396,7 +5400,7 @@ class CataloguePage(Page):
         payload = to_plugin(
             report,
             plugin_id=target.stem,
-            name=f"{self.series.currentText() or 'unknown'} profile library",
+            name=f"ספריית פרופילים — {self.series.currentText() or 'לא ידוע'}",
         )
         target.write_text(
             json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8"
@@ -5673,7 +5677,7 @@ class SystemPage(Page):
                 [
                     package.package_id,
                     package.version,
-                    package.kind.value,
+                    package.kind.hebrew,
                     f"{package.size / 1024:.1f} kB",
                     package.description or "",
                 ]

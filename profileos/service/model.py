@@ -321,6 +321,12 @@ class ServiceCall:
         charged: float = 0.0,
     ) -> "ServiceCall":
         """Record what it was and shut it, which is what makes the data worth having."""
+        if self.state is CallState.DONE:
+            from ..core.errors import ProfileOSError
+
+            raise ProfileOSError(
+                f"הקריאה כבר נסגרה ב-{self.closed}. פתח קריאה חדשה אם יש בעיה נוספת."
+            )
         self.visits.append(
             Visit(on=on, engineer=engineer, minutes=minutes, note=note, resolved=True)
         )
