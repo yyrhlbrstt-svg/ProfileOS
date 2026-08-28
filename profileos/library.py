@@ -142,6 +142,19 @@ def search_profiles(text: str, folder: Path | None = None) -> list[LibraryProfil
 # Opening types
 # --------------------------------------------------------------------------- #
 
+#: What each named fit-out is called when somebody searches for it. A person
+#: typing "תריס" is not looking for the shutter catalogue — they are looking
+#: for the windows that come with one, which is a different list.
+FITTING_WORDS: dict[str, tuple[str, ...]] = {
+    "dwelling": ("תריס", "תריסים", "רשת", "אדן", "חשמלי", "מנוע"),
+    "dwelling_manual": ("תריס", "תריסים", "רשת", "אדן", "רצועה", "ידני"),
+    "wet_room": ("רשת", "אדן", "אמבטיה", "שירותים"),
+    "screen_only": ("רשת",),
+    "pleated_screen": ("רשת", "רשת מקופלת", "פליסה"),
+    "sill_only": ("אדן",),
+}
+
+
 @dataclass(frozen=True)
 class OpeningFamily:
     """A kind of opening, before anybody has said how big it is.
@@ -180,7 +193,8 @@ class OpeningFamily:
 
     def search_terms(self) -> tuple[str, ...]:
         return (self.family_id, self.hebrew, self.kind, self.sash_type,
-                self.note, *self.tags)
+                self.note, *self.tags,
+                *FITTING_WORDS.get(self.fittings, ()))
 
     def leaf_word(self, leaves: int) -> str:
         if leaves <= 1 or self.sash_type == "fixed":
@@ -484,10 +498,17 @@ class LibraryOpening:
     #: keeps the family's typical rules and says so.
     system_id: str = "generic"
     system_hebrew: str = ""
+    #: The outline, when the line asked for one. Somebody typing "חלון קשת"
+    #: means an arched window, not a rectangle they will reshape later.
+    shape: str = "rectangle"
+    #: Arch rise above the springing [mm], where the shape needs one.
+    rise: float | None = None
+    #: Right-hand height of a raked opening [mm].
+    height_right: float | None = None
 
     def search_terms(self) -> tuple[str, ...]:
         return (self.preset_id, self.hebrew, self.kind, self.note,
-                self.system_hebrew, *self.tags,
+                self.system_hebrew, self.shape, *self.tags,
                 f"{self.width:.0f}", f"{self.height:.0f}")
 
     def describe(self) -> str:
@@ -495,8 +516,12 @@ class LibraryOpening:
 
     @property
     def title(self) -> str:
-        """The full name: type, leaves and series, as it would be said."""
+        """The full name: type, leaves, shape and series, as it would be said."""
         parts = [self.hebrew]
+        if self.shape != "rectangle":
+            from .elements.shapes import Shape
+
+            parts.append(Shape(self.shape).hebrew)
         if self.system_hebrew:
             parts.append(self.system_hebrew)
         return " · ".join(parts)
@@ -542,6 +567,7 @@ def _make(
     *,
     system_id: str = "generic",
     system_hebrew: str = "",
+    shape: str = "rectangle",
 ) -> LibraryOpening:
     """One concrete opening from a family, a leaf count and a size."""
     leaves = max(1, min(leaves, 12))
@@ -576,6 +602,15 @@ def _make(
         fittings=fittings(family.fittings),
         system_id=system_id or "generic",
         system_hebrew=system_hebrew,
+        shape=shape,
+        # An arch with no rise stated gets a fifth of the width, which is the
+        # shallow segmental head a shop makes without thinking about it. It is
+        # a starting point on a browsing list, and the form beside it is where
+        # the real rise is typed.
+        rise=(round(float(width) / 5.0, 1) if shape == "arched" else None),
+        height_right=(
+            round(float(height) * 1.4, 1) if shape == "raked" else None
+        ),
     )
 
 
@@ -602,10 +637,23 @@ class Query:
     system_id: str = ""
     system_hebrew: str = ""
     quantity: int | None = None
+    shape: str = "rectangle"
 
     @property
     def has_size(self) -> bool:
         return self.width is not None or self.height is not None
+
+
+#: The words somebody says for an outline. A person typing "חלון קשת" means
+#: an arched window; returning a rectangle they are expected to reshape later
+#: is the search failing quietly.
+_SHAPE_WORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("half_round", ("חצי עיגול", "חצי-עיגול", "חצי גורן", "halfround")),
+    ("circle", ("עיגול", "עגול", "עגולה", "עגלגל", "circle", "round")),
+    ("arched", ("קשת", "קשתי", "קשתית", "מקושת", "arch", "arched")),
+    ("triangle", ("משולש", "משולשת", "גמלון", "triangle", "gable")),
+    ("raked", ("משופע", "משופעת", "שיפוע", "אלכסוני", "raked", "sloped")),
+)
 
 
 _PAIR = re.compile(r"(\d+(?:[.,]\d+)?)\s*[x×*/על]+\s*(\d+(?:[.,]\d+)?)")
@@ -699,6 +747,19 @@ def parse_query(text: str) -> Query:
         height = to_millimetres(pair.group(2))
         lowered = lowered[: pair.start()] + " " + lowered[pair.end():]
 
+    # Shape words are taken out before anything else, and the longest match
+    # wins: "חצי עיגול" must not be read as "עיגול" with a stray word left.
+    shape = "rectangle"
+    for value, spellings in _SHAPE_WORDS:
+        for spelling in sorted(spellings, key=len, reverse=True):
+            folded = _folds(spelling)
+            if folded and folded in lowered:
+                shape = value
+                lowered = lowered.replace(folded, " ")
+                break
+        if shape != "rectangle":
+            break
+
     words = [word for word in lowered.split() if word]
     words, system_id, system_hebrew = _take_series(words)
     remaining: list[str] = []
@@ -754,6 +815,7 @@ def parse_query(text: str) -> Query:
         system_id=system_id,
         system_hebrew=system_hebrew,
         quantity=quantity,
+        shape=shape,
     )
 
 
@@ -807,6 +869,7 @@ def search_openings(text: str, *, limit: int = 80) -> list[LibraryOpening]:
                 found.append(_make(
                     fam, leaves, width, height,
                     system_id=query.system_id, system_hebrew=query.system_hebrew,
+                    shape=query.shape,
                 ))
         else:
             # Browsing: a few sizes per leaf count, so the list reads as a
@@ -815,7 +878,7 @@ def search_openings(text: str, *, limit: int = 80) -> list[LibraryOpening]:
                 for width in fam.widths[:3]:
                     height = fam.heights[min(1, len(fam.heights) - 1)]
                     found.append(_make(
-                        fam, leaves, width, height,
+                        fam, leaves, width, height, shape=query.shape,
                         system_id=query.system_id,
                         system_hebrew=query.system_hebrew,
                     ))

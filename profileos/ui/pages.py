@@ -1955,6 +1955,18 @@ class ElementPage(Page):
         glass_index = self.glass.findData(preset.glass)
         if glass_index >= 0:
             self.glass.setCurrentIndex(glass_index)
+
+        # Somebody who typed "חלון קשת" asked for an arch. Dropping the shape
+        # here and building a rectangle is the search answering a different
+        # question from the one that was asked.
+        shape_index = self.shape.findData(getattr(preset, "shape", "rectangle"))
+        self.shape.setCurrentIndex(shape_index if shape_index >= 0 else 0)
+        self._shape_changed()
+        if getattr(preset, "rise", None):
+            self.rise.setValue(float(preset.rise))
+        if getattr(preset, "height_right", None):
+            self.height_right.setValue(float(preset.height_right))
+
         self._apply_fittings(preset.fittings)
         self.build_element()
         self.status(f"{preset.title} · {preset.describe()}")
