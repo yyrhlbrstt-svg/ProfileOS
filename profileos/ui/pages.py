@@ -3020,10 +3020,12 @@ class QuotePage(Page):
         if not self.session.builds:
             self.report(ProfileOSError("עדיין לא תוכננו פתחים. תכנן פתח בעמוד ״פתח״ ואז חזור לכאן."), "אין מה לתמחר")
             return
+        job = self.session.job
         try:
             self.draft = QuoteDraft.start(
                 [build.opening for build in self.session.builds],
-                project_name="פרויקט",
+                project_name=job.name if job else "פרויקט",
+                customer=job.customer_name if job else "",
                 system_id=self.system.currentData() or "generic",
                 glass_id=self.glass.currentData(),
                 finish_id=self.finish.currentData(),
@@ -7255,7 +7257,7 @@ class AccountsPage(Page):
         return page
 
     def plan_purchases(self) -> None:
-        from ..erp import StockItem, money
+        from ..erp import StockItem
 
         if not self.session.builds:
             self.report(
@@ -7272,6 +7274,10 @@ class AccountsPage(Page):
                     cut.total_length * quantity / 1000.0
                 )
 
+        # The rate a profile was actually bought in at, if it ever was — never
+        # a guessed figure standing in as a real one. An item nobody has yet
+        # received carries a zero rate: an unpriced line on the draft order is
+        # honest; a plausible-looking made-up number is not.
         prices: dict[str, float] = {}
         for code, needed in demand.items():
             if code not in company.stock.items:
@@ -7279,7 +7285,7 @@ class AccountsPage(Page):
                     StockItem(code, code, supplier_id="unassigned",
                               reorder_quantity=6.0, lead_time_days=12)
                 )
-            prices[code] = float(money(42.0))
+            prices[code] = company.stock.items[code].average_cost
 
         try:
             rows, orders = company.plan_purchases(demand, prices)
