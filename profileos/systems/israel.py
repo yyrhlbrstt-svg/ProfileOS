@@ -26,8 +26,10 @@ from __future__ import annotations
 
 from .model import Manufacturer, Provenance, SystemEntry, SystemFamily
 
-#: What ``source`` says for an entry that came from this file.
-OPERATOR_LIST = "series named by the operator for the Israeli market"
+#: What ``source`` says for an entry that came from this file. Shown verbatim
+#: in the catalogue table's "מקור" column, so it has to be the Hebrew a shop
+#: reads, not the English name of the constant.
+OPERATOR_LIST = "רשימת סדרות שהוזנה ע״י המפעיל"
 
 
 MANUFACTURERS: tuple[Manufacturer, ...] = (

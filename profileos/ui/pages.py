@@ -2901,7 +2901,7 @@ class QuotePage(Page):
         self.system = QComboBox()
         from ..systems import DIRECTORY
 
-        self.system.addItem("generic", "generic")
+        self.system.addItem("רגיל — ערכים טיפוסיים", "generic")
         for entry in sorted(DIRECTORY, key=lambda e: e.id):
             self.system.addItem(entry.display, entry.id)
         self.glass = QComboBox()
