@@ -390,6 +390,32 @@ QPlainTextEdit:focus, QTextEdit:focus {{
 }}
 QLineEdit::placeholder {{ color: {p.text_faint}; }}
 QComboBox::drop-down {{ border: none; width: {m.space(6)}px; }}
+
+/* A spin box draws its up/down arrows as native subcontrols. Left
+   unstyled they overlap the digits at the RTL leading edge instead of
+   sitting in their own reserved strip, which is what turns "0.00" into
+   "◀0.00" with the arrow eating the first character. Reserving padding
+   on both sides keeps the field symmetric whichever edge Qt mirrors the
+   buttons to, and drawing them as their own flat panel keeps them off
+   the text at any width. */
+QSpinBox, QDoubleSpinBox {{ padding: 0 {m.space(6)}px; }}
+QSpinBox::up-button, QSpinBox::down-button,
+QDoubleSpinBox::up-button, QDoubleSpinBox::down-button {{
+    subcontrol-origin: border;
+    width: {m.space(5)}px;
+    border: none;
+    background: {p.surface_raised};
+}}
+QSpinBox::up-button:hover, QSpinBox::down-button:hover,
+QDoubleSpinBox::up-button:hover, QDoubleSpinBox::down-button:hover {{
+    background: {p.border};
+}}
+QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {{
+    width: 7px; height: 7px;
+}}
+QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {{
+    width: 7px; height: 7px;
+}}
 QComboBox QAbstractItemView {{
     background: {p.surface_raised};
     border: {m.border_width}px solid {p.border_strong};
