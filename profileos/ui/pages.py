@@ -7082,6 +7082,7 @@ class AccountsPage(Page):
 
         tabs = QTabWidget()
         tabs.addTab(self._stock_tab(), "מלאי")
+        tabs.addTab(self._stocktake_tab(), "ספירת מלאי")
         tabs.addTab(self._purchasing_tab(), "רכש")
         tabs.addTab(self._ledger_tab(), "ספר חשבונות")
         tabs.addTab(self._planning_tab(), "קיבולת")
@@ -7145,14 +7146,16 @@ class AccountsPage(Page):
 
         self.fx_table = DataTable(
             ["מטבע", "שער", "תאריך", "גיל", "מקור", "מצב"],
-            empty_text="לא נרשם אף שער — אי אפשר לתמחר רכש במטבע זר",
+            empty_text="לא נרשם אף שער",
         )
         layout.addWidget(self.fx_table, 1)
 
         note = QLabel(
             "שער בלי מקור ובלי תאריך אינו שער אלא זיכרון. שער בן יותר "
             f"מ-⁦{STALE_DAYS}⁩ ימים מסומן ישן, וכל תמחור שנשען עליו נושא "
-            "אזהרה עד שהוא מתעדכן."
+            "אזהרה עד שהוא מתעדכן. הרישום כאן הוא הספר שהמרות עתידיות "
+            "ישענו עליו — הזמנת רכש עצמה עדיין מתומחרת ונרשמת בשקלים, "
+            "ולא ממירה את עצמה לפי השער הזה."
         )
         note.setObjectName("Hint")
         note.setWordWrap(True)
@@ -7268,6 +7271,215 @@ class AccountsPage(Page):
             if row["below_reorder"]:
                 colours[(index, 8)] = self.colours.warning
         self.stock_table.set_rows(rows, numeric_columns=(2, 3, 4, 5, 6, 7), colours=colours)
+
+    # -- stocktake --------------------------------------------------------------- #
+    def _stocktake_tab(self) -> QWidget:
+        """Counting the racks, and posting only what was actually counted.
+
+        A stocktake here is a sheet, not a button: it freezes the book, gets
+        filled in against the racks, and only counted lines are ever written
+        back to it — a line nobody reached stays exactly as the book had it,
+        rather than being posted as zero.
+        """
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, METRICS.space(3), 0, 0)
+        layout.setSpacing(METRICS.space(3))
+
+        open_card = Card("פתיחת גיליון ספירה")
+        open_row = QHBoxLayout()
+        open_row.setSpacing(METRICS.space(3))
+        self.count_scope = QLineEdit()
+        self.count_scope.setPlaceholderText("מחסן פרופילים, פרזול...")
+        scope_caption = QLabel("היקף")
+        scope_caption.setObjectName("FieldLabel")
+        open_row.addWidget(scope_caption)
+        open_row.addWidget(self.count_scope, 1)
+        open_btn = QPushButton("פתח גיליון חדש")
+        open_btn.setObjectName("Primary")
+        open_btn.clicked.connect(self.open_stocktake_sheet)
+        open_row.addWidget(open_btn)
+        open_card.add_layout(open_row)
+        layout.addWidget(open_card)
+
+        sheet_card = Card("גיליון פעיל")
+        sheet_row = QHBoxLayout()
+        sheet_row.setSpacing(METRICS.space(3))
+        self.count_sheet = QComboBox()
+        self.count_sheet.currentIndexChanged.connect(self._refresh_stocktake)
+        sheet_caption = QLabel("גיליון")
+        sheet_caption.setObjectName("FieldLabel")
+        sheet_row.addWidget(sheet_caption)
+        sheet_row.addWidget(self.count_sheet, 1)
+        sheet_card.add_layout(sheet_row)
+
+        entry_row = QHBoxLayout()
+        entry_row.setSpacing(METRICS.space(3))
+        self.count_item = QComboBox()
+        self.count_value = QDoubleSpinBox()
+        self.count_value.setRange(0, 1_000_000)
+        self.count_value.setDecimals(1)
+        for label, widget in [("פריט", self.count_item), ("נספר", self.count_value)]:
+            caption = QLabel(label)
+            caption.setObjectName("FieldLabel")
+            entry_row.addWidget(caption)
+            entry_row.addWidget(widget)
+        enter_btn = QPushButton("רשום ספירה")
+        enter_btn.clicked.connect(self.enter_count)
+        entry_row.addWidget(enter_btn)
+        entry_row.addStretch(1)
+        sheet_card.add_layout(entry_row)
+        layout.addWidget(sheet_card)
+
+        self.count_table = DataTable(
+            ["קוד", "פריט", "בספר", "נספר", "הפרש", "שווי הפרש"],
+            empty_text="פתח גיליון כדי להתחיל לספור",
+        )
+        layout.addWidget(self.count_table, 1)
+
+        self.count_summary = QLabel("—")
+        self.count_summary.setObjectName("StatLabel")
+        self.count_summary.setWordWrap(True)
+        layout.addWidget(self.count_summary)
+
+        post_btn = QPushButton("רשום את ההפרשים בספר המלאי")
+        post_btn.setObjectName("Primary")
+        post_btn.clicked.connect(self.post_stocktake)
+        layout.addWidget(post_btn)
+
+        self._stocktake_book = None
+        self._refresh_sheet_list()
+        return page
+
+    def _stocktakes(self) -> Any:
+        if self._stocktake_book is None:
+            from ..erp.stocktake import default_stocktakes
+
+            self._stocktake_book = default_stocktakes()
+        return self._stocktake_book
+
+    def open_stocktake_sheet(self) -> None:
+        from ..erp.stocktake import open_stocktake
+
+        company = self._company()
+        try:
+            sheet = open_stocktake(company.stock, scope=self.count_scope.text().strip())
+            self._stocktakes().add(sheet)
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "פתיחת הגיליון נכשלה")
+            return
+        self.count_scope.clear()
+        self._refresh_sheet_list(select=sheet.sheet_id)
+        self.status(f"נפתח {sheet.sheet_id} — {len(sheet)} שורות")
+
+    def _refresh_sheet_list(self, select: str = "") -> None:
+        book = self._stocktakes()
+        self.count_sheet.blockSignals(True)
+        self.count_sheet.clear()
+        for sheet in book:
+            self.count_sheet.addItem(sheet.describe(), sheet.sheet_id)
+        self.count_sheet.blockSignals(False)
+        if select:
+            index = self.count_sheet.findData(select)
+            if index >= 0:
+                self.count_sheet.setCurrentIndex(index)
+        self._refresh_stocktake()
+
+    def _current_sheet(self) -> Any:
+        sheet_id = self.count_sheet.currentData()
+        if not sheet_id:
+            return None
+        try:
+            return self._stocktakes().get(sheet_id)
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _refresh_stocktake(self) -> None:
+        sheet = self._current_sheet()
+        self.count_item.clear()
+        if sheet is None:
+            self.count_table.set_rows([])
+            self.count_summary.setText("—")
+            return
+
+        for line in sheet.lines:
+            label = f"{line.code} — {line.name}" if line.name else line.code
+            self.count_item.addItem(label, line.code)
+
+        colours: dict[tuple[int, int], str] = {}
+        rows = []
+        for index, line in enumerate(sheet.lines):
+            rows.append([
+                line.code, line.name or "—", f"{line.book:g}",
+                f"{line.counted:g}" if line.is_counted else "—",
+                f"{line.difference:+g}" if line.is_counted else "—",
+                f"{line.value_difference:,.0f}" if line.is_counted else "—",
+            ])
+            if line.is_counted and not line.agrees:
+                colours[(index, 4)] = self.colours.warning
+                colours[(index, 5)] = self.colours.warning
+        self.count_table.set_rows(rows, colours=colours)
+
+        warnings = sheet.warnings()
+        text = sheet.describe()
+        if warnings:
+            text += "\n" + "\n".join(f"• {warning}" for warning in warnings)
+        self.count_summary.setText(text)
+
+    def enter_count(self) -> None:
+        sheet = self._current_sheet()
+        if sheet is None:
+            self.report(ProfileOSError("פתח גיליון קודם"), "אין גיליון פעיל")
+            return
+        code = self.count_item.currentData()
+        if not code:
+            self.report(ProfileOSError("אין שורות בגיליון"), "אין מה לספור")
+            return
+        try:
+            sheet.enter(code, self.count_value.value())
+            self._stocktakes().save()
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "רישום הספירה נכשל")
+            return
+        self._refresh_stocktake()
+
+    def post_stocktake(self) -> None:
+        sheet = self._current_sheet()
+        if sheet is None:
+            self.report(ProfileOSError("פתח גיליון קודם"), "אין גיליון פעיל")
+            return
+        if not sheet.counted:
+            self.report(ProfileOSError("לא נספרה אף שורה"), "אין מה לרשום")
+            return
+
+        warnings = sheet.warnings()
+        text = (
+            f"לרשום {len(sheet.counted)} שורות שנספרו, "
+            f"שינוי שווי של ⁦{sheet.net_value:,.0f}⁩ ₪?"
+        )
+        if warnings:
+            text += "\n\n" + "\n".join(warnings)
+        box = QMessageBox(self)
+        box.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
+        box.setWindowTitle("רישום ספירה")
+        box.setText(text)
+        box.setStandardButtons(
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        box.setDefaultButton(QMessageBox.StandardButton.No)
+        if box.exec() != QMessageBox.StandardButton.Yes:
+            return
+
+        company = self._company()
+        try:
+            movements = sheet.post(company.stock)
+            self._stocktakes().save()
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "הרישום נכשל")
+            return
+        self._refresh_sheet_list(select=sheet.sheet_id)
+        self._refresh_stock()
+        self.status(f"נרשמו {len(movements)} תנועות, שינוי שווי ⁦{sheet.net_value:,.0f}⁩ ₪")
 
     # -- purchasing ------------------------------------------------------------ #
     def _purchasing_tab(self) -> QWidget:
