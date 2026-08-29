@@ -6335,6 +6335,10 @@ class SurveyPage(Page):
         export.clicked.connect(self.export_sheet)
         self.header.add_action(export)
 
+        apply_sizes = QPushButton("עדכן פתחים ממדידה")
+        apply_sizes.clicked.connect(self.apply_to_elements)
+        self.header.add_action(apply_sizes)
+
         self.stats = StatRow([
             ("openings", "פתחים"), ("measured", "נמדדו"),
             ("makeable", "מוכנים לייצור"), ("square", "מחוץ לזווית"),
@@ -6563,6 +6567,73 @@ class SurveyPage(Page):
             writer.writerow(Survey.SHEET_HEADERS)
             writer.writerows(self._survey.sheet_rows())
         self.status(f"נשמר {path}")
+
+    def apply_to_elements(self) -> None:
+        """Carry the field-measured frame sizes into the job's real cut list.
+
+        The design that opened this sheet was sized to an estimate; what
+        this measured is what an installer will actually meet on the wall.
+        A measurement that never reaches the cut list was pointless to take
+        — so this rebuilds each makeable opening at its measured size and
+        replaces the matching element already on the job, the same way
+        opening the job again would.
+        """
+        if self._survey is None:
+            self.report(ProfileOSError("פתח גיליון מדידה קודם"), "אין מה לעדכן")
+            return
+        if not self._survey.makeable:
+            self.report(
+                ProfileOSError(
+                    "אין עדיין פתח מוכן לייצור — סיים למדוד ואז חזור לכאן"
+                ),
+                "אין מה לעדכן",
+            )
+            return
+
+        from ..elements.builder import ElementBuilder
+
+        # Matched by reference to the opening already on the job's schedule,
+        # so this replaces that element's build (same element_id) instead of
+        # adding a second, disconnected one beside it.
+        job = getattr(self.session, "job", None)
+        schedule = getattr(job, "schedule", None) if job is not None else None
+        original_ids: dict[str, str] = {}
+        for original in getattr(schedule, "openings", []) or []:
+            key = str(getattr(original, "reference", "") or original.name)
+            if key:
+                original_ids[key] = original.element_id
+
+        built = 0
+        problems: list[str] = []
+        for opening in self._survey.to_openings():
+            key = str(opening.reference or opening.name)
+            if key in original_ids:
+                opening.element_id = original_ids[key]
+            try:
+                builder = (
+                    ElementBuilder() if opening.system_id in ("", "generic")
+                    else ElementBuilder.for_system(opening.system_id)
+                )
+                build = builder.build(opening)
+            except Exception as exc:  # noqa: BLE001 - one bad opening, not the batch
+                problems.append(f"{opening.name}: {exc}")
+                continue
+            self.session.add_build(build)
+            built += 1
+
+        if job is not None and built:
+            job.schedule = self.session.to_schedule(name=job.name, system_id=job.system_id)
+            from ..projects import default_store
+
+            try:
+                default_store().save(job)
+            except Exception:  # noqa: BLE001 - the session already has the update
+                _log.exception("Could not save measured sizes onto job %s", job.job_id)
+
+        message = f"עודכנו {built} פתחים לפי המדידה בפועל" if built else "לא עודכן פתח"
+        if problems:
+            message += " · " + " · ".join(problems[:3])
+        self.status(message)
 
 
 # --------------------------------------------------------------------------- #
