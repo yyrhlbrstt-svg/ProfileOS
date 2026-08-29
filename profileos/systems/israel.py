@@ -189,6 +189,47 @@ SERIES: tuple[SystemEntry, ...] = (
     _entry("extal", "E45", "אקסטל"),
     _entry("extal", "E50", "אקסטל"),
     _entry("extal", "E98", "אקסטל"),
+    # -- Reynaers ----------------------------------------------------------- #
+    # Real, published product lines, classified by the broad kind of system
+    # each is — publicly stated by the manufacturer on their own site. No cut
+    # deduction, U-value or other figure is claimed here; those stay unknown
+    # until the shop's own catalogue import attaches them with provenance.
+    _entry("reynaers", "CS 68", "ריינרס", SystemFamily.CASEMENT, thermally_broken=True),
+    _entry("reynaers", "CS 77", "ריינרס", SystemFamily.CASEMENT, thermally_broken=True),
+    _entry("reynaers", "SL 38", "ריינרס", SystemFamily.SLIDING, thermally_broken=True),
+    _entry("reynaers", "Hi-Finity", "ריינרס", SystemFamily.LIFT_SLIDE, thermally_broken=True),
+    _entry("reynaers", "CP 130", "ריינרס", SystemFamily.CURTAIN_WALL, thermally_broken=True),
+    # -- Schüco --------------------------------------------------------------- #
+    _entry("schuco", "AWS 75", "שוקו", SystemFamily.CASEMENT, thermally_broken=True),
+    _entry("schuco", "ASS 70", "שוקו", SystemFamily.SLIDING, thermally_broken=True),
+    _entry("schuco", "ASE 60", "שוקו", SystemFamily.LIFT_SLIDE, thermally_broken=True),
+    _entry("schuco", "ADS 75", "שוקו", SystemFamily.DOOR, thermally_broken=True),
+    _entry("schuco", "FWS 50", "שוקו", SystemFamily.CURTAIN_WALL, thermally_broken=True),
+    # -- Alumil ----------------------------------------------------------- #
+    _entry("alumil", "S67", "אלומיל", SystemFamily.CASEMENT, thermally_broken=True),
+    _entry("alumil", "S77", "אלומיל", SystemFamily.CASEMENT, thermally_broken=True),
+    _entry("alumil", "SD95", "אלומיל", SystemFamily.SLIDING, thermally_broken=True),
+    _entry("alumil", "M9660", "אלומיל", SystemFamily.CURTAIN_WALL, thermally_broken=True),
+    # -- Cortizo -------------------------------------------------------------- #
+    _entry("cortizo", "Cor 60", "קורטיזו", SystemFamily.CASEMENT, thermally_broken=True),
+    _entry("cortizo", "Cor Vision", "קורטיזו", SystemFamily.SLIDING, thermally_broken=True),
+    _entry("cortizo", "TT52", "קורטיזו", SystemFamily.CASEMENT, thermally_broken=True),
+    # -- Wicona ----------------------------------------------------------- #
+    _entry("wicona", "Wicline 75", "ויקונה", SystemFamily.CASEMENT, thermally_broken=True),
+    _entry("wicona", "Wicslide 65", "ויקונה", SystemFamily.SLIDING, thermally_broken=True),
+    _entry("wicona", "Wictec 50", "ויקונה", SystemFamily.CURTAIN_WALL, thermally_broken=True),
+    # -- PVC: REHAU, VEKA, Deceuninck, Salamander ---------------------------- #
+    # A welded, multi-chamber uPVC frame does not have a metal thermal break
+    # to record, so ``thermally_broken`` is left at its default here rather
+    # than marked either way.
+    _entry("rehau", "Synego", "רהאו", SystemFamily.CASEMENT),
+    _entry("rehau", "Geneo", "רהאו", SystemFamily.CASEMENT),
+    _entry("veka", "Softline 70", "וקה", SystemFamily.CASEMENT),
+    _entry("veka", "Softline 82", "וקה", SystemFamily.CASEMENT),
+    _entry("deceuninck", "Zendow", "דקווניק", SystemFamily.CASEMENT),
+    _entry("deceuninck", "Zendow neo", "דקווניק", SystemFamily.CASEMENT),
+    _entry("salamander", "StreamLine", "סלמנדר", SystemFamily.CASEMENT),
+    _entry("salamander", "bluEvolution 82", "סלמנדר", SystemFamily.CASEMENT),
 )
 
 
