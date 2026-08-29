@@ -421,6 +421,17 @@ CAPABILITIES: tuple[Capability, ...] = (
         probe="profileos.catalogue.ingest:cross_check",
         differentiator=True,
     ),
+    Capability(
+        "preloaded_catalogue", Area.CATALOGUE,
+        "Pre-loaded, vendor-maintained supplier catalogue",
+        "קטלוג ספקים מוכן מראש ומתוחזק על ידי היצרן",
+        "Real cross-sections, cut deductions and prices for hundreds of "
+        "named suppliers, ready the day the software is installed rather "
+        "than built up one imported catalogue at a time. This is a real gap "
+        "against the reference product, not a claim ProfileOS makes.",
+        # No probe: this is the matrix admitting something is not built,
+        # not a claim needing a symbol behind it.
+    ),
     # -- platform ---------------------------------------------------------------- #
     Capability(
         "self_update", Area.PLATFORM,
@@ -916,7 +927,7 @@ PACKAGES: tuple[Package, ...] = (
     Package(
         "logikal", "LogiKal", "Orgadata", "Germany",
         short="LogiK",
-        note="The reference product. Around 700 suppliers and seven million "
+        note="The reference product. Over 450 suppliers and seven million "
              "articles in its maintained catalogue — decades of curation that "
              "no amount of engineering substitutes for.",
         source="https://www.orgadata.com/global/en/solutions/logikal/modules-in-logikal.html",
@@ -932,7 +943,8 @@ PACKAGES: tuple[Package, ...] = (
             "cnc_post": F, "machine_drivers": F, "cutter_comp": F,
             "job_cards": F, "barcodes": F, "cutting_maps": F,
             "bom": F, "quotations": F, "supplier_rfq": F, "price_lists": F,
-            "catalogue_library": F, "erp": P, "capacity_planning": P,
+            "catalogue_library": F, "preloaded_catalogue": F,
+            "erp": P, "capacity_planning": P,
             "three_way_match": U, "books_audit": N, "gltf_export": U,
             "rest_api": P, "catalogue_ingestion": N, "self_update": F,
             "hebrew_rtl": N, "source_available": N, "plumbing": N,
@@ -1070,7 +1082,7 @@ PACKAGES: tuple[Package, ...] = (
 #: Things that stay true no matter how the matrix is read, and that a
 #: fabricator has to weigh before treating this suite as a replacement.
 STANDING_LIMITATIONS: tuple[str, ...] = (
-    "The bundled profile catalogues are examples. LogiKal ships around 700 "
+    "The bundled profile catalogues are examples. LogiKal ships over 450 "
     "suppliers' catalogues, verified and maintained over decades; the "
     "ingestion engine here lets a shop build its own library from what its "
     "suppliers publish, but the library still has to be built.",
@@ -1095,7 +1107,7 @@ STANDING_LIMITATIONS: tuple[str, ...] = (
 #: caveat that exists in only one language is a bug.
 STANDING_LIMITATIONS_HE: tuple[str, ...] = (
     "קטלוגי הפרופילים המצורפים הם דוגמאות. LogiKal מגיעה עם קטלוגים של "
-    "כ-700 ספקים, מאומתים ומתוחזקים לאורך עשורים; מנוע הקליטה כאן מאפשר "
+    "מעל ⁦450⁩ ספקים, מאומתים ומתוחזקים לאורך עשורים; מנוע הקליטה כאן מאפשר "
     "למפעל לבנות ספרייה משלו ממה שהספקים שלו מפרסמים, אבל את הספרייה "
     "עדיין צריך לבנות.",
     "פורמטי ה-CNC הקנייניים — Elumatec NCX/ECX/NCW/DGX, Schüco MCO, "

@@ -189,6 +189,18 @@ SERIES: tuple[SystemEntry, ...] = (
     _entry("extal", "E45", "אקסטל"),
     _entry("extal", "E50", "אקסטל"),
     _entry("extal", "E98", "אקסטל"),
+    # -- אלום גולד (ALUG) ----------------------------------------------------- #
+    # Confirmed from the manufacturer's own product pages (alug.co.il).
+    _entry(
+        "alumgold", "SLIM", "אלוג'י", SystemFamily.SLIDING,
+        notes="מערכת הזזה מינימליסטית",
+    ),
+    _entry(
+        "alumgold", "SKINNY", "אלוג'י",
+        notes="מערכת בפרופיל צר למערכות הזזה וציר כאחד — לא סווגה למשפחה אחת",
+    ),
+    # -- Technal -------------------------------------------------------------- #
+    _entry("technal", "Soleal", "טכנל", SystemFamily.CASEMENT, thermally_broken=True),
     # -- Reynaers ----------------------------------------------------------- #
     # Real, published product lines, classified by the broad kind of system
     # each is — publicly stated by the manufacturer on their own site. No cut
