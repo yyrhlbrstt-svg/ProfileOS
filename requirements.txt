@@ -1,0 +1,35 @@
+# ProfileOS runtime requirements (full install).
+# Core — always required
+pydantic>=2.6
+numpy>=1.26
+shapely>=2.0
+ezdxf>=1.1
+Jinja2>=3.1
+cryptography>=41.0
+typer>=0.9
+rich>=13.0
+
+# Structural FEA (torsion / warping constants)
+sectionproperties>=3.2
+
+# Nesting / MILP
+ortools>=9.8
+
+# Desktop UI
+PySide6>=6.6
+matplotlib>=3.8
+
+# Headless service API
+fastapi>=0.110
+uvicorn>=0.27
+python-multipart>=0.0.9
+
+# Development
+pytest>=8.0
+
+# Shop-floor QR labels
+segno>=1.5
+
+# Hardware authentication (WebAuthn/FIDO2 CBOR)
+cbor2>=5.6
+pypdf>=4.0
