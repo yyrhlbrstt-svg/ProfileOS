@@ -158,9 +158,11 @@ class DeviceRegistry:
         registry = cls(path=target)
         if not target.is_file():
             return registry
+        from ..core.storage import read_json
+
         try:
-            data = json.loads(target.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
+            data = read_json(target, default={})
+        except Exception as exc:  # noqa: BLE001
             raise PairingError(f"The paired-device list is damaged: {exc}") from exc
         for entry in data.get("devices", []):
             device = Device.from_dict(entry)
@@ -170,7 +172,9 @@ class DeviceRegistry:
     def save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         payload = {"version": 1, "devices": [d.to_dict() for d in self.devices.values()]}
-        self.path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        from ..core.storage import write_json
+
+        write_json(self.path, payload)
         try:
             self.path.chmod(0o600)
         except OSError:  # pragma: no cover - Windows and odd filesystems

@@ -157,7 +157,8 @@ class Sidebar(QWidget):
         # Painted icons cannot read the stylesheet, so the sidebar keeps the two
         # colours it draws them in and re-renders them when the theme changes.
         self._icon_colour = DARK.text_muted
-        self._icon_active = BRAND.x300
+        # The selected item is a filled accent pill, so its glyph is white.
+        self._icon_active = "#FFFFFF"
         self._layout = layout
 
         # A quiet brand mark, pinned below the scrolling navigation. The
@@ -166,6 +167,12 @@ class Sidebar(QWidget):
         # product itself stays recognisable to somebody seeing it for the
         # first time — which is exactly who is standing in front of it during
         # a demonstration.
+        # "Is my work saved?" answered without anybody having to ask.
+        self.safety = QLabel("")
+        self.safety.setObjectName("SidebarSafety")
+        self.safety.setWordWrap(True)
+        outer.addWidget(self.safety)
+
         footer = QLabel(f"ProfileOS · גרסה {__version__}")
         footer.setObjectName("SidebarFooter")
         footer.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -212,6 +219,7 @@ class Sidebar(QWidget):
         self.logo.setVisible(not collapsed)
         self.version.setVisible(not collapsed)
         self.footer.setVisible(not collapsed)
+        self.safety.setVisible(not collapsed)
         for label in self._section_labels:
             label.setVisible(not collapsed)
         for button in self.buttons:
@@ -289,6 +297,17 @@ class MainWindow(QMainWindow):
         self.session.subscribe(lambda _what: self._update_status())
         self._install_shortcuts()
         self.apply_palette(palette)
+
+        # -- nothing designed is ever only in memory ------------------------- #
+        from PySide6.QtCore import QTimer
+
+        self._autosave_timer = QTimer(self)
+        self._autosave_timer.setSingleShot(True)
+        self._autosave_timer.setInterval(1500)
+        self._autosave_timer.timeout.connect(self.autosave)
+        self._save_state = ("ok", "")
+        self.session.subscribe(self._on_session_change)
+        self._update_safety()
 
     # -- navigation ---------------------------------------------------------- #
 
@@ -529,7 +548,7 @@ class MainWindow(QMainWindow):
             if application.property("profileos_stylesheet") != sheet:
                 application.setStyleSheet(sheet)
                 application.setProperty("profileos_stylesheet", sheet)
-        self.sidebar.restyle_icons(palette.text_muted, palette.accent)
+        self.sidebar.restyle_icons(palette.text_muted, "#FFFFFF")
         # Painted views hold their own colours, so they need telling directly.
         for page in self.pages:
             page.colours = palette
@@ -546,6 +565,11 @@ class MainWindow(QMainWindow):
         a day, the last thirty kept, beside the data folder — so a dead hard
         disk costs at most a day.
         """
+        # Whatever is waiting to be written is written before anything closes.
+        if self.autosave_enabled and (
+            self._autosave_timer.isActive() or self._save_state[0] == "pending"
+        ):
+            self.autosave()
         archive = None
         if self.auto_backup:
             from ..core.backup import backup_if_due
@@ -554,6 +578,140 @@ class MainWindow(QMainWindow):
         if archive is not None:
             self.statusBar().showMessage(f"גיבוי יומי נשמר: {archive.name}")
         super().closeEvent(event)
+
+    # -- data safety ---------------------------------------------------------- #
+    #: Off for windows built by tests and scripts; the application entry point
+    #: turns it on, so only the real program writes the shop's files on its own.
+    autosave_enabled = False
+
+    def _on_session_change(self, what: str) -> None:
+        if what == "builds" and self.autosave_enabled:
+            self._autosave_timer.start()
+            self._save_state = ("pending", "")
+            self._update_safety()
+
+    def autosave(self) -> None:
+        """Write the design where it belongs: the open job, or the draft.
+
+        Runs a moment after every change and once more on close. A failure is
+        shown in the sidebar and as a notice — never only in a log — because
+        the one thing worse than losing work is believing it was saved.
+        """
+        from ..projects.draft import clear_draft, write_draft
+
+        self._autosave_timer.stop()
+        session = self.session
+        try:
+            if session.job is not None:
+                session.save_design_to_job()
+                clear_draft()
+                self._save_state = ("ok", f"נשמר לפרויקט {session.job.job_id}")
+            elif session.builds or session.unbuilt:
+                write_draft(session.to_schedule())
+                self._save_state = ("draft", "נשמר כטיוטה — פתח פרויקט כדי לתייק")
+            else:
+                clear_draft()
+                self._save_state = ("ok", "")
+        except Exception as exc:  # noqa: BLE001 - shown, never swallowed
+            _log.exception("Autosave failed")
+            self._save_state = ("danger", str(exc))
+            self.toast(f"השמירה האוטומטית נכשלה: {exc}", "danger")
+        self._update_safety()
+
+    def _update_safety(self) -> None:
+        """The sidebar line that answers "is my work saved?" at a glance."""
+        from datetime import date
+
+        from ..core import storage
+
+        label = getattr(self.sidebar, "safety", None)
+        if label is None:
+            return
+        state, detail = self._save_state
+        backup = self._last_backup_day()
+        backup_text = (
+            "גיבוי היום" if backup == date.today()
+            else (f"גיבוי אחרון {backup:%d/%m}" if backup else "עוד לא נלקח גיבוי")
+        )
+        from ..core.backup import backup_status
+
+        backup_state = backup_status()
+        stale = backup is None or (date.today() - backup).days > 2
+        if storage.RECOVERED:
+            names = ", ".join(path.name for path, _damaged in storage.RECOVERED[:2])
+            state, text = "warn", f"⚠ שוחזר מגרסה קודמת: {names}"
+        elif state == "danger":
+            text = "✕ השמירה נכשלה — ראה הודעה"
+        elif backup_state["error"]:
+            state, detail = "danger", backup_state["error"]
+            text = "✕ הגיבוי האוטומטי נכשל — מערכת ← גיבוי"
+        elif backup_state["mirror_error"] and state == "ok":
+            state, detail = "warn", backup_state["mirror_error"]
+            text = "⚠ העותק השני של הגיבוי לא עודכן"
+        elif stale and backup is not None and state == "ok":
+            state = "warn"
+            text = f"⚠ הגיבוי האחרון מ-{backup:%d/%m} — מערכת ← גיבוי"
+        elif state == "pending":
+            text = "… שומר"
+        elif state == "draft":
+            text = "● נשמר כטיוטה · פתח פרויקט כדי לתייק"
+        else:
+            text = f"✓ כל השינויים נשמרו · {backup_text}"
+        label.setText(text)
+        label.setToolTip(detail or text)
+        label.setProperty("state", "ok" if state in ("ok", "pending") else
+                          ("warn" if state in ("draft", "warn") else "danger"))
+        label.style().unpolish(label)
+        label.style().polish(label)
+
+    @staticmethod
+    def _last_backup_day() -> Any:
+        from datetime import datetime
+
+        try:
+            from ..core.backup import default_backup_folder
+
+            archives = sorted(default_backup_folder().glob("profileos-*.zip"))
+        except Exception:  # noqa: BLE001
+            return None
+        if not archives:
+            return None
+        return datetime.fromtimestamp(archives[-1].stat().st_mtime).date()
+
+    def offer_draft_recovery(self) -> bool:
+        """At start-up: work designed last time and never filed comes back."""
+        from PySide6.QtWidgets import QMessageBox
+
+        from ..projects.draft import read_draft, set_draft_aside
+
+        try:
+            found = read_draft()
+        except Exception as exc:  # noqa: BLE001
+            self.toast(f"טיוטה שמורה לא נקראה: {exc}", "danger")
+            return False
+        if found is None:
+            return False
+        schedule, saved_at = found
+        box = QMessageBox(self)
+        box.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setWindowTitle("נמצאה עבודה שלא תויקה")
+        when = saved_at.replace("T", " ")[:16]
+        box.setText(
+            f"בפעם הקודמת תוכננו ⁦{len(schedule.openings)}⁩ פתחים שלא נשמרו "
+            f"לשום פרויקט (נשמרו אוטומטית ב-⁦{when}⁩).\n\nלהחזיר אותם למסך?"
+        )
+        box.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        box.button(QMessageBox.StandardButton.Yes).setText("החזר")
+        box.button(QMessageBox.StandardButton.No).setText("לא עכשיו — שמור בצד")
+        if box.exec() == QMessageBox.StandardButton.Yes:
+            problems = self.session.load_schedule(schedule)
+            for problem in problems[:3]:
+                self.toast(problem, "danger")
+            self.toast(f"הוחזרו {len(self.session.builds)} פתחים — פתח פרויקט כדי לתייק")
+            return True
+        set_draft_aside()
+        return False
 
     def toggle_theme(self) -> None:
         self.apply_palette(LIGHT if self.colours.mode.value == "dark" else DARK)

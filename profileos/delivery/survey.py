@@ -477,11 +477,11 @@ class SurveyBook:
     def load(self) -> "SurveyBook":
         if not self.path.exists():
             return self
-        try:
-            raw = json.loads(self.path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
-            _log.warning("Could not read %s: %s", self.path, exc)
-            return self
+        # Recovered from the previous version or refused — never read
+        # as empty, which the next save would write over real records.
+        from ..core.storage import read_json
+
+        raw = read_json(self.path, default={})
         for item in raw.get("surveys", []):
             try:
                 survey = Survey.from_dict(item)
@@ -497,11 +497,9 @@ class SurveyBook:
             "written": datetime.now().isoformat(timespec="seconds"),
             "surveys": [survey.as_dict() for survey in self._surveys.values()],
         }
-        temporary = self.path.with_suffix(".tmp")
-        temporary.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
-        temporary.replace(self.path)
+        from ..core.storage import atomic_write_text
+
+        atomic_write_text(self.path, json.dumps(payload, ensure_ascii=False, indent=2))
 
     def add(self, survey: Survey) -> Survey:
         self._surveys[survey.survey_id] = survey

@@ -35,6 +35,14 @@ _log = get_logger("core.backup")
 
 MANIFEST_NAME = "profileos-backup.json"
 
+#: Where the settings folder sits inside an archive, apart from the data.
+CONFIG_PREFIX = "_config/"
+
+#: Settings that describe one computer — where its folders are — and would
+#: point a restored machine at paths it does not have. Kept in the archive,
+#: never written back over the new machine's own.
+CONFIG_KEEP_LOCAL = ("settings.json",)
+
 #: Never copied into a backup: caches, locks, and the half-written files a
 #: crash leaves behind. Restoring a stale lock would greet somebody with a
 #: message about a machine that no longer exists.
@@ -87,6 +95,40 @@ def _should_skip(path: Path, root: Path) -> bool:
     return any(part in SKIP_DIRECTORIES for part in path.relative_to(root).parts)
 
 
+def _config_files(config: Path | None, root: Path) -> list[tuple[Path, str]]:
+    """The settings folder's files, unless they are already in the data."""
+    if config is None or not Path(config).is_dir():
+        return []
+    config = Path(config).resolve()
+    resolved_root = root.resolve()
+    if config == resolved_root or resolved_root in config.parents:
+        return []
+    found: list[tuple[Path, str]] = []
+    for path in sorted(config.rglob("*")):
+        if not path.is_file() or _should_skip(path, config):
+            continue
+        # The data folder can sit inside the settings folder on some
+        # machines; it has already been written once.
+        if path.resolve() == resolved_root or resolved_root in path.resolve().parents:
+            continue
+        found.append((path, path.relative_to(config).as_posix()))
+    return found
+
+
+def _verify(archive_path: Path) -> None:
+    """Read every member back; refuse an archive that does not survive it."""
+    try:
+        with zipfile.ZipFile(archive_path) as archive:
+            broken = archive.testzip()
+            archive.read(MANIFEST_NAME)
+    except (zipfile.BadZipFile, KeyError, OSError) as exc:
+        archive_path.unlink(missing_ok=True)
+        raise ProfileOSError(f"הגיבוי נכתב פגום ונמחק: {exc}") from exc
+    if broken is not None:
+        archive_path.unlink(missing_ok=True)
+        raise ProfileOSError(f"הגיבוי נכתב פגום ({broken}) ונמחק — נסו שוב")
+
+
 def _count_contents(root: Path) -> dict[str, int]:
     """What is in the folder, in the shop's own terms rather than file counts."""
     contents: dict[str, int] = {}
@@ -134,7 +176,10 @@ def default_backup_folder() -> Path:
     """
     from .config import get_settings
 
-    return get_settings().data_dir.parent / "גיבויים"
+    settings = get_settings()
+    if settings.backup_folder:
+        return Path(settings.backup_folder)
+    return settings.data_dir.parent / "גיבויים"
 
 
 def _dated_name(folder: Path) -> str:
@@ -154,11 +199,22 @@ def _dated_name(folder: Path) -> str:
     return candidate.name
 
 
-def write_backup(destination: Path, *, root: Path | None = None) -> Path:
-    """Write one dated zip of everything the shop's data folder holds."""
+def write_backup(
+    destination: Path, *, root: Path | None = None, config: Path | None = None
+) -> Path:
+    """Write one dated zip of everything the shop's data folder holds.
+
+    With no ``root`` given this is the installation's own data, and its
+    settings folder goes in too; an explicit ``root`` backs up that folder
+    alone unless ``config`` names one.
+    """
     from .config import get_settings
 
-    root = Path(root) if root is not None else get_settings().data_dir
+    if root is None:
+        settings = get_settings()
+        root = settings.data_dir
+        config = config if config is not None else settings.config_dir
+    root = Path(root)
     if not root.is_dir():
         raise ProfileOSError(f"אין תיקיית נתונים ב-{root}")
 
@@ -200,10 +256,20 @@ def write_backup(destination: Path, *, root: Path | None = None) -> Path:
             archive.write(path, path.relative_to(root).as_posix())
             manifest.files += 1
             manifest.bytes += path.stat().st_size
+        # The settings and the sign-in file live in a separate folder. A new
+        # computer restored from data alone would open with nobody able to
+        # sign in, so they travel in the same archive under their own prefix.
+        for path, name in _config_files(config, root):
+            archive.write(path, f"{CONFIG_PREFIX}{name}")
+            manifest.files += 1
+            manifest.bytes += path.stat().st_size
         archive.writestr(
             MANIFEST_NAME,
             json.dumps(manifest.__dict__, ensure_ascii=False, indent=2),
         )
+    # A backup nobody can open is discovered on the day it is needed. Each
+    # one is read back in full before it is allowed to count.
+    _verify(temporary)
     temporary.replace(destination)
     _log.info("Backup written to %s: %s", destination, manifest.describe())
     return destination
@@ -299,7 +365,8 @@ def plan_restore(archive_path: Path, *, root: Path | None = None) -> RestorePlan
 
 
 def restore(
-    archive_path: Path, *, root: Path | None = None, keep_current: bool = True
+    archive_path: Path, *, root: Path | None = None, keep_current: bool = True,
+    config: Path | None = None,
 ) -> tuple[Path, Path | None]:
     """Restore a backup, moving the current folder aside rather than deleting it.
 
@@ -308,6 +375,9 @@ def restore(
     """
     from .config import get_settings
 
+    # The installation's own settings folder is restored only with its own
+    # data; restoring into some other folder leaves the settings alone.
+    restore_config = root is None
     root = Path(root) if root is not None else get_settings().data_dir
     manifest = read_manifest(archive_path)
 
@@ -322,9 +392,17 @@ def restore(
             shutil.rmtree(root)
     root.mkdir(parents=True, exist_ok=True)
 
+    config_target = config
+    if config_target is None and restore_config:
+        config_target = get_settings().config_dir
+
     with zipfile.ZipFile(archive_path) as archive:
         for name in archive.namelist():
             if name == MANIFEST_NAME:
+                continue
+            if name.startswith(CONFIG_PREFIX):
+                if config_target is not None:
+                    _restore_config_file(archive, name, Path(config_target))
                 continue
             # A zip can name a path outside the folder it is unpacked into;
             # anything that tries is refused rather than written.
@@ -347,6 +425,22 @@ def restore(
     )
     _log.info("Restored %s into %s", manifest.describe(), root)
     return root, aside
+
+
+def _restore_config_file(archive: zipfile.ZipFile, name: str, config: Path) -> None:
+    """Put one settings file back, keeping whatever was there beside it."""
+    relative = name[len(CONFIG_PREFIX):]
+    if not relative or relative in CONFIG_KEEP_LOCAL:
+        return
+    target = (config / relative).resolve()
+    if not str(target).startswith(str(config.resolve())):
+        raise ProfileOSError(f"הגיבוי מכיל נתיב חורג ({name}) — הוא לא נפרס")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if target.is_file():
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        shutil.copy2(target, target.with_name(f"{target.name}.לפני-שחזור-{stamp}"))
+    with archive.open(name) as source, target.open("wb") as sink:
+        shutil.copyfileobj(source, sink)
 
 
 def list_backups(folder: Path) -> list[tuple[Path, Manifest]]:
@@ -382,34 +476,95 @@ def prune(folder: Path, *, keep: int = 14) -> list[Path]:
     return removed
 
 
-def backup_if_due(folder: Path | None = None, *, keep: int = 30) -> Path | None:
+def backup_if_due(
+    folder: Path | None = None, *, keep: int = 30, mirror: Path | None = None
+) -> Path | None:
     """Write today's backup if none exists yet, and keep the last ``keep``.
 
     The backup a small shop has is the one that happened without anybody
-    remembering to make it. Run when the application closes: at most one a
-    day, into the default folder beside the data, oldest pruned. Returns the
-    archive written, or ``None`` when today already has one or there is no
-    data yet. Never raises — a failed backup must not stop the window
-    closing; it is logged instead.
+    remembering to make it. Run when the application opens and closes: at
+    most one a day, into the backup folder, oldest pruned. A backup beside
+    the data survives a deleted file but not a dead disk, so when a second
+    folder is set — a USB drive, a synced cloud folder — today's archive is
+    copied there too, whenever it is reachable.
+
+    Returns the archive written, or ``None`` when today already has one or
+    there is no data yet. Never raises — a failed backup must not stop the
+    window closing; it is logged and reported by :func:`backup_status`.
     """
     from datetime import date
 
     try:
         from .config import get_settings
 
-        root = get_settings().data_dir
+        settings = get_settings()
+        root = settings.data_dir
         if not root.is_dir() or not any(root.iterdir()):
             return None
         target = Path(folder) if folder is not None else default_backup_folder()
+        if mirror is None:
+            mirror = settings.backup_mirror
         today = date.today().isoformat()
-        if target.is_dir() and any(target.glob(f"profileos-{today}-*.zip")):
-            return None
-        archive = write_backup(target, root=root)
-        prune(target, keep=keep)
-        return archive
+        existing = sorted(target.glob(f"profileos-{today}-*.zip")) if target.is_dir() else []
+        written: Path | None = None
+        if existing:
+            archive = existing[-1]
+        else:
+            archive = write_backup(target)
+            prune(target, keep=keep)
+            written = archive
+        if mirror:
+            copy_to_mirror(archive, Path(mirror), keep=keep)
+        _STATUS.update(error="", last=str(archive))
+        return written
     except Exception as exc:  # noqa: BLE001 - closing the window comes first
         _log.warning("Automatic backup skipped: %s", exc)
+        _STATUS.update(error=str(exc))
         return None
+
+
+#: The last automatic backup's outcome, for the window to show.
+_STATUS: dict[str, str] = {"error": "", "last": "", "mirror_error": ""}
+
+
+def backup_status() -> dict[str, str]:
+    """What the last automatic backup did — empty strings when all is well."""
+    return dict(_STATUS)
+
+
+def copy_to_mirror(archive: Path, mirror: Path, *, keep: int = 30) -> Path | None:
+    """Copy one archive to the second folder, if that folder can be reached.
+
+    A USB drive that is not plugged in is not an error worth stopping for,
+    but it is worth saying, so the window can show that the second copy is
+    behind.
+    """
+    mirror = Path(mirror)
+    # The folder, or at least the folder it sits in, must already exist: a
+    # drive letter that is gone, or a mount point with nothing mounted, would
+    # otherwise quietly become a new folder on the same disk as the first copy.
+    if not mirror.is_dir() and not mirror.parent.is_dir():
+        _STATUS["mirror_error"] = f"הכונן של העותק השני לא מחובר ({mirror})"
+        _log.warning("Backup mirror not reachable: %s", mirror)
+        return None
+    try:
+        mirror.mkdir(exist_ok=True)
+        target = mirror / archive.name
+        if target.is_file() and target.stat().st_size == archive.stat().st_size:
+            _STATUS["mirror_error"] = ""
+            return target
+        partial = target.with_suffix(target.suffix + ".part")
+        shutil.copyfile(archive, partial)
+        _verify(partial)
+        partial.replace(target)
+        prune(mirror, keep=keep)
+    except Exception as exc:  # noqa: BLE001 - the first copy already exists
+        _STATUS["mirror_error"] = f"העתקה לעותק השני נכשלה: {exc}"
+        _log.warning("Backup mirror failed: %s", exc)
+        return None
+    _STATUS["mirror_error"] = ""
+    _log.info("Backup copied to %s", target)
+    return target
 
 
 def _unused(_: Iterable[Any]) -> None:  # pragma: no cover - typing helper
@@ -419,6 +574,8 @@ def _unused(_: Iterable[Any]) -> None:  # pragma: no cover - typing helper
 __all__ = [
     "MANIFEST_NAME",
     "backup_if_due",
+    "backup_status",
+    "copy_to_mirror",
     "default_backup_folder",
     "Manifest",
     "RestorePlan",

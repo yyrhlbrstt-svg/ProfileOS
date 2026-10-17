@@ -125,11 +125,11 @@ class TimeBook:
     def load(self) -> "TimeBook":
         if self.path is None or not self.path.is_file():
             return self
-        try:
-            raw = json.loads(self.path.read_text(encoding="utf-8"))
-        except Exception:  # noqa: BLE001
-            _log.exception("Time book at %s unreadable", self.path)
-            return self
+        # Recovered from the previous version or refused — never read
+        # as empty, which the next save would write over real records.
+        from ..core.storage import read_json
+
+        raw = read_json(self.path, default={})
         for item in raw.get("entries", []):
             try:
                 entry = Entry(
@@ -152,11 +152,9 @@ class TimeBook:
             return
         self.path.parent.mkdir(parents=True, exist_ok=True)
         payload = {"entries": [entry.as_dict() for entry in self._entries.values()]}
-        temporary = self.path.with_suffix(self.path.suffix + ".tmp")
-        temporary.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
-        temporary.replace(self.path)
+        from ..core.storage import atomic_write_text
+
+        atomic_write_text(self.path, json.dumps(payload, ensure_ascii=False, indent=2))
 
     # -- writing ------------------------------------------------------------- #
     def add(self, entry: Entry) -> Entry:

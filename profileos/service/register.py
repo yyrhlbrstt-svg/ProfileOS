@@ -85,11 +85,11 @@ class ServiceRegister:
     def load(self) -> "ServiceRegister":
         if not self.path.is_file():
             return self
-        try:
-            raw = json.loads(self.path.read_text(encoding="utf-8"))
-        except Exception:  # noqa: BLE001 - a corrupt file must not stop the phone
-            _log.exception("Service register at %s could not be read", self.path)
-            return self
+        # Recovered from the previous version or refused — never read
+        # as empty, which the next save would write over real records.
+        from ..core.storage import read_json
+
+        raw = read_json(self.path, default={})
         for entry in raw.get("calls", []):
             try:
                 call = _from_json(entry)
@@ -103,11 +103,9 @@ class ServiceRegister:
         """Write atomically: a half-written register is worse than none."""
         self.path.parent.mkdir(parents=True, exist_ok=True)
         payload = {"calls": [_to_json(call) for call in self._calls.values()]}
-        temporary = self.path.with_suffix(self.path.suffix + ".tmp")
-        temporary.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
-        temporary.replace(self.path)
+        from ..core.storage import atomic_write_text
+
+        atomic_write_text(self.path, json.dumps(payload, ensure_ascii=False, indent=2))
 
     # -- writing ------------------------------------------------------------- #
     def add(self, call: ServiceCall) -> ServiceCall:

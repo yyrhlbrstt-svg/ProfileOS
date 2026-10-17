@@ -349,16 +349,15 @@ def import_prices(plan: ImportPlan, path: Path | None = None) -> dict[str, int]:
 
     entries: dict[str, dict[str, Any]] = {}
     if destination.is_file():
-        try:
-            entries = {
-                item["code"]: item
-                for item in json.loads(destination.read_text(encoding="utf-8")).get(
-                    "prices", []
-                )
-            }
-        except Exception:  # noqa: BLE001 - a corrupt list is replaced, not merged
-            _log.warning("Existing price list at %s unreadable; replacing", destination)
-            entries = {}
+        from ..core.storage import read_json
+
+        # Merged into, never replaced: a price list that will not read is
+        # restored from its previous version or the import stops, rather
+        # than silently dropping every price the shop entered before.
+        entries = {
+            item["code"]: item
+            for item in read_json(destination, default={}).get("prices", [])
+        }
 
     created = updated = 0
     for row in plan.rows:
@@ -370,13 +369,9 @@ def import_prices(plan: ImportPlan, path: Path | None = None) -> dict[str, int]:
             created += 1
         entries[row.label] = dict(row.values)
 
-    destination.write_text(
-        json.dumps(
-            {"prices": sorted(entries.values(), key=lambda item: item["code"])},
-            ensure_ascii=False, indent=2,
-        ),
-        encoding="utf-8",
-    )
+    from ..core.storage import write_json
+
+    write_json(destination, {"prices": sorted(entries.values(), key=lambda item: item["code"])})
     _log.info("Price list: %d new, %d updated at %s", created, updated, destination)
     return {"created": created, "updated": updated, "failed": 0}
 

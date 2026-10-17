@@ -66,9 +66,11 @@ class RemnantInventory:
                 self._remnants = []
             return 0
 
+        from ..core.storage import read_json
+
         try:
-            raw = json.loads(target.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
+            raw = read_json(target, default={})
+        except Exception as exc:  # noqa: BLE001
             raise ProfileOSError(
                 f"Cannot read remnant inventory: {exc}", path=str(target)
             ) from exc
@@ -102,14 +104,9 @@ class RemnantInventory:
 
         # Write to a sibling temp file then replace, so an interrupted write
         # cannot leave a half-written inventory behind.
-        handle, temp_name = tempfile.mkstemp(dir=str(target.parent), suffix=".tmp")
-        try:
-            with os.fdopen(handle, "w", encoding="utf-8") as fh:
-                json.dump(payload, fh, indent=2, ensure_ascii=False)
-            os.replace(temp_name, target)
-        except BaseException:
-            Path(temp_name).unlink(missing_ok=True)
-            raise
+        from ..core.storage import write_json
+
+        write_json(target, payload)
 
         self.path = target
         _log.info("Saved %d remnant(s) to %s", len(payload["remnants"]), target)

@@ -27,32 +27,33 @@ _log = get_logger("projects.store")
 
 
 def _atomic_write(path: Path, text: str) -> None:
-    """Write beside the target and rename over it, holding the lock.
+    """Write durably (see :mod:`profileos.core.storage`), holding the lock.
 
-    Atomic on its own is only half of it: two people on a shared folder can
-    each write atomically and still have the second one erase the first. The
+    Durable on its own is only half of it: two people on a shared folder can
+    each write safely and still have the second one erase the first. The
     lock makes the pair of writes take turns, and a machine that went away
     without releasing it does not hold the shop up — see
     :mod:`profileos.core.sharing`.
     """
     from ..core.sharing import Locked, locked
+    from ..core.storage import atomic_write_text
 
     path.parent.mkdir(parents=True, exist_ok=True)
-
-    def write() -> None:
-        temporary = path.with_suffix(path.suffix + ".tmp")
-        temporary.write_text(text, encoding="utf-8")
-        os.replace(temporary, path)
-
     try:
         with locked(path):
-            write()
+            atomic_write_text(path, text)
     except Locked:
         # Never lose somebody's work to a lock: say who has it, and write
         # anyway. Refusing here would mean an estimator loses what they typed
         # because a colleague left a window open, which is a worse trade.
         _log.warning("Wrote %s while another machine held the lock", path.name)
-        write()
+        atomic_write_text(path, text)
+
+
+def _read_job(path: Path) -> JobFile:
+    from ..core.storage import read_text_checked
+
+    return read_text_checked(path, JobFile.model_validate_json)
 
 
 class JobStore:
@@ -60,6 +61,8 @@ class JobStore:
 
     def __init__(self, root: Path) -> None:
         self.root = Path(root)
+        #: Job files that could not be read on the last listing.
+        self.unreadable: list[Path] = []
 
     # -- paths -------------------------------------------------------------- #
     def path_for(self, job_id: str) -> Path:
@@ -71,18 +74,22 @@ class JobStore:
         path = self.path_for(job_id)
         if not path.is_file():
             raise ProfileOSError(f"לא נמצא פרויקט {job_id}", job_id=job_id)
-        return JobFile.model_validate_json(path.read_text(encoding="utf-8"))
+        return _read_job(path)
 
     def all(self) -> list[JobFile]:
         """Every job, newest change first. Unreadable files are skipped loudly."""
         jobs: list[JobFile] = []
         if not self.root.is_dir():
             return jobs
+        self.unreadable: list[Path] = []
         for path in sorted(self.root.glob("*.json")):
             try:
-                jobs.append(JobFile.model_validate_json(path.read_text(encoding="utf-8")))
+                jobs.append(_read_job(path))
             except Exception:  # noqa: BLE001 - one bad file must not hide the rest
+                # Recorded, not forgotten: the screen says a job could not be
+                # read, and numbering steps around it (see ``next_id``).
                 _log.exception("Could not read job file %s", path)
+                self.unreadable.append(path)
         jobs.sort(key=lambda job: (job.updated, job.job_id), reverse=True)
         return jobs
 
@@ -100,11 +107,24 @@ class JobStore:
         _log.info("Saved job %s to %s", job.job_id, path)
         return path
 
-    def delete(self, job_id: str) -> None:
+    def delete(self, job_id: str) -> Path | None:
+        """Move a job to the folder's recycle bin — never erase it outright.
+
+        A job deleted by a slip of the mouse is a job somebody needs back the
+        same afternoon. It goes to ``.trash`` beside the jobs, timestamped,
+        where a backup still carries it and a person can still find it.
+        """
+        from datetime import datetime
+
         path = self.path_for(job_id)
-        if path.is_file():
-            path.unlink()
-            _log.info("Deleted job %s", job_id)
+        if not path.is_file():
+            return None
+        trash = self.root / ".trash"
+        trash.mkdir(parents=True, exist_ok=True)
+        target = trash / f"{path.stem}-{datetime.now():%Y%m%d-%H%M%S}{path.suffix}"
+        os.replace(path, target)
+        _log.info("Deleted job %s (kept in %s)", job_id, target)
+        return target
 
     # -- numbering ---------------------------------------------------------- #
     def next_id(self, today: date | None = None) -> str:
@@ -117,9 +137,16 @@ class JobStore:
         year = (today or date.today()).year
         prefix = f"J-{year}-"
         used = 0
-        for job in self.all():
-            if job.job_id.startswith(prefix):
-                tail = job.job_id[len(prefix):]
+        # Counted from the file names as well as the readable jobs: a job file
+        # that cannot be read right now still owns its number, and handing that
+        # number out again would save a new job over one still recoverable.
+        ids = {job.job_id for job in self.all()}
+        if self.root.is_dir():
+            ids |= {path.stem for path in self.root.glob("*.json")}
+            ids |= {path.stem.split(".")[0] for path in self.root.glob("*.json.*")}
+        for job_id in ids:
+            if job_id.startswith(prefix):
+                tail = job_id[len(prefix):]
                 if tail.isdigit():
                     used = max(used, int(tail))
         return f"{prefix}{used + 1:04d}"
@@ -162,13 +189,11 @@ class CustomerBook:
         self.path = Path(path)
 
     def all(self) -> list[Customer]:
-        if not self.path.is_file():
-            return []
-        try:
-            raw = json.loads(self.path.read_text(encoding="utf-8"))
-        except Exception:  # noqa: BLE001 - shown, never raised at the user
-            _log.exception("Could not read the customer book at %s", self.path)
-            return []
+        from ..core.storage import read_json
+
+        # A damaged book is recovered from its previous version or refused —
+        # never read as "no customers", which the next add would save over.
+        raw = read_json(self.path, default={"customers": []})
         customers = [Customer.model_validate(entry) for entry in raw.get("customers", [])]
         customers.sort(key=lambda customer: customer.name)
         return customers

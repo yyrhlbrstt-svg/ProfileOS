@@ -1,0 +1,119 @@
+"""The home page finds what needs a look without being asked."""
+
+from __future__ import annotations
+
+from datetime import date, timedelta
+
+import pytest
+
+from profileos.erp.collection import Cheque, ChequeBook
+from profileos.insights import dismiss, dismissed, scan
+from profileos.projects import JobStatus
+from profileos.projects.model import Customer, JobFile, StatusEvent
+
+TODAY = date(2026, 10, 18)
+
+
+@pytest.fixture
+def shop(tmp_path, monkeypatch):
+    from profileos.core.config import reload_settings
+
+    data = tmp_path / "data"
+    monkeypatch.setenv("PROFILEOS_DATA_DIR", str(data))
+    reload_settings()
+    data.mkdir(parents=True, exist_ok=True)
+    yield data
+    monkeypatch.delenv("PROFILEOS_DATA_DIR", raising=False)
+    reload_settings()
+
+
+def _job(job_id: str, status: JobStatus, *, since: date, **fields) -> JobFile:
+    job = JobFile(job_id=job_id, name=f"עבודה {job_id}", status=status, **fields)
+    job.history = [StatusEvent(status=status, at=since.isoformat())]
+    return job
+
+
+def _titles(found) -> str:
+    return " | ".join(insight.title for insight in found)
+
+
+def _scan(**given):
+    given.setdefault("customers", [])
+    given.setdefault("tasks", None)
+    given.setdefault("cheques", None)
+    given.setdefault("service", None)
+    given.setdefault("store", None)
+    return scan(TODAY, **given)
+
+
+def test_a_quotation_nobody_chased_is_found(shop):
+    old = _job("J-1", JobStatus.QUOTED, since=TODAY - timedelta(days=10),
+               quote_total=18000, quoted_on=(TODAY - timedelta(days=10)).isoformat(),
+               customer_name="משה כהן")
+    fresh = _job("J-2", JobStatus.QUOTED, since=TODAY - timedelta(days=2),
+                 quoted_on=(TODAY - timedelta(days=2)).isoformat())
+    found = _scan(jobs=[old, fresh])
+    quotes = [i for i in found if i.key.startswith("quotes:")]
+    assert len(quotes) == 1
+    assert quotes[0].key == "quotes:J-1"
+    assert "משה כהן" in quotes[0].detail
+    assert "18,000" in quotes[0].detail
+
+
+def test_a_won_job_that_never_reached_the_floor(shop):
+    found = _scan(jobs=[_job("J-3", JobStatus.WON, since=TODAY - timedelta(days=20))])
+    assert "לא נכנסו לייצור" in _titles(found)
+
+
+def test_a_late_job_is_urgent(shop):
+    late = _job("J-4", JobStatus.IN_PRODUCTION, since=TODAY - timedelta(days=3),
+                due_date=(TODAY - timedelta(days=1)).isoformat())
+    found = _scan(jobs=[late])
+    assert found[0].severity == "danger"
+    assert "תאריך היעד" in found[0].title
+
+
+def test_a_customer_with_work_and_no_phone(shop):
+    job = _job("J-5", JobStatus.WON, since=TODAY, customer_id="C-0001")
+    customer = Customer(customer_id="C-0001", name="דוד", phone="")
+    assert "בלי טלפון" in _titles(_scan(jobs=[job], customers=[customer]))
+
+
+def test_the_same_customer_twice(shop):
+    customers = [
+        Customer(customer_id="C-0001", name="משה כהן", phone="054-123-4567"),
+        Customer(customer_id="C-0002", name="כהן משה"),
+    ]
+    assert "פעמיים" in _titles(_scan(jobs=[], customers=customers))
+
+
+def test_cheques_to_bank_and_cheques_that_bounced(shop):
+    book = ChequeBook()
+    book.add(Cheque(customer="משה", amount=5000, due=TODAY - timedelta(days=1)))
+    bounced = book.add(Cheque(customer="דוד", amount=3000, due=TODAY - timedelta(days=30)))
+    bounced.bounce(TODAY - timedelta(days=2), "אין כיסוי")
+    titles = _titles(_scan(jobs=[], cheques=book))
+    assert "להפקיד" in titles
+    assert "חזרו" in titles
+
+
+def test_nothing_to_say_is_nothing_said(shop):
+    found = _scan(jobs=[])
+    assert not [i for i in found if i.severity in ("danger", "warning")]
+
+
+def test_a_dismissed_line_stays_hidden_until_it_changes(shop):
+    dismiss("quotes:J-1")
+    assert "quotes:J-1" in dismissed()
+    assert "quotes:J-1,J-9" not in dismissed()
+
+
+def test_a_broken_rule_does_not_hide_the_others(shop, monkeypatch):
+    import profileos.insights as insights
+
+    def broken(_context, _today):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(insights, "RULES", (broken,) + insights.RULES)
+    found = _scan(jobs=[_job("J-3", JobStatus.WON, since=TODAY - timedelta(days=20))])
+    assert "לא נכנסו לייצור" in _titles(found)

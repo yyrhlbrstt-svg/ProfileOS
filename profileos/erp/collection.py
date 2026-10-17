@@ -200,7 +200,9 @@ class ChequeBook:
         """Read the drawer back. A damaged file is reported, never emptied over."""
         if self.path is None or not self.path.is_file():
             return self
-        raw = json.loads(self.path.read_text(encoding="utf-8"))
+        from ..core.storage import read_json
+
+        raw = read_json(self.path, default={})
         for item in raw.get("cheques", []):
             cheque = Cheque.from_dict(item)
             self._cheques[cheque.cheque_id] = cheque
@@ -212,11 +214,9 @@ class ChequeBook:
             return
         self.path.parent.mkdir(parents=True, exist_ok=True)
         payload = {"cheques": [cheque.as_dict() for cheque in self]}
-        temporary = self.path.with_suffix(".tmp")
-        temporary.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
-        temporary.replace(self.path)
+        from ..core.storage import write_json
+
+        write_json(self.path, payload)
 
     def __len__(self) -> int:
         return len(self._cheques)

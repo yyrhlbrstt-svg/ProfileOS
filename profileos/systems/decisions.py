@@ -57,13 +57,22 @@ class DecisionBook:
         self.path = Path(path)
 
     def all(self) -> list[Decision]:
-        if not self.path.is_file():
-            return []
+        """Every decision. A damaged file reads as none so start-up goes on;
+        writing over it is refused by :meth:`_stored`."""
+        from ..core.storage import StorageError
+
         try:
-            raw = json.loads(self.path.read_text(encoding="utf-8"))
-        except Exception:  # noqa: BLE001 - a corrupt file must not stop startup
-            _log.exception("Could not read system decisions at %s", self.path)
+            return self._stored()
+        except StorageError as exc:
+            _log.error("Series decisions unreadable: %s", exc)
             return []
+
+    def _stored(self) -> list[Decision]:
+        from ..core.storage import read_json
+
+        # Recovered or refused, never read as empty: ``record`` rewrites the
+        # whole file from this list.
+        raw = read_json(self.path, default={})
         return [
             Decision(
                 entry_id=entry["entry_id"], family=entry["family"],
@@ -83,25 +92,21 @@ class DecisionBook:
             entry_id=entry_id, family=family, source=source.strip(),
             decided=date.today().isoformat(),
         )
-        others = [d for d in self.all() if d.entry_id != entry_id]
+        others = [d for d in self._stored() if d.entry_id != entry_id]
         payload = {"decisions": [d.as_dict() for d in others + [decision]]}
 
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = self.path.with_suffix(".tmp")
-        temporary.write_text(
-            json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8"
-        )
-        os.replace(temporary, self.path)
+        from ..core.storage import write_json
+
+        write_json(self.path, payload)
         _log.info("Recorded %s as %s (%s)", entry_id, family, source)
         return decision
 
     def forget(self, entry_id: str) -> None:
-        others = [d for d in self.all() if d.entry_id != entry_id]
+        others = [d for d in self._stored() if d.entry_id != entry_id]
         payload = {"decisions": [d.as_dict() for d in others]}
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(
-            json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8"
-        )
+        from ..core.storage import write_json
+
+        write_json(self.path, payload)
 
     def apply(self, directory: Iterable | None = None) -> int:
         """Replay every decision onto the directory. Returns how many took."""

@@ -331,3 +331,60 @@ class TestRealHoursReachTheMargin:
         book.book("דני", "J-1", 300, rework=True)
         costing = cost_job(job, timesheets=book)
         assert any("תיקון חוזר" in warning for warning in costing.warnings)
+
+
+class TestSecondCopyAndSettings:
+    def test_settings_and_sign_in_file_travel_in_the_backup(self, tmp_path):
+        data, config = tmp_path / "data", tmp_path / "config"
+        data.mkdir()
+        config.mkdir()
+        (data / "customers.json").write_text('{"customers": []}', encoding="utf-8")
+        (config / "operator.sealed").write_bytes(b"sealed")
+        (config / "settings.json").write_text("{}", encoding="utf-8")
+
+        archive = write_backup(tmp_path / "b", root=data, config=config)
+        names = zipfile.ZipFile(archive).namelist()
+        assert "_config/operator.sealed" in names
+        assert "_config/settings.json" in names
+
+        new_data, new_config = tmp_path / "new-data", tmp_path / "new-config"
+        new_config.mkdir()
+        (new_config / "settings.json").write_text('{"theme": "dark"}', encoding="utf-8")
+        restore(archive, root=new_data, config=new_config)
+        assert (new_config / "operator.sealed").read_bytes() == b"sealed"
+        # Paths in settings belong to the machine they were written on.
+        assert "dark" in (new_config / "settings.json").read_text(encoding="utf-8")
+        assert not (new_data / "_config").exists()
+
+    def test_a_backup_that_cannot_be_read_back_is_refused(self, tmp_path):
+        from profileos.core.backup import _verify
+
+        broken = tmp_path / "broken.zip"
+        broken.write_bytes(b"not a zip at all")
+        with pytest.raises(ProfileOSError):
+            _verify(broken)
+        assert not broken.exists()
+
+    def test_each_day_is_copied_to_the_second_folder(self, shop, tmp_path):
+        from profileos.core.backup import backup_if_due
+
+        _populate(shop)
+        mirror = tmp_path / "usb"
+        mirror.mkdir()
+        first = backup_if_due(tmp_path / "auto", mirror=mirror)
+        assert first is not None
+        assert (mirror / first.name).is_file()
+
+        # The drive plugged in later still gets today's copy.
+        (mirror / first.name).unlink()
+        assert backup_if_due(tmp_path / "auto", mirror=mirror) is None
+        assert (mirror / first.name).is_file()
+
+    def test_a_missing_drive_is_reported_not_created(self, shop, tmp_path):
+        from profileos.core.backup import backup_if_due, backup_status
+
+        _populate(shop)
+        unplugged = tmp_path / "E-drive" / "גיבוי"
+        assert backup_if_due(tmp_path / "auto", mirror=unplugged) is not None
+        assert not unplugged.exists()
+        assert backup_status()["mirror_error"]

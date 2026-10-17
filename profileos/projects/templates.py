@@ -254,11 +254,11 @@ class TemplateBook:
     def load(self) -> "TemplateBook":
         if not self.path.exists():
             return self
-        try:
-            raw = json.loads(self.path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
-            _log.warning("Could not read %s: %s", self.path, exc)
-            return self
+        # Recovered from the previous version or refused — never read
+        # as empty, which the next save would write over real records.
+        from ..core.storage import read_json
+
+        raw = read_json(self.path, default={})
         for item in raw.get("templates", []):
             try:
                 template = Template.from_dict(item)
@@ -274,11 +274,9 @@ class TemplateBook:
             "written": datetime.now().isoformat(timespec="seconds"),
             "templates": [t.as_dict() for t in self._templates.values()],
         }
-        temporary = self.path.with_suffix(".tmp")
-        temporary.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
-        temporary.replace(self.path)
+        from ..core.storage import atomic_write_text
+
+        atomic_write_text(self.path, json.dumps(payload, ensure_ascii=False, indent=2))
 
     def add(self, template: Template) -> Template:
         self._templates[template.template_id] = template

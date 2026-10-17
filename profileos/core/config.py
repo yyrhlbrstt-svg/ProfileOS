@@ -170,7 +170,12 @@ class Settings(BaseModel):
     brand_id: str = "dadi"
     #: "dark" for the office, "light" for a workshop screen in daylight. Kept
     #: in settings so the choice survives a restart.
-    theme: str = "dark"
+    theme: str = "light"
+    #: Where the daily backups go; beside the data folder when unset.
+    backup_folder: Path | None = None
+    #: A second copy of each day's backup — a USB drive or a synced cloud
+    #: folder — so a dead disk does not take the backups with it.
+    backup_mirror: Path | None = None
     #: Directories scanned by the hot-reload plugin framework.
     plugin_dirs: list[Path] = Field(default_factory=list)
     #: Poll interval for the plugin/config watcher, in seconds.
@@ -340,9 +345,13 @@ def load_settings(config_dir: str | os.PathLike[str] | None = None, **overrides:
 
     settings_file = base_dir / "settings.json"
     if settings_file.is_file():
+        from .storage import read_json
+
         try:
-            file_data = json.loads(settings_file.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
+            # A torn settings file is restored from its previous version
+            # rather than stopping the program from opening at all.
+            file_data = read_json(settings_file, default={})
+        except Exception as exc:  # noqa: BLE001
             raise ConfigError(
                 f"Could not read settings file: {exc}", path=str(settings_file)
             ) from exc
@@ -385,7 +394,9 @@ def save_settings(settings: Settings) -> Path:
     settings.config_dir.mkdir(parents=True, exist_ok=True)
     payload = settings.model_dump(mode="json", exclude={"config_dir"})
     path = settings.settings_file
-    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    from .storage import write_json
+
+    write_json(path, payload)
     _log.info("Settings saved to %s", path)
     return path
 

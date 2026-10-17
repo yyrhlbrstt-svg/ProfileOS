@@ -513,7 +513,9 @@ class UpdateEngine:
         history.append(entry)
         # Keep the log bounded; the last 200 updates is plenty to diagnose with.
         history = history[-200:]
-        self.history_path.write_text(json.dumps(history, indent=2), encoding="utf-8")
+        from ..core.storage import atomic_write_text
+
+        atomic_write_text(self.history_path, json.dumps(history, indent=2))
 
     def history(self, limit: int = 20) -> list[dict[str, Any]]:
         if not self.history_path.is_file():

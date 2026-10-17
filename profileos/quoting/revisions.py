@@ -468,11 +468,11 @@ class RevisionBook:
     def load(self) -> "RevisionBook":
         if not self.path.exists():
             return self
-        try:
-            raw = json.loads(self.path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
-            _log.warning("Could not read %s: %s", self.path, exc)
-            return self
+        # Recovered from the previous version or refused — never read
+        # as empty, which the next save would write over real records.
+        from ..core.storage import read_json
+
+        raw = read_json(self.path, default={})
         for item in raw.get("histories", []):
             try:
                 history = QuoteHistory.from_dict(item)
@@ -488,11 +488,9 @@ class RevisionBook:
             "written": datetime.now().isoformat(timespec="seconds"),
             "histories": [h.as_dict() for h in self._histories.values()],
         }
-        temporary = self.path.with_suffix(".tmp")
-        temporary.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
-        temporary.replace(self.path)
+        from ..core.storage import atomic_write_text
+
+        atomic_write_text(self.path, json.dumps(payload, ensure_ascii=False, indent=2))
 
     def for_job(self, job_id: str) -> QuoteHistory:
         if job_id not in self._histories:

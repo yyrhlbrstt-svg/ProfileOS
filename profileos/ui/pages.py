@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QInputDialog,
     QDoubleSpinBox,
     QFileDialog,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -250,6 +251,22 @@ class HomePage(Page):
         ])
         self.body.addWidget(self.business)
 
+        # -- what needs a look, found without being asked ---------------- #
+        # Read across every book the shop keeps: quotations nobody chased,
+        # won jobs that never reached the floor, cheques that can be banked,
+        # a backup that stopped running. Each line goes where it is dealt with.
+        self.insights_card = Card("שווה לבדוק היום")
+        self.insights_box = QVBoxLayout()
+        self.insights_box.setSpacing(METRICS.space(2))
+        self.insights_card.add_layout(self.insights_box)
+        self.insights_more = QPushButton("")
+        self.insights_more.setObjectName("Ghost")
+        self.insights_more.setCheckable(True)
+        self.insights_more.toggled.connect(lambda _on: self.show_insights())
+        self.insights_card.add(self.insights_more)
+        self.body.addWidget(self.insights_card)
+        self._insights: list[Any] = []
+
         # -- the pipeline ------------------------------------------------- #
         pipeline = Card("קו הייצור")
         row = QHBoxLayout()
@@ -408,6 +425,94 @@ class HomePage(Page):
             page = window.go_to_page("Profile")
             if hasattr(page, "load_sample"):
                 page.load_sample()
+
+    def scan_insights(self) -> None:
+        from ..insights import dismissed, scan
+
+        try:
+            hidden = dismissed()
+            self._insights = [
+                insight for insight in scan(has_job=self.session.job is not None)
+                if insight.key not in hidden
+            ]
+        except Exception:  # noqa: BLE001 - the home page opens regardless
+            _log.exception("Insight scan failed")
+            self._insights = []
+        self.show_insights()
+
+    def show_insights(self) -> None:
+        while self.insights_box.count():
+            item = self.insights_box.takeAt(0)
+            if item.widget() is not None:
+                item.widget().deleteLater()
+
+        if not self._insights:
+            calm = QLabel("✓  הכול בסדר — אין כרגע שום דבר שמחכה לך")
+            calm.setObjectName("InsightCalm")
+            self.insights_box.addWidget(calm)
+            self.insights_more.hide()
+            self.insights_card.set_title("שווה לבדוק היום")
+            return
+
+        expanded = self.insights_more.isChecked()
+        shown = self._insights if expanded else self._insights[:4]
+        for insight in shown:
+            self.insights_box.addWidget(self._insight_row(insight))
+        hidden = len(self._insights) - 4
+        self.insights_more.setVisible(hidden > 0)
+        self.insights_more.setText("הצג פחות" if expanded else f"עוד ⁦{hidden}⁩")
+        self.insights_card.set_title(f"שווה לבדוק היום · {len(self._insights)}")
+
+    def _insight_row(self, insight: Any) -> QWidget:
+        row = QFrame()
+        row.setObjectName("InsightRow")
+        line = QHBoxLayout(row)
+        line.setContentsMargins(METRICS.space(3), METRICS.space(2),
+                                METRICS.space(3), METRICS.space(2))
+        line.setSpacing(METRICS.space(3))
+
+        dot = QLabel("●")
+        dot.setObjectName("InsightDot")
+        dot.setProperty("severity", insight.severity)
+        line.addWidget(dot, 0, Qt.AlignmentFlag.AlignTop)
+
+        words = QVBoxLayout()
+        words.setSpacing(2)
+        title = QLabel(insight.title)
+        title.setObjectName("InsightText")
+        title.setWordWrap(True)
+        words.addWidget(title)
+        if insight.detail:
+            detail = QLabel(insight.detail)
+            detail.setObjectName("InsightDetail")
+            detail.setWordWrap(True)
+            words.addWidget(detail)
+        line.addLayout(words, 1)
+
+        if insight.page:
+            go = QPushButton("טפל")
+            go.setObjectName("Ghost")
+            go.setCursor(Qt.CursorShape.PointingHandCursor)
+            go.clicked.connect(lambda _c=False, page=insight.page: self._go(page))
+            line.addWidget(go, 0, Qt.AlignmentFlag.AlignVCenter)
+        later = QPushButton("✕")
+        later.setObjectName("InsightDismiss")
+        later.setToolTip("ראיתי — הסתר עד שמשהו ישתנה")
+        later.setCursor(Qt.CursorShape.PointingHandCursor)
+        later.clicked.connect(lambda _c=False, key=insight.key: self._dismiss(key))
+        line.addWidget(later, 0, Qt.AlignmentFlag.AlignVCenter)
+        return row
+
+    def _dismiss(self, key: str) -> None:
+        from ..insights import dismiss
+
+        try:
+            dismiss(key)
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "לא נשמר")
+            return
+        self._insights = [i for i in self._insights if i.key != key]
+        self.show_insights()
 
     def show_today(self) -> None:
         """What is due, worst-late first, and what nobody is chasing."""
@@ -614,6 +719,7 @@ class HomePage(Page):
         )
         self.greeting.setText(f"{part}, {self._brand_name}")
         self.show_business()
+        self.scan_insights()
         self.show_readiness()
         self.show_today()
         when = (
@@ -674,6 +780,9 @@ class HomePage(Page):
         ])
 
         area = self.session.total_area
+        # The current-project figures only mean something once there is a
+        # project on the bench; a row of dashes is noise on the front page.
+        self.stats.setVisible(bool(self.session.builds or self.session.job))
         self.stats.update_many({
             "elements": (str(len(self.session.builds)) if self.session.builds else "—",
                          "מתוכננים בפרויקט"),
@@ -1013,15 +1122,21 @@ class ProjectsPage(Page):
             (entry.id, f"{entry.hebrew or entry.display}")
             for entry in sorted(DIRECTORY, key=lambda e: e.display)
         ]
-        customers = self._book().all()
-        dialog = NewJobDialog(customers, systems, self)
+        book = self._book()
+        try:
+            customers = book.all()
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "ספר הלקוחות לא נקרא")
+            return
+        dialog = NewJobDialog(
+            customers, systems, self,
+            add_customer=lambda values: book.add(**values),
+        )
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
 
         values = dialog.values()
-        customer = next(
-            (c for c in customers if c.customer_id == values["customer_id"]), None
-        )
+        customer = book.get(values["customer_id"]) if values["customer_id"] else None
         try:
             job = self._store().create(
                 values["name"],
@@ -1069,18 +1184,19 @@ class ProjectsPage(Page):
             )
             return
 
-        job.schedule = self.session.to_schedule(
-            name=job.name, system_id=job.system_id
-        )
-        if self.session.quote is not None:
-            job.record_quote(
-                float(self.session.quote.net_price),
-                getattr(self.session.quote, "currency", "ILS"),
-            )
+        # Saved onto the copy on disk, not the one opened an hour ago: a
+        # status change made meanwhile from another screen is kept.
+        store = self._store()
         try:
-            self._store().save(job)
+            job = self.session.save_design_to_job(store)
+            if self.session.quote is not None:
+                job.record_quote(
+                    float(self.session.quote.net_price),
+                    getattr(self.session.quote, "currency", "ILS"),
+                )
+                store.save(job)
         except Exception as exc:  # noqa: BLE001
-            self.report(exc, "השמירה נכשלה")
+            self.report(exc, "השמירה נכשלה — העבודה עדיין על המסך, נסה שוב")
             return
         self.refresh()
         self.status(f"נשמרו {job.opening_count} פתחים ב{job.job_id}")
@@ -1341,14 +1457,27 @@ class ProjectsPage(Page):
         layout.setContentsMargins(0, METRICS.space(3), 0, 0)
         layout.setSpacing(METRICS.space(3))
 
+        bar = QHBoxLayout()
+        bar.setSpacing(METRICS.space(2))
         add = QPushButton("לקוח חדש")
+        add.setObjectName("Primary")
         add.clicked.connect(self.new_customer)
-        layout.addWidget(add)
+        bar.addWidget(add)
+        edit = QPushButton("עריכה")
+        edit.clicked.connect(self.edit_customer)
+        bar.addWidget(edit)
+        self.customer_search = QLineEdit()
+        self.customer_search.setPlaceholderText("חיפוש לפי שם, עיר או טלפון…")
+        self.customer_search.setClearButtonEnabled(True)
+        self.customer_search.textChanged.connect(lambda _text: self.show_customers())
+        bar.addWidget(self.customer_search, 1)
+        layout.addLayout(bar)
 
         self.customers_table = DataTable(
-            ["קוד", "שם", "איש קשר", "טלפון", "דוא\"ל", "עיר", "מספר עוסק"],
+            ["קוד", "שם", "טלפון", "עיר", "כתובת", "איש קשר", "דוא\"ל", "פרויקטים"],
             empty_text="עדיין אין לקוחות — לחץ ״לקוח חדש״",
         )
+        self.customers_table.doubleClicked.connect(lambda _index: self.edit_customer())
         layout.addWidget(self.customers_table, 1)
 
         note = QLabel(
@@ -1363,22 +1492,86 @@ class ProjectsPage(Page):
     def new_customer(self) -> None:
         from .dialogs import NewCustomerDialog
 
-        dialog = NewCustomerDialog(self)
+        book = self._book()
+        try:
+            existing = book.all()
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "ספר הלקוחות לא נקרא")
+            return
+        dialog = NewCustomerDialog(self, customers=existing)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         values = dialog.values()
         try:
-            customer = self._book().add(**values)
+            customer = book.add(**values)
         except Exception as exc:  # noqa: BLE001
             self.report(exc, "לא ניתן להוסיף את הלקוח")
             return
         self.refresh()
         self.status(f"נוסף לקוח {customer.name}")
 
+    def _selected_customer(self) -> Any:
+        row = self.customers_table.currentRow()
+        shown = getattr(self, "_shown_customers", [])
+        if 0 <= row < len(shown):
+            return shown[row]
+        return None
+
+    def edit_customer(self) -> None:
+        from .dialogs import NewCustomerDialog
+
+        customer = self._selected_customer()
+        if customer is None:
+            self.status("בחר לקוח מהרשימה")
+            return
+        book = self._book()
+        dialog = NewCustomerDialog(self, customers=book.all(), customer=customer)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        try:
+            updated = book.update(customer.model_copy(update=dialog.values()))
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "השינויים לא נשמרו")
+            return
+        self.refresh()
+        self.status(f"עודכנו פרטי {updated.name}")
+
+    def show_customers(self) -> None:
+        """The customer list, filtered by whatever is typed in its search box."""
+        from ..projects.contacts import search_customers
+
+        try:
+            customers = self._book().all()
+        except Exception as exc:  # noqa: BLE001
+            self.customers_table._empty_text = f"ספר הלקוחות לא נקרא: {exc}"
+            self.customers_table.set_rows([])
+            self._shown_customers = []
+            return
+        needle = self.customer_search.text() if hasattr(self, "customer_search") else ""
+        shown = search_customers(customers, needle)
+        jobs_per_customer: dict[str, int] = {}
+        for job in getattr(self, "_all_jobs", []):
+            if job.customer_id:
+                jobs_per_customer[job.customer_id] = jobs_per_customer.get(job.customer_id, 0) + 1
+        self._shown_customers = shown
+        self.customers_table._empty_text = (
+            f"אין לקוח התואם ״{needle.strip()}״" if needle.strip()
+            else "עדיין אין לקוחות — לחץ ״לקוח חדש״"
+        )
+        self.customers_table.set_rows([
+            [
+                c.customer_id, c.name, f"⁦{c.phone}⁩" if c.phone else "",
+                c.city, c.address, c.contact, c.email,
+                str(jobs_per_customer.get(c.customer_id, 0) or ""),
+            ]
+            for c in shown
+        ], numeric_columns=(7,))
+
     # -- refresh ------------------------------------------------------------- #
     def refresh(self) -> None:
         store = self._store()
         self._jobs = store.all()
+        self._all_jobs = list(self._jobs)
         needle = self.search.text().strip().lower()
         if needle:
             self._jobs = [
@@ -1439,11 +1632,7 @@ class ProjectsPage(Page):
             ),
         })
 
-        self.customers_table.set_rows([
-            [c.customer_id, c.name, c.contact or "—", c.phone or "—",
-             c.email or "—", c.city or "—", c.tax_id or "—"]
-            for c in self._book().all()
-        ])
+        self.show_customers()
 
         job = self.session.job
         self.header.set_subtitle(
@@ -3566,15 +3755,20 @@ class QuotePage(Page):
         # The design itself, not only its price: a job priced from this page
         # without ever visiting "פרויקטים" must not come back empty the next
         # time it is opened, with a real quoted figure sitting on top of it.
-        job.schedule = self.session.to_schedule(name=job.name, system_id=job.system_id)
         totals = self.draft.totals()
-        job.record_quote(float(totals["net"]), self.draft.quotation.currency)
-        if job.status is JobStatus.ENQUIRY:
-            job.advance(JobStatus.QUOTED, "הצעה הופקה מהמערכת")
         try:
-            default_store().save(job)
-        except Exception:  # noqa: BLE001 - the documents are already written
+            store = default_store()
+            job = self.session.save_design_to_job(store)
+            job.record_quote(float(totals["net"]), self.draft.quotation.currency)
+            if job.status is JobStatus.ENQUIRY:
+                job.advance(JobStatus.QUOTED, "הצעה הופקה מהמערכת")
+            store.save(job)
+        except Exception as exc:  # noqa: BLE001 - the documents are already written
             _log.exception("Could not record the quotation on job %s", job.job_id)
+            self.report(
+                exc,
+                "המסמכים נשמרו, אבל הסכום לא נרשם בפרויקט — שמור שוב מ״פרויקטים״",
+            )
             return
 
         # Sending a quotation creates its own chase, as the follow-up module
@@ -5033,12 +5227,24 @@ class CollectionPage(Page):
             except Exception as exc:  # noqa: BLE001 - say so, never silently lose
                 _log.exception("Cheque drawer unreadable")
                 self.report(exc, "לא ניתן לקרוא את מגירת הצ׳קים")
+                # Shown read-only: an empty drawer here would let a cheque be
+                # "saved" to nowhere. ``_save`` refuses while this is so.
                 self._book = ChequeBook()
         return self._book
 
     def _save(self) -> None:
+        book = self.book()
+        if book.path is None:
+            self.report(
+                ProfileOSError(
+                    "מגירת הצ׳קים לא נטענה מהדיסק, ולכן השינוי לא נשמר. "
+                    "שחזר את הקובץ מגיבוי ונסה שוב."
+                ),
+                "השינוי לא נשמר",
+            )
+            return
         try:
-            self.book().save()
+            book.save()
         except Exception as exc:  # noqa: BLE001
             self.report(exc, "שמירת הצ׳קים נכשלה")
 
@@ -6346,7 +6552,6 @@ class SystemPage(Page):
         screen combined, so it is a button and a list rather than a document
         somebody is supposed to have read.
         """
-        self._backup_folder: Path | None = None
         self._backup_paths: list[Path] = []
 
         page = QWidget()
@@ -6368,6 +6573,14 @@ class SystemPage(Page):
         reveal = QPushButton("בחר תיקיית גיבוי…")
         reveal.clicked.connect(self.choose_backup_folder)
         bar.addWidget(reveal)
+
+        mirror = QPushButton("עותק שני (דיסק און קי / ענן)…")
+        mirror.setToolTip(
+            "כל גיבוי יומי מועתק גם לכאן — דיסק חיצוני או תיקייה של "
+            "OneDrive/Google Drive — כדי שמחשב שמת לא ייקח איתו את הגיבויים"
+        )
+        mirror.clicked.connect(self.choose_backup_mirror)
+        bar.addWidget(mirror)
         bar.addStretch(1)
         layout.addLayout(bar)
 
@@ -6387,8 +6600,9 @@ class SystemPage(Page):
             "עבודה, לקוחות, הסדרות שאושרו, קריאות שירות, פנקס הצ׳קים. "
             "שחזור לעולם אינו דורס: התיקייה הנוכחית מוזזת הצידה ומיקומה "
             "נאמר, כך ששחזור של הקובץ הלא נכון מתבטל בהזזת תיקייה אחת "
-            "חזרה. העתיקו את הקובץ לדיסק חיצוני — גיבוי שיושב על אותו "
-            "מחשב אינו גיבוי."
+            "חזרה. גיבוי נלקח אוטומטית בכל יום, נבדק שהוא נפתח, ונשמרים "
+            "30 האחרונים. גיבוי שיושב רק על אותו מחשב אינו מספיק — הגדירו "
+            "עותק שני בדיסק חיצוני או בתיקיית ענן."
         )
         note.setObjectName("Hint")
         note.setWordWrap(True)
@@ -6400,13 +6614,24 @@ class SystemPage(Page):
     def _backup_where(self) -> Path:
         from ..core.backup import default_backup_folder
 
-        return self._backup_folder or default_backup_folder()
+        return default_backup_folder()
 
     def show_backups(self) -> None:
-        from ..core.backup import list_backups
+        from ..core.backup import backup_status, list_backups
+        from ..core.config import get_settings
 
         folder = self._backup_where()
-        self.backup_folder_label.setText(f"תיקיית הגיבוי: {folder}")
+        mirror = get_settings().backup_mirror
+        lines = [f"תיקיית הגיבוי: {folder}"]
+        if mirror:
+            lines.append(f"עותק שני: {mirror}")
+        else:
+            lines.append("עותק שני: לא הוגדר — מומלץ דיסק חיצוני או תיקיית ענן")
+        state = backup_status()
+        for problem in (state["error"], state["mirror_error"]):
+            if problem:
+                lines.append(f"⚠ {problem}")
+        self.backup_folder_label.setText("\n".join(lines))
         if not folder.is_dir():
             self.backup_table.set_rows([])
             return
@@ -6440,7 +6665,39 @@ class SystemPage(Page):
         )
         if not chosen:
             return
-        self._backup_folder = Path(chosen)
+        self._remember_backup_setting("backup_folder", Path(chosen))
+
+    def choose_backup_mirror(self) -> None:
+        from ..core.config import get_settings
+
+        current = get_settings().backup_mirror
+        chosen = QFileDialog.getExistingDirectory(
+            self, "עותק שני של הגיבוי — דיסק חיצוני או תיקיית ענן",
+            str(current or Path.home()),
+        )
+        if not chosen:
+            return
+        if Path(chosen).resolve() == self._backup_where().resolve():
+            self.status("העותק השני חייב להיות במקום אחר מהגיבוי הראשי")
+            return
+        self._remember_backup_setting("backup_mirror", Path(chosen))
+        from ..core.backup import backup_if_due
+
+        backup_if_due()
+        self.show_backups()
+
+    def _remember_backup_setting(self, name: str, value: Path) -> None:
+        """Kept in settings, so the choice outlives this window."""
+        from ..core.config import get_settings, save_settings
+
+        settings = get_settings()
+        setattr(settings, name, value)
+        try:
+            save_settings(settings)
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "ההגדרה לא נשמרה")
+            return
+        self.status(f"נשמר: {value}")
         self.show_backups()
 
     def write_backup(self) -> None:
@@ -6453,8 +6710,15 @@ class SystemPage(Page):
             self.report(exc, "הגיבוי נכשל")
             return
 
-        removed = prune(archive.parent, keep=14)
+        removed = prune(archive.parent, keep=30)
+        from ..core.backup import copy_to_mirror
+        from ..core.config import get_settings
+
+        mirror = get_settings().backup_mirror
         message = f"נכתב גיבוי: {manifest.describe()}"
+        if mirror:
+            copied = copy_to_mirror(archive, Path(mirror))
+            message += " · הועתק לעותק השני" if copied else " · העותק השני לא זמין"
         if removed:
             message += f" · נמחקו ⁦{len(removed)}⁩ גיבויים ישנים"
         self.status(message)
@@ -6998,13 +7262,14 @@ class SurveyPage(Page):
             built += 1
 
         if job is not None and built:
-            job.schedule = self.session.to_schedule(name=job.name, system_id=job.system_id)
-            from ..projects import default_store
-
             try:
-                default_store().save(job)
-            except Exception:  # noqa: BLE001 - the session already has the update
+                self.session.save_design_to_job()
+            except Exception as exc:  # noqa: BLE001 - the session already has the update
                 _log.exception("Could not save measured sizes onto job %s", job.job_id)
+                self.report(
+                    exc,
+                    "המידות עודכנו במסך אבל לא נשמרו בפרויקט — שמור מ״פרויקטים״",
+                )
 
         message = f"עודכנו {built} פתחים לפי המדידה בפועל" if built else "לא עודכן פתח"
         if problems:

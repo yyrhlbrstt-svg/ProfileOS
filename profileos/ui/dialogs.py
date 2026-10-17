@@ -7,16 +7,21 @@ is still on the phone should not be stopped by a form.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Callable
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QComboBox,
+    QCompleter,
     QDateEdit,
     QDialog,
     QDialogButtonBox,
     QDoubleSpinBox,
+    QHBoxLayout,
+    QLabel,
     QLineEdit,
     QPlainTextEdit,
+    QPushButton,
     QSpinBox,
     QVBoxLayout,
     QWidget,
@@ -58,20 +63,48 @@ class _FormDialog(QDialog):
 
 
 class NewJobDialog(_FormDialog):
-    """Open a job: a name, who it is for, and where it is."""
+    """Open a job: a name, who it is for, and where it is.
+
+    The customer box is searched as it is typed into — by name, city or any
+    part of a phone number — and a customer who is not in the book yet is
+    added from here without leaving the dialog. Choosing a customer fills in
+    the site and suggests a name, so a job opened while they are still on the
+    phone needs almost no typing.
+    """
 
     accept_text = "פתיחת פרויקט"
 
     def __init__(self, customers: list[Any], systems: list[tuple[str, str]],
-                 parent: QWidget | None = None) -> None:
+                 parent: QWidget | None = None, *,
+                 add_customer: Callable[[dict[str, Any]], Any] | None = None) -> None:
         super().__init__("פרויקט חדש", parent)
+        self._customers = list(customers)
+        self._add_customer = add_customer
+        self._name_was_suggested = False
+        self._site_was_suggested = False
 
         self.name = QLineEdit()
         self.name.setPlaceholderText("וילה בשכונת הגבעה")
         self.customer = QComboBox()
-        self.customer.addItem("— ללא לקוח —", "")
-        for customer in customers:
-            self.customer.addItem(customer.name, customer.customer_id)
+        self.customer.setEditable(True)
+        self.customer.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        self.customer.lineEdit().setPlaceholderText("הקלד שם, עיר או טלפון…")
+        self._fill_customers()
+        completer = self.customer.completer()
+        completer.setFilterMode(Qt.MatchFlag.MatchContains)
+        completer.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
+
+        add = QPushButton("+ לקוח חדש")
+        add.setObjectName("Ghost")
+        add.setEnabled(add_customer is not None)
+        add.clicked.connect(self.new_customer)
+        row = QWidget()
+        line = QHBoxLayout(row)
+        line.setContentsMargins(0, 0, 0, 0)
+        line.setSpacing(METRICS.space(2))
+        line.addWidget(self.customer, 1)
+        line.addWidget(add)
+
         self.reference = QLineEdit()
         self.reference.setPlaceholderText("מספר הזמנה של הלקוח")
         self.site = QLineEdit()
@@ -80,23 +113,86 @@ class NewJobDialog(_FormDialog):
         for entry_id, label in systems:
             self.system.addItem(label, entry_id)
 
+        self.grid.add("לקוח", row)
         self.grid.add("שם הפרויקט", self.name)
-        self.grid.add("לקוח", self.customer)
-        self.grid.add("אסמכתה", self.reference)
         self.grid.add("אתר", self.site)
+        self.grid.add("אסמכתה", self.reference)
         self.grid.add("מערכת", self.system)
 
         # A job without a name is a job nobody can find again.
-        self.name.textChanged.connect(
-            lambda text: self.ok_button.setEnabled(bool(text.strip()))
-        )
+        self.name.textChanged.connect(self._name_edited)
+        self.site.textEdited.connect(lambda _text: setattr(self, "_site_was_suggested", False))
+        self.customer.currentIndexChanged.connect(self._customer_chosen)
         self.ok_button.setEnabled(False)
+        self.customer.setFocus()
+
+    def _fill_customers(self, select: str = "") -> None:
+        self.customer.blockSignals(True)
+        self.customer.clear()
+        self.customer.addItem("— ללא לקוח —", "")
+        for customer in sorted(self._customers, key=lambda c: c.name):
+            label = customer.name
+            details = " · ".join(part for part in (customer.city, customer.phone) if part)
+            if details:
+                label += f"  ({details})"
+            self.customer.addItem(label, customer.customer_id)
+        index = self.customer.findData(select) if select else 0
+        self.customer.setCurrentIndex(max(index, 0))
+        self.customer.blockSignals(False)
+
+    def _selected(self) -> Any:
+        wanted = self.customer.currentData()
+        # A name typed and never picked from the list still counts when it
+        # matches exactly one customer.
+        if not wanted:
+            typed = self.customer.currentText().strip()
+            matches = [c for c in self._customers if c.name == typed]
+            return matches[0] if len(matches) == 1 else None
+        return next((c for c in self._customers if c.customer_id == wanted), None)
+
+    def _name_edited(self, text: str) -> None:
+        self.ok_button.setEnabled(bool(text.strip()))
+
+    def _customer_chosen(self, _index: int) -> None:
+        customer = self._selected()
+        if customer is None:
+            return
+        where = ", ".join(part for part in (customer.address, customer.city) if part)
+        if where and (not self.site.text().strip() or self._site_was_suggested):
+            self.site.setText(where)
+            self._site_was_suggested = True
+        if not self.name.text().strip() or self._name_was_suggested:
+            suggestion = customer.name + (f" — {customer.city}" if customer.city else "")
+            self.name.setText(suggestion)
+            self._name_was_suggested = True
+            self.name.selectAll()
         self.name.setFocus()
 
+    def new_customer(self) -> None:
+        if self._add_customer is None:
+            return
+        dialog = NewCustomerDialog(self, customers=self._customers)
+        typed = self.customer.currentText().strip()
+        if typed and not self.customer.currentData():
+            dialog.name.setText(typed)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        try:
+            customer = self._add_customer(dialog.values())
+        except Exception as exc:  # noqa: BLE001 - shown in the dialog's parent
+            from PySide6.QtWidgets import QMessageBox
+
+            QMessageBox.warning(self, "הלקוח לא נוסף", str(exc))
+            return
+        self._customers.append(customer)
+        self._fill_customers(select=customer.customer_id)
+        self._customer_chosen(self.customer.currentIndex())
+
     def values(self) -> dict[str, Any]:
+        customer = self._selected()
         return {
             "name": self.name.text().strip(),
-            "customer_id": self.customer.currentData() or "",
+            "customer_id": customer.customer_id if customer else "",
             "reference": self.reference.text().strip(),
             "site_address": self.site.text().strip(),
             "system_id": self.system.currentData() or "generic",
@@ -104,43 +200,175 @@ class NewJobDialog(_FormDialog):
 
 
 class NewCustomerDialog(_FormDialog):
-    """Add a customer. Only the name is required."""
+    """Add a customer, or correct one. Only the name is required.
+
+    Details usually arrive as a block — a shared WhatsApp contact, an email
+    signature — so the first box takes the whole block and fills the fields
+    from it. The phone is checked while it is typed and written back the one
+    way the shop writes numbers, and a customer who is already in the book
+    is pointed out before a second copy is made.
+    """
 
     accept_text = "הוספת לקוח"
 
-    def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__("לקוח חדש", parent)
+    def __init__(self, parent: QWidget | None = None, *,
+                 customers: list[Any] | None = None, customer: Any = None) -> None:
+        super().__init__("עריכת לקוח" if customer is not None else "לקוח חדש", parent)
+        if customer is not None:
+            self.ok_button.setText("שמירת שינויים")
+        self.setMinimumWidth(480)
+        self._customers = list(customers or [])
+        self._editing = customer
+
+        self.paste = QPlainTextEdit()
+        self.paste.setPlaceholderText(
+            "הדבק כאן פרטים — איש קשר מוואטסאפ, חתימת מייל, הודעה — "
+            "והשדות יתמלאו לבד"
+        )
+        self.paste.setMaximumHeight(64)
+        self.paste.setTabChangesFocus(True)
+        self.paste.textChanged.connect(self._paste_changed)
 
         self.name = QLineEdit()
-        self.contact = QLineEdit()
+        self.name.setPlaceholderText("משה כהן / קבלן בע״מ")
         self.phone = QLineEdit()
-        self.phone.setPlaceholderText("02-9973510")
+        self.phone.setPlaceholderText("054-123-4567")
+        self.phone.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
+        self.contact = QLineEdit()
+        self.contact.setPlaceholderText("אם יש מישהו אחר שמדברים איתו")
         self.email = QLineEdit()
+        self.email.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
+        self.address = QLineEdit()
+        self.address.setPlaceholderText("רחוב ומספר")
         self.city = QLineEdit()
+        from ..projects.contacts import KNOWN_CITIES
+
+        cities = QCompleter(sorted(KNOWN_CITIES), self)
+        cities.setFilterMode(Qt.MatchFlag.MatchContains)
+        self.city.setCompleter(cities)
         self.tax_id = QLineEdit()
-        self.tax_id.setPlaceholderText("ח.פ. / ע.מ.")
+        self.tax_id.setPlaceholderText("ח.פ. / ע.מ. — לחשבונית")
+        self.notes = QPlainTextEdit()
+        self.notes.setPlaceholderText("מה כדאי לזכור עליו — קומה, שעות נוחות, מי המליץ")
+        self.notes.setMaximumHeight(70)
+        self.notes.setTabChangesFocus(True)
 
+        self.problem = QLabel("")
+        self.problem.setObjectName("FieldError")
+        self.problem.setWordWrap(True)
+        self.problem.hide()
+        self.duplicate = QLabel("")
+        self.duplicate.setObjectName("FieldWarning")
+        self.duplicate.setWordWrap(True)
+        self.duplicate.hide()
+
+        if customer is None:
+            self.grid.add_span(self.paste)
         self.grid.add("שם", self.name)
-        self.grid.add("איש קשר", self.contact)
         self.grid.add("טלפון", self.phone)
-        self.grid.add("דוא\"ל", self.email)
         self.grid.add("עיר", self.city)
+        self.grid.add("כתובת", self.address)
+        self.grid.add("דוא\"ל", self.email)
+        self.grid.add("איש קשר", self.contact)
         self.grid.add("מספר עוסק", self.tax_id)
+        self.grid.add("הערות", self.notes)
+        self.grid.add_span(self.problem)
+        self.grid.add_span(self.duplicate)
 
-        self.name.textChanged.connect(
-            lambda text: self.ok_button.setEnabled(bool(text.strip()))
+        if customer is not None:
+            for widget, value in (
+                (self.name, customer.name), (self.phone, customer.phone),
+                (self.contact, customer.contact), (self.email, customer.email),
+                (self.address, customer.address), (self.city, customer.city),
+                (self.tax_id, customer.tax_id),
+            ):
+                widget.setText(value)
+            self.notes.setPlainText(customer.notes)
+
+        for field_ in (self.name, self.phone, self.email):
+            field_.textChanged.connect(self._check)
+        self.phone.editingFinished.connect(self._tidy_phone)
+        self._check()
+        (self.name if customer is not None else self.paste).setFocus()
+
+    # -- reading what was pasted -------------------------------------------- #
+    def _paste_changed(self) -> None:
+        from ..projects.contacts import parse_contact
+
+        parsed = parse_contact(self.paste.toPlainText())
+        targets = {
+            "name": self.name, "phone": self.phone, "email": self.email,
+            "address": self.address, "city": self.city, "tax_id": self.tax_id,
+        }
+        for key, value in parsed.as_dict().items():
+            widget = targets[key]
+            # Never over what somebody typed by hand.
+            if not widget.text().strip() or widget.property("filled"):
+                widget.setText(value)
+                widget.setProperty("filled", True)
+        if parsed.extra_phones and not self.notes.toPlainText().strip():
+            self.notes.setPlainText("טלפון נוסף: " + ", ".join(parsed.extra_phones))
+
+    def _tidy_phone(self) -> None:
+        from ..projects.contacts import format_phone, phone_problem
+
+        text = self.phone.text()
+        if text.strip() and not phone_problem(text):
+            tidy = format_phone(text)
+            if tidy != text:
+                self.phone.setText(tidy)
+
+    # -- checking ------------------------------------------------------------ #
+    def _check(self) -> None:
+        from ..projects.contacts import email_problem, find_duplicates, phone_problem
+
+        problems = [
+            message for message in (
+                phone_problem(self.phone.text()), email_problem(self.email.text())
+            ) if message
+        ]
+        self._mark(self.phone, bool(phone_problem(self.phone.text())))
+        self._mark(self.email, bool(email_problem(self.email.text())))
+        self.problem.setText(" · ".join(problems))
+        self.problem.setVisible(bool(problems))
+
+        same = find_duplicates(
+            self._customers, name=self.name.text(), phone=self.phone.text(),
+            email=self.email.text(),
+            ignore_id=self._editing.customer_id if self._editing is not None else "",
         )
-        self.ok_button.setEnabled(False)
-        self.name.setFocus()
+        if same:
+            first = same[0]
+            details = " · ".join(part for part in (first.city, first.phone) if part)
+            self.duplicate.setText(
+                f"כבר יש בספר לקוח דומה: {first.name}"
+                + (f" ({details})" if details else "")
+                + " — אם זה אותו אדם, עדיף לבחור אותו ולא להוסיף שוב."
+            )
+        self.duplicate.setVisible(bool(same))
+        self.duplicates = same
+        self.ok_button.setEnabled(bool(self.name.text().strip()) and not problems)
+
+    @staticmethod
+    def _mark(widget: QLineEdit, invalid: bool) -> None:
+        if bool(widget.property("invalid")) == invalid:
+            return
+        widget.setProperty("invalid", invalid)
+        widget.style().unpolish(widget)
+        widget.style().polish(widget)
 
     def values(self) -> dict[str, Any]:
+        from ..projects.contacts import format_phone
+
         return {
             "name": self.name.text().strip(),
             "contact": self.contact.text().strip(),
-            "phone": self.phone.text().strip(),
+            "phone": format_phone(self.phone.text()) if self.phone.text().strip() else "",
             "email": self.email.text().strip(),
+            "address": self.address.text().strip(),
             "city": self.city.text().strip(),
             "tax_id": self.tax_id.text().strip(),
+            "notes": self.notes.toPlainText().strip(),
         }
 
 

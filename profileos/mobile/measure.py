@@ -165,23 +165,19 @@ class MeasurementStore:
         store = cls(path=target)
         if not target.is_file():
             return store
+        from ..core.storage import read_json
+
         try:
-            data = json.loads(target.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
+            data = read_json(target, default={})
+        except Exception as exc:  # noqa: BLE001
             raise ProfileOSError(f"The measurement file is damaged: {exc}") from exc
         store.records = [SiteMeasurement.from_dict(entry) for entry in data.get("records", [])]
         return store
 
     def save(self) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(
-            json.dumps(
-                {"version": 1, "records": [r.to_dict() for r in self.records]},
-                indent=2,
-                ensure_ascii=False,
-            ),
-            encoding="utf-8",
-        )
+        from ..core.storage import write_json
+
+        write_json(self.path, {"version": 1, "records": [r.to_dict() for r in self.records]})
 
     def add(self, measurement: SiteMeasurement) -> SiteMeasurement:
         self.records.insert(0, measurement)

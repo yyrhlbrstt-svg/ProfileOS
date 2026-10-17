@@ -266,8 +266,9 @@ def load_license(
 
 def save_license(data: bytes, path: str | os.PathLike[str]) -> Path:
     target = Path(path)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_bytes(data)
+    from ..core.storage import atomic_write_bytes
+
+    atomic_write_bytes(target, data)
     return target
 
 

@@ -63,6 +63,9 @@ class HardwareLibrary:
     def __init__(self, path: Path | None = None) -> None:
         self.path = Path(path) if path is not None else None
         self._parts: dict[str, Part] = {}
+        #: Set when the file is damaged beyond recovery: the library opens
+        #: empty so the program starts, and refuses to save over the file.
+        self.damaged: Exception | None = None
         if self.path is not None:
             self.load()
 
@@ -70,10 +73,15 @@ class HardwareLibrary:
     def load(self) -> "HardwareLibrary":
         if self.path is None or not self.path.is_file():
             return self
+        # Recovered from the previous version or refused — never read
+        # as empty, which the next save would write over real records.
+        from ..core.storage import StorageError, read_json
+
         try:
-            raw = json.loads(self.path.read_text(encoding="utf-8"))
-        except Exception:  # noqa: BLE001 - a corrupt file must not empty the shop
-            _log.exception("Hardware library at %s unreadable", self.path)
+            raw = read_json(self.path, default={})
+        except StorageError as exc:
+            _log.error("Hardware library unreadable, opened read-only: %s", exc)
+            self.damaged = exc
             return self
         for entry in raw.get("parts", []):
             try:
@@ -85,6 +93,8 @@ class HardwareLibrary:
     def save(self) -> None:
         if self.path is None:
             return
+        if self.damaged is not None:
+            raise self.damaged
         self.path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
             "parts": [
@@ -94,11 +104,9 @@ class HardwareLibrary:
                 for part in self._parts.values()
             ]
         }
-        temporary = self.path.with_suffix(self.path.suffix + ".tmp")
-        temporary.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
-        temporary.replace(self.path)
+        from ..core.storage import atomic_write_text
+
+        atomic_write_text(self.path, json.dumps(payload, ensure_ascii=False, indent=2))
 
     # -- contents ------------------------------------------------------------ #
     def __len__(self) -> int:

@@ -308,15 +308,24 @@ class ConfirmationBook:
     def __init__(self, path: Path) -> None:
         self.path = Path(path)
         self._entries: dict[str, Confirmation] = {}
+        #: Set when the file exists but could not be read or recovered. The
+        #: book then opens empty so the application still starts, and refuses
+        #: to save, so the damaged file is never written over.
+        self.damaged: Exception | None = None
         self.load()
 
     def load(self) -> "ConfirmationBook":
         if not self.path.is_file():
             return self
+        # Recovered from the previous version or refused — never read
+        # as empty, which the next save would write over real records.
+        from ..core.storage import StorageError, read_json
+
         try:
-            raw = json.loads(self.path.read_text(encoding="utf-8"))
-        except Exception:  # noqa: BLE001 - a corrupt file must not lose the rest
-            _log.exception("Confirmations at %s unreadable", self.path)
+            raw = read_json(self.path, default={})
+        except StorageError as exc:
+            _log.error("Confirmations unreadable, opened read-only: %s", exc)
+            self.damaged = exc
             return self
         for entry in raw.get("confirmations", []):
             try:
@@ -328,15 +337,15 @@ class ConfirmationBook:
         return self
 
     def save(self) -> None:
+        if self.damaged is not None:
+            raise self.damaged
         self.path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
             "confirmations": [item.as_dict() for item in self._entries.values()]
         }
-        temporary = self.path.with_suffix(self.path.suffix + ".tmp")
-        temporary.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
-        temporary.replace(self.path)
+        from ..core.storage import atomic_write_text
+
+        atomic_write_text(self.path, json.dumps(payload, ensure_ascii=False, indent=2))
 
     def __len__(self) -> int:
         return len(self._entries)

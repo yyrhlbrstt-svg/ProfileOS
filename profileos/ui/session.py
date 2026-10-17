@@ -33,6 +33,10 @@ class Session:
 
     # Elements
     builds: list[Any] = field(default_factory=list)
+    #: Openings from a saved job that could not be rebuilt this time (a rule
+    #: changed, a series was removed). They are kept and saved back with the
+    #: job, never silently dropped because today they would not build.
+    unbuilt: list[Any] = field(default_factory=list)
 
     # Nesting
     project: Any = None
@@ -123,6 +127,7 @@ class Session:
         element_id = build.opening.element_id
         self.builds = [b for b in self.builds if b.opening.element_id != element_id]
         self.builds.append(build)
+        self.unbuilt = [o for o in self.unbuilt if o.element_id != element_id]
         # A new element invalidates anything derived from the old cut list.
         self.nesting_report = None
         self.glass_report = None
@@ -134,6 +139,7 @@ class Session:
 
     def clear_builds(self) -> None:
         self.builds = []
+        self.unbuilt = []
         self.nesting_report = None
         self.glass_report = None
         self.bom = None
@@ -178,6 +184,29 @@ class Session:
         self.job = job
         self._notify("job")
 
+    def save_design_to_job(self, store: Any = None) -> Any:
+        """Write the openings on screen into the open job — the fresh copy.
+
+        The job is re-read from disk first and only its design is replaced,
+        so a status change or a recorded quotation saved from somewhere else
+        since this job was opened is kept, not overwritten by an old copy.
+        Returns the saved job, or ``None`` when no job is open.
+        """
+        if self.job is None:
+            return None
+        if store is None:
+            from ..projects import default_store
+
+            store = default_store()
+        try:
+            fresh = store.load(self.job.job_id)
+        except Exception:  # noqa: BLE001 - the copy in hand is the best there is
+            fresh = self.job
+        fresh.schedule = self.to_schedule(name=fresh.name, system_id=fresh.system_id)
+        store.save(fresh)
+        self.job = fresh
+        return fresh
+
     def to_schedule(self, name: str = "", system_id: str = "generic") -> Any:
         """The openings currently designed, as a schedule that can be saved.
 
@@ -187,7 +216,7 @@ class Session:
         """
         from ..elements.model import ElementSchedule
 
-        openings = [build.opening for build in self.builds]
+        openings = [build.opening for build in self.builds] + list(self.unbuilt)
         return ElementSchedule(
             name=name or (self.job.name if self.job else "פרויקט"),
             client=self.job.customer_name if self.job else "",
@@ -207,6 +236,7 @@ class Session:
 
         problems: list[str] = []
         builds = []
+        unbuilt = []
         for opening in schedule.openings:
             try:
                 builder = ElementBuilder.for_system(opening.system_id or schedule.system_id)
@@ -215,8 +245,10 @@ class Session:
             try:
                 builds.append(builder.build(opening, sill_height=schedule.sill_height))
             except Exception as exc:  # noqa: BLE001 - reported, never raised
-                problems.append(f"{opening.element_id}: {exc}")
+                problems.append(f"{opening.name or opening.element_id}: {exc}")
+                unbuilt.append(opening)
         self.builds = builds
+        self.unbuilt = unbuilt
         self.nesting_report = None
         self.glass_report = None
         self.bom = None

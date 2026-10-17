@@ -117,11 +117,11 @@ class RateBook:
     def load(self) -> "RateBook":
         if self.path is None or not self.path.is_file():
             return self
-        try:
-            raw = json.loads(self.path.read_text(encoding="utf-8"))
-        except Exception:  # noqa: BLE001 - a bad file must not stop pricing
-            _log.exception("Rate book at %s unreadable", self.path)
-            return self
+        # Recovered from the previous version or refused — never read
+        # as empty, which the next save would write over real records.
+        from ..core.storage import read_json
+
+        raw = read_json(self.path, default={})
         for entry in raw.get("rates", []):
             try:
                 self.record(
@@ -150,11 +150,9 @@ class RateBook:
                 for rates in self._rates.values() for rate in rates
             ]
         }
-        temporary = self.path.with_suffix(self.path.suffix + ".tmp")
-        temporary.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
-        temporary.replace(self.path)
+        from ..core.storage import atomic_write_text
+
+        atomic_write_text(self.path, json.dumps(payload, ensure_ascii=False, indent=2))
 
     # -- contents ------------------------------------------------------------ #
     def __len__(self) -> int:

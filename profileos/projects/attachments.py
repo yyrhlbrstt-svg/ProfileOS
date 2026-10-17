@@ -152,11 +152,11 @@ class AttachmentStore:
     def load(self) -> "AttachmentStore":
         if not self.manifest_path.is_file():
             return self
-        try:
-            raw = json.loads(self.manifest_path.read_text(encoding="utf-8"))
-        except Exception:  # noqa: BLE001 - the files matter more than the index
-            _log.exception("Attachment manifest at %s unreadable", self.manifest_path)
-            return self
+        # A damaged index is recovered from its previous version or refused;
+        # read as empty, the next save would orphan every photo in the folder.
+        from ..core.storage import read_json
+
+        raw = read_json(self.manifest_path, default={})
         for entry in raw.get("attachments", []):
             try:
                 self._items.append(Attachment(
@@ -180,11 +180,11 @@ class AttachmentStore:
                 {**asdict(item), "kind": item.kind.value} for item in self._items
             ]
         }
-        temporary = self.manifest_path.with_suffix(".tmp")
-        temporary.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+        from ..core.storage import atomic_write_text
+
+        atomic_write_text(
+            self.manifest_path, json.dumps(payload, ensure_ascii=False, indent=2)
         )
-        temporary.replace(self.manifest_path)
 
     # -- reading ------------------------------------------------------------- #
     def __len__(self) -> int:

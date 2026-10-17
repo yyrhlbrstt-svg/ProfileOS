@@ -189,7 +189,7 @@ _APP_ICON_SVG = (
 
 
 @lru_cache(maxsize=8)
-def app_icon(bg: str = "#D07E2F", fg: str = "#17140F") -> QIcon:
+def app_icon(bg: str = "#0071E3", fg: str = "#FFFFFF") -> QIcon:
     """The window mark used for the title bar and the taskbar.
 
     A shop looking for ProfileOS among a dozen other open windows should

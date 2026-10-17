@@ -266,3 +266,14 @@ class TestTakingItBack:
         from profileos.systems import default_confirmations
 
         default_confirmations().forget("klil-7300")
+
+
+def test_an_unreadable_file_is_never_written_over(tmp_path):
+    from profileos.core.storage import StorageError
+
+    path = tmp_path / "confirmations.json"
+    path.write_text("{ not json", encoding="utf-8")
+    book = ConfirmationBook(path)
+    with pytest.raises(StorageError):
+        book.record(_filled())
+    assert path.read_text(encoding="utf-8") == "{ not json"

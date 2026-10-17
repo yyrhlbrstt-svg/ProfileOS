@@ -97,11 +97,52 @@ def run(argv: Sequence[str] | None = None, *, theme: str | None = None) -> int:
 
     window = MainWindow(palette)
     window.auto_backup = True
+    window.autosave_enabled = True
+    _install_error_handler(window)
     if session is not None:
         window.set_session_owner(session)
     window.show()
+    # A morning backup as well as the evening one: a day that ends in a crash
+    # still has the state it started with.
+    from ..core.backup import backup_if_due
+
+    backup_if_due()
+    window._update_safety()
+    window.offer_draft_recovery()
     _log.info("Desktop application started")
     return application.exec()
+
+
+def _install_error_handler(window: object) -> None:
+    """Nothing that goes wrong is allowed to go unseen.
+
+    Qt swallows an exception raised inside a button handler: it is printed
+    to a console nobody has open and the button simply appears to do
+    nothing — which is how a save that failed looks exactly like a save
+    that worked. Every uncaught error is logged with its traceback and shown
+    in plain Hebrew, saying what to do next.
+    """
+    import traceback
+
+    from PySide6.QtWidgets import QMessageBox
+
+    previous = sys.excepthook
+
+    def show(kind, value, tb) -> None:  # type: ignore[no-untyped-def]
+        _log.error("Unhandled error", exc_info=(kind, value, tb))
+        if issubclass(kind, KeyboardInterrupt):
+            previous(kind, value, tb)
+            return
+        box = QMessageBox(window if hasattr(window, "isVisible") else None)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle("משהו השתבש")
+        box.setText(
+            f"{value}\n\nהפעולה האחרונה לא הושלמה. הנתונים שכבר נשמרו לא נפגעו."
+        )
+        box.setDetailedText("".join(traceback.format_exception(kind, value, tb)))
+        box.exec()
+
+    sys.excepthook = show
 
 
 def main() -> None:  # pragma: no cover - console entry point
