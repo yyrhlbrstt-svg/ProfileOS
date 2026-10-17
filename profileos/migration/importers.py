@@ -204,9 +204,7 @@ def import_customers(plan: ImportPlan, book: Any = None) -> dict[str, int]:
         try:
             if row.action == "update":
                 customer = existing[row.label.casefold()]
-                for name_, value in values.items():
-                    setattr(customer, name_, value)
-                book.save()
+                book.update(customer.model_copy(update=values))
                 updated += 1
             else:
                 book.add(name=row.label, **values)

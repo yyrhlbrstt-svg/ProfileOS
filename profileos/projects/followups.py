@@ -26,7 +26,6 @@ history it is throwing away.
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from enum import StrEnum
@@ -227,8 +226,23 @@ def working_days_after(start: date, count: int, calendar: Any = None) -> date:
     return calendar.working_days(start + timedelta(days=1), count)[-1]
 
 
-class TaskBook:
+from ..core.storage import MergingBook
+
+
+class TaskBook(MergingBook):
     """Everything somebody still has to do, kept on disk."""
+
+    _list_key = "tasks"
+    _id_field = "task_id"
+
+    def _records(self) -> dict[str, Any]:
+        return self._tasks
+
+    def _to_raw(self, record: Any) -> dict[str, Any]:
+        return record.as_dict()
+
+    def _from_raw(self, raw: dict[str, Any]) -> Any:
+        return Task.from_dict(raw)
 
     def __init__(self, path: Path | None = None) -> None:
         from ..core.config import get_settings
@@ -237,13 +251,13 @@ class TaskBook:
         self._tasks: dict[str, Task] = {}
 
     def load(self) -> "TaskBook":
-        if not self.path.exists():
+        from ..core.storage import stored as _stored
+
+        if not _stored(self.path):
             return self
         # Recovered from the previous version or refused — never read
         # as empty, which the next save would write over real records.
-        from ..core.storage import read_json
-
-        raw = read_json(self.path, default={})
+        raw = self._read_or_mark(self.path)
         for item in raw.get("tasks", []):
             try:
                 task = Task.from_dict(item)
@@ -251,17 +265,14 @@ class TaskBook:
                 _log.warning("Skipped an unreadable task: %s", exc)
                 continue
             self._tasks[task.task_id] = task
+        self._remember_loaded()
         return self
 
     def save(self) -> None:
+        """Write this copy's changes over what is on disk now — never the
+        whole list, which would erase tasks another screen added meanwhile."""
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        payload = {
-            "written": datetime.now().isoformat(timespec="seconds"),
-            "tasks": [task.as_dict() for task in self._tasks.values()],
-        }
-        from ..core.storage import atomic_write_text
-
-        atomic_write_text(self.path, json.dumps(payload, ensure_ascii=False, indent=2))
+        self._save_merged(self.path, {"written": datetime.now().isoformat(timespec="seconds")})
 
     # -- writing ------------------------------------------------------------- #
     def add(self, task: Task, *, save: bool = True) -> Task:

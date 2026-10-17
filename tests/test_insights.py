@@ -22,6 +22,11 @@ def shop(tmp_path, monkeypatch):
     monkeypatch.setenv("PROFILEOS_DATA_DIR", str(data))
     reload_settings()
     data.mkdir(parents=True, exist_ok=True)
+    # Process-wide notes left by other tests' backups and recoveries.
+    from profileos.core import backup, storage
+
+    monkeypatch.setattr(backup, "_STATUS", {"error": "", "last": "", "mirror_error": ""})
+    monkeypatch.setattr(storage, "RECOVERED", [])
     yield data
     monkeypatch.delenv("PROFILEOS_DATA_DIR", raising=False)
     reload_settings()
@@ -117,3 +122,22 @@ def test_a_broken_rule_does_not_hide_the_others(shop, monkeypatch):
     monkeypatch.setattr(insights, "RULES", (broken,) + insights.RULES)
     found = _scan(jobs=[_job("J-3", JobStatus.WON, since=TODAY - timedelta(days=20))])
     assert "לא נכנסו לייצור" in _titles(found)
+
+
+def test_a_cheque_past_six_months_is_a_debt_not_a_deposit(shop):
+    book = ChequeBook()
+    book.add(Cheque(customer="משה", amount=5000, due=TODAY - timedelta(days=200)))
+    titles = _titles(_scan(jobs=[], cheques=book))
+    assert "חצי שנה" in titles
+    assert "להפקיד" not in titles
+
+
+def test_a_new_backup_failure_is_not_hidden_by_an_old_dismissal(shop, monkeypatch):
+    from profileos.core import backup
+
+    monkeypatch.setattr(backup, "_STATUS", {"error": "הדיסק מלא", "last": "", "mirror_error": ""})
+    first = [i for i in _scan(jobs=[]) if i.title == "הגיבוי האוטומטי נכשל"][0]
+    dismiss(first.key)
+    monkeypatch.setattr(backup, "_STATUS", {"error": "אין הרשאה", "last": "", "mirror_error": ""})
+    second = [i for i in _scan(jobs=[]) if i.title == "הגיבוי האוטומטי נכשל"][0]
+    assert second.key not in dismissed()

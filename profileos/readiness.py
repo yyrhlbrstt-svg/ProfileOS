@@ -256,7 +256,7 @@ def _check_jobs() -> Check:
         )
     return Check(
         "jobs", "תיקי עבודה", State.EMPTY, "אין פרויקטים",
-        fix="עמוד ״פרויקטים״ → ״פרויקט חדש״, או `profileos seed` לנתוני התחלה",
+        fix="עמוד ״פרויקטים״ ← ״פרויקט חדש״",
     )
 
 
@@ -270,7 +270,7 @@ def _check_hardware() -> Check:
             "אין פריטי פרזול",
             blocks="אי אפשר לבדוק שהציר נושא את הכנף — הסיבה מספר אחת "
                    "לקריאות אחריות",
-            fix="`profileos hardware template` → מלאו טבלת עומסים → `hardware import`",
+            fix="הקמה חד-פעמית: טבלת העומסים של ספק הפרזול נטענת לספריית הפרזול (בעזרת התמיכה)",
         )
     rated = len(library.rated())
     if rated < len(library):
@@ -314,7 +314,7 @@ def _check_post_processor() -> Check:
             "post_proven", "הוכחת קוד מכונה", State.ATTENTION,
             "אף פוסט-פרוססור לא הוכח על מכונה",
             blocks="ייצור ישיר מקוד שלא נוסה",
-            fix="הריצו תוכנית אחת על פסולת, מדדו, ורשמו: `profileos cnc prove`",
+            fix="הריצו תוכנית אחת על פסולת, מדדו, ורשמו את התוצאה בעמוד ״עיבוד CNC״",
             critical=True,
         )
     return Check(
@@ -363,7 +363,7 @@ def _check_backup() -> Check:
         return Check(
             "backup", "גיבוי", State.EMPTY, "אין אף גיבוי",
             blocks="כל מה שהוזן קיים בעותק אחד בלבד, על מחשב אחד",
-            fix="`profileos backup write`, ואז העתיקו את הקובץ לדיסק חיצוני",
+            fix="מערכת ← גיבוי ושחזור ← ״גבה עכשיו״, והגדירו עותק שני בדיסק חיצוני או בענן",
             critical=True,
         )
 
@@ -381,7 +381,7 @@ def _check_backup() -> Check:
             "backup", "גיבוי", State.ATTENTION,
             f"הגיבוי האחרון לפני ⁦{days}⁩ ימים",
             blocks=f"עבודה של ⁦{days}⁩ ימים אינה מגובה",
-            fix="`profileos backup write`",
+            fix="מערכת ← גיבוי ושחזור ← ״גבה עכשיו״",
             critical=True,
         )
     return Check(

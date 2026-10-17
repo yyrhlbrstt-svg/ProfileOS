@@ -30,14 +30,47 @@ def test_a_pasted_block_fills_the_form(qt_app):
     assert dialog.ok_button.isEnabled()
 
 
-def test_a_wrong_number_holds_the_form(qt_app):
+def test_a_doubtful_number_is_marked_not_refused(qt_app):
     dialog = NewCustomerDialog()
     dialog.name.setText("דוד")
-    dialog.phone.setText("050-11")
-    assert not dialog.ok_button.isEnabled()
+    dialog.phone.setText("+1 212 555 0100")
     assert dialog.phone.property("invalid")
-    dialog.phone.setText("0501112233")
+    assert not dialog.problem.isHidden()
     assert dialog.ok_button.isEnabled()
+    dialog.phone.setText("0501112233")
+    assert not dialog.phone.property("invalid")
+
+
+def test_a_bad_email_holds_the_form(qt_app):
+    dialog = NewCustomerDialog()
+    dialog.name.setText("דוד")
+    dialog.email.setText("david@")
+    assert not dialog.ok_button.isEnabled()
+
+
+def test_what_was_typed_by_hand_survives_the_paste_box(qt_app):
+    dialog = NewCustomerDialog()
+    dialog.paste.setPlainText("דוד ישראלי\n0501112233")
+    # What a keystroke does: the text changes and textEdited is sent.
+    dialog.name.setText("דוד ישראלי-כהן")
+    dialog.name.textEdited.emit("דוד ישראלי-כהן")
+    dialog.paste.setPlainText("דוד ישראלי\n0501112233\nעפרה")
+    assert dialog.name.text() == "דוד ישראלי-כהן"
+    assert dialog.city.text() == "עפרה"
+    dialog.paste.setPlainText("")
+    assert dialog.city.text() == ""
+    assert dialog.name.text() == "דוד ישראלי-כהן"
+
+
+def test_typing_over_a_chosen_customer_unchooses_them(qt_app):
+    book = [Customer(customer_id="C-0004", name="John Smith"),
+            Customer(customer_id="C-0005", name="משה כהן")]
+    dialog = NewJobDialog(book, [("generic", "כללי")])
+    dialog.customer.setCurrentIndex(dialog.customer.findData("C-0004"))
+    dialog.customer.setEditText("משה כהן")
+    assert dialog.values()["customer_id"] == "C-0005"
+    dialog.customer.setEditText("מישהו חדש")
+    assert dialog.values()["customer_id"] == ""
 
 
 def test_a_customer_already_in_the_book_is_pointed_out(qt_app):

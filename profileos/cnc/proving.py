@@ -78,7 +78,9 @@ class ProvingRecord:
         self.load()
 
     def load(self) -> "ProvingRecord":
-        if not self.path.is_file():
+        from ..core.storage import stored as _stored
+
+        if not _stored(self.path):
             return self
         # Recovered from the previous version or refused — never read
         # as empty, which the next save would write over real records.

@@ -110,18 +110,27 @@ class RateBook:
     def __init__(self, path: Path | None = None) -> None:
         self.path = Path(path) if path is not None else None
         self._rates: dict[str, list[Rate]] = {}
+        #: Set when the file could not be read; saves are then refused.
+        self.damaged: Exception | None = None
         if self.path is not None:
             self.load()
 
     # -- persistence --------------------------------------------------------- #
     def load(self) -> "RateBook":
-        if self.path is None or not self.path.is_file():
+        from ..core.storage import stored as _stored
+
+        if self.path is None or not _stored(self.path):
             return self
         # Recovered from the previous version or refused — never read
         # as empty, which the next save would write over real records.
-        from ..core.storage import read_json
+        from ..core.storage import StorageError, read_json
 
-        raw = read_json(self.path, default={})
+        try:
+            raw = read_json(self.path, default={})
+        except StorageError as exc:
+            _log.error("Exchange rates unreadable, opened read-only: %s", exc)
+            self.damaged = exc
+            return self
         for entry in raw.get("rates", []):
             try:
                 self.record(
@@ -140,6 +149,8 @@ class RateBook:
     def save(self) -> None:
         if self.path is None:
             return
+        if self.damaged is not None:
+            raise self.damaged
         self.path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
             "rates": [

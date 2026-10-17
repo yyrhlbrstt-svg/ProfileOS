@@ -138,6 +138,7 @@ class Session:
         self._notify("builds")
 
     def clear_builds(self) -> None:
+        self._notify("leaving")
         self.builds = []
         self.unbuilt = []
         self.nesting_report = None
@@ -181,6 +182,10 @@ class Session:
     # -- the job file ---------------------------------------------------- #
     def set_job(self, job: Any) -> None:
         """Attach this work to a job file, and say so everywhere."""
+        # Listeners write what is still pending for the job being left
+        # before the session points somewhere else.
+        if job is not self.job:
+            self._notify("leaving")
         self.job = job
         self._notify("job")
 
@@ -198,10 +203,15 @@ class Session:
             from ..projects import default_store
 
             store = default_store()
-        try:
-            fresh = store.load(self.job.job_id)
-        except Exception:  # noqa: BLE001 - the copy in hand is the best there is
+        path = store.path_for(self.job.job_id) if hasattr(store, "path_for") else None
+        if path is not None and not path.exists():
+            # Never saved yet, or saved to another store: the copy in hand is it.
             fresh = self.job
+        else:
+            # A job file that exists but cannot be read right now is not
+            # written over with the older copy held in memory — that is the
+            # one way this save could lose somebody else's change.
+            fresh = store.load(self.job.job_id)
         fresh.schedule = self.to_schedule(name=fresh.name, system_id=fresh.system_id)
         store.save(fresh)
         self.job = fresh
@@ -234,6 +244,7 @@ class Session:
         """
         from ..elements.builder import ElementBuilder
 
+        self._notify("leaving")
         problems: list[str] = []
         builds = []
         unbuilt = []

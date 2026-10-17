@@ -137,4 +137,116 @@ class TestWindowAutosave:
         window.autosave()
         assert [o.name for o in store.load(job.job_id).schedule.openings] == ["W-02"]
         assert read_draft() is None
-        assert "נשמרו" in window.sidebar.safety.text()
+        assert window._save_state[0] == "ok"
+        # Saved, but never backed up: the sidebar says the second part.
+        assert "גיבוי" in window.sidebar.safety.text()
+
+
+def test_the_window_opens_with_damaged_books_and_leaves_them_alone(shop):
+    pytest.importorskip("PySide6")
+    from PySide6.QtCore import QCoreApplication
+    from PySide6.QtWidgets import QApplication
+
+    from profileos.ui.main_window import MainWindow
+    from profileos.ui.theme import LIGHT
+
+    names = ("tasks.json", "timesheets.json", "exchange_rates.json",
+             "stocktakes.json", "cheques.json", "service_calls.json")
+    for name in names:
+        (shop / name).write_text("{ cut off", encoding="utf-8")
+
+    QApplication.instance() or QApplication([])
+    window = MainWindow(LIGHT)
+    for page in window.pages:
+        window.go_to(window.pages.index(page))
+        QCoreApplication.processEvents()
+    window.close()
+    window.deleteLater()
+    QCoreApplication.processEvents()
+    for name in names:
+        assert (shop / name).read_text(encoding="utf-8") == "{ cut off"
+
+
+def test_a_damaged_book_refuses_to_save(shop):
+    from profileos.core.storage import StorageError
+    from profileos.projects.followups import Kind, default_tasks
+
+    (shop / "tasks.json").write_text("{ cut off", encoding="utf-8")
+    book = default_tasks()
+    assert book.damaged is not None
+    with pytest.raises(StorageError):
+        book.create(Kind.OTHER, "x")
+    assert (shop / "tasks.json").read_text(encoding="utf-8") == "{ cut off"
+
+
+def test_opening_a_job_never_deletes_an_unfiled_draft(shop, monkeypatch):
+    pytest.importorskip("PySide6")
+    from PySide6.QtCore import QCoreApplication
+    from PySide6.QtWidgets import QApplication, QMessageBox
+
+    from profileos.projects import default_store
+    from profileos.projects.draft import drafts_set_aside, read_draft
+    from profileos.ui.main_window import MainWindow
+    from profileos.ui.theme import LIGHT
+
+    QApplication.instance() or QApplication([])
+    store = default_store()
+    job = store.create(name="קיים")
+    store.save(job)
+
+    window = MainWindow(LIGHT)
+    window.autosave_enabled = True
+    window.session.add_build(
+        ElementBuilder().build(Opening(name="W-DRAFT", width=1200, height=1400))
+    )
+    window.autosave()
+    assert read_draft() is not None
+
+    # The person answers "keep it aside".
+    def answer(box):
+        for button in box.buttons():
+            if button.text() == "שמור בצד כטיוטה":
+                box.clickedButton = lambda b=button: b
+        return 0
+
+    monkeypatch.setattr(QMessageBox, "exec", answer)
+    page = window.go_to_page("Projects")
+    page.refresh()
+    row = next(i for i, j in enumerate(page._jobs) if j.job_id == job.job_id)
+    page.jobs_table.setCurrentCell(row, 0)
+    page.open_job()
+    window.autosave()
+
+    aside = drafts_set_aside()
+    assert aside, "the unfiled design was deleted"
+    window.close()
+    window.deleteLater()
+    QCoreApplication.processEvents()
+
+
+def test_switching_jobs_writes_what_was_pending_for_the_first(shop):
+    pytest.importorskip("PySide6")
+    from PySide6.QtCore import QCoreApplication
+    from PySide6.QtWidgets import QApplication
+
+    from profileos.projects import default_store
+    from profileos.ui.main_window import MainWindow
+    from profileos.ui.theme import LIGHT
+
+    QApplication.instance() or QApplication([])
+    store = default_store()
+    a, b = store.create(name="א"), store.create(name="ב")
+    store.save(a)
+    b = store.create(name="ב")
+    store.save(b)
+
+    window = MainWindow(LIGHT)
+    window.autosave_enabled = True
+    window.session.set_job(store.load(a.job_id))
+    window.session.add_build(ElementBuilder().build(Opening(name="A-1", width=900, height=900)))
+    assert window._autosave_timer.isActive()   # not yet written
+    window.session.set_job(store.load(b.job_id))
+    assert [o.name for o in store.load(a.job_id).schedule.openings] == ["A-1"]
+    window.close()
+    window.deleteLater()
+    QCoreApplication.processEvents()

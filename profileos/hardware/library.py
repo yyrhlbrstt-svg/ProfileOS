@@ -71,7 +71,9 @@ class HardwareLibrary:
 
     # -- persistence --------------------------------------------------------- #
     def load(self) -> "HardwareLibrary":
-        if self.path is None or not self.path.is_file():
+        from ..core.storage import stored as _stored
+
+        if self.path is None or not _stored(self.path):
             return self
         # Recovered from the previous version or refused — never read
         # as empty, which the next save would write over real records.

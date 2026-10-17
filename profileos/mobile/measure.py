@@ -163,7 +163,9 @@ class MeasurementStore:
     def load(cls, path: str | os.PathLike[str]) -> "MeasurementStore":
         target = Path(path)
         store = cls(path=target)
-        if not target.is_file():
+        from ..core.storage import stored as _stored
+
+        if not _stored(target):
             return store
         from ..core.storage import read_json
 

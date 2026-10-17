@@ -61,7 +61,9 @@ class RemnantInventory:
         target = Path(path) if path is not None else self.path
         if target is None:
             raise ProfileOSError("No inventory path configured")
-        if not target.is_file():
+        from ..core.storage import stored as _stored
+
+        if not _stored(target):
             with self._lock:
                 self._remnants = []
             return 0

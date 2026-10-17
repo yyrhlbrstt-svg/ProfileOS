@@ -470,16 +470,29 @@ class Gate:
                 "No operator has been enrolled on this installation. Run "
                 "`profileos access enrol` on the machine that will use it."
             )
-        return _unseal(self.store_path.read_bytes(), secret, self.fingerprint)
+        try:
+            return _unseal(self.store_path.read_bytes(), secret, self.fingerprint)
+        except Exception:
+            # A store cut short by a power cut is not a locked-out shop: the
+            # previous version, kept beside it by every save, opens instead.
+            from ..core.storage import backup_path
+
+            previous = backup_path(self.store_path)
+            if previous.is_file():
+                try:
+                    return _unseal(previous.read_bytes(), secret, self.fingerprint)
+                except Exception:  # noqa: BLE001 - the original error is the one to show
+                    pass
+            raise
 
     def _save(self, operator: Operator, secret: bytes) -> None:
         blob = _seal(operator, secret, operator.machines)
-        # Write then replace: an interrupted save must not leave a store that
-        # nobody can open.
-        temporary = self.store_path.with_suffix(".tmp")
-        temporary.parent.mkdir(parents=True, exist_ok=True)
-        temporary.write_bytes(blob)
-        temporary.replace(self.store_path)
+        # Written durably with the previous version kept: an interrupted save
+        # must not leave a store that nobody can open.
+        from ..core.storage import atomic_write_bytes
+
+        self.store_path.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write_bytes(self.store_path, blob)
         try:
             os.chmod(self.store_path, 0o600)
         except OSError:  # pragma: no cover

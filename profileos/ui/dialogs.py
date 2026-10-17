@@ -136,19 +136,23 @@ class NewJobDialog(_FormDialog):
             if details:
                 label += f"  ({details})"
             self.customer.addItem(label, customer.customer_id)
-        index = self.customer.findData(select) if select else 0
-        self.customer.setCurrentIndex(max(index, 0))
+        # Nothing chosen yet shows the hint, not "no customer" highlighted.
+        index = self.customer.findData(select) if select else -1
+        self.customer.setCurrentIndex(index)
         self.customer.blockSignals(False)
 
     def _selected(self) -> Any:
-        wanted = self.customer.currentData()
+        index = self.customer.currentIndex()
+        typed = self.customer.currentText().strip()
+        # The box's text is the truth: a customer picked earlier and then
+        # typed over is not the customer meant any more.
+        if index > 0 and typed == self.customer.itemText(index).strip():
+            wanted = self.customer.itemData(index)
+            return next((c for c in self._customers if c.customer_id == wanted), None)
         # A name typed and never picked from the list still counts when it
         # matches exactly one customer.
-        if not wanted:
-            typed = self.customer.currentText().strip()
-            matches = [c for c in self._customers if c.name == typed]
-            return matches[0] if len(matches) == 1 else None
-        return next((c for c in self._customers if c.customer_id == wanted), None)
+        matches = [c for c in self._customers if c.name == typed]
+        return matches[0] if len(matches) == 1 else None
 
     def _name_edited(self, text: str) -> None:
         self.ok_button.setEnabled(bool(text.strip()))
@@ -173,7 +177,7 @@ class NewJobDialog(_FormDialog):
             return
         dialog = NewCustomerDialog(self, customers=self._customers)
         typed = self.customer.currentText().strip()
-        if typed and not self.customer.currentData():
+        if typed and self._selected() is None:
             dialog.name.setText(typed)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
@@ -225,7 +229,7 @@ class NewCustomerDialog(_FormDialog):
             "הדבק כאן פרטים — איש קשר מוואטסאפ, חתימת מייל, הודעה — "
             "והשדות יתמלאו לבד"
         )
-        self.paste.setMaximumHeight(64)
+        self.paste.setFixedHeight(84)
         self.paste.setTabChangesFocus(True)
         self.paste.textChanged.connect(self._paste_changed)
 
@@ -234,10 +238,12 @@ class NewCustomerDialog(_FormDialog):
         self.phone = QLineEdit()
         self.phone.setPlaceholderText("054-123-4567")
         self.phone.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
+        self.phone.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignAbsolute)
         self.contact = QLineEdit()
         self.contact.setPlaceholderText("אם יש מישהו אחר שמדברים איתו")
         self.email = QLineEdit()
         self.email.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
+        self.email.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignAbsolute)
         self.address = QLineEdit()
         self.address.setPlaceholderText("רחוב ומספר")
         self.city = QLineEdit()
@@ -250,7 +256,7 @@ class NewCustomerDialog(_FormDialog):
         self.tax_id.setPlaceholderText("ח.פ. / ע.מ. — לחשבונית")
         self.notes = QPlainTextEdit()
         self.notes.setPlaceholderText("מה כדאי לזכור עליו — קומה, שעות נוחות, מי המליץ")
-        self.notes.setMaximumHeight(70)
+        self.notes.setFixedHeight(84)
         self.notes.setTabChangesFocus(True)
 
         self.problem = QLabel("")
@@ -287,6 +293,14 @@ class NewCustomerDialog(_FormDialog):
 
         for field_ in (self.name, self.phone, self.email):
             field_.textChanged.connect(self._check)
+        for field_ in (self.name, self.phone, self.email, self.address, self.city, self.tax_id):
+            # Typed by hand: the paste box leaves it alone from now on.
+            field_.textEdited.connect(
+                lambda _text, widget=field_: widget.setProperty("filled", False)
+            )
+            field_.textEdited.connect(
+                lambda _text, widget=field_: widget.setProperty("typed", True)
+            )
         self.phone.editingFinished.connect(self._tidy_phone)
         self._check()
         (self.name if customer is not None else self.paste).setFocus()
@@ -300,12 +314,19 @@ class NewCustomerDialog(_FormDialog):
             "name": self.name, "phone": self.phone, "email": self.email,
             "address": self.address, "city": self.city, "tax_id": self.tax_id,
         }
-        for key, value in parsed.as_dict().items():
-            widget = targets[key]
+        values = parsed.as_dict()
+        for key, widget in targets.items():
             # Never over what somebody typed by hand.
-            if not widget.text().strip() or widget.property("filled"):
-                widget.setText(value)
-                widget.setProperty("filled", True)
+            if widget.property("typed"):
+                continue
+            if key in values:
+                if not widget.text().strip() or widget.property("filled"):
+                    widget.setText(values[key])
+                    widget.setProperty("filled", True)
+            elif widget.property("filled"):
+                # The paste no longer says it: what it filled in goes too.
+                widget.clear()
+                widget.setProperty("filled", False)
         if parsed.extra_phones and not self.notes.toPlainText().strip():
             self.notes.setPlainText("טלפון נוסף: " + ", ".join(parsed.extra_phones))
 
@@ -347,7 +368,11 @@ class NewCustomerDialog(_FormDialog):
             )
         self.duplicate.setVisible(bool(same))
         self.duplicates = same
-        self.ok_button.setEnabled(bool(self.name.text().strip()) and not problems)
+        # A number that is not Israeli, or carries an extension, is still the
+        # customer's number: it is marked, not refused.
+        self.ok_button.setEnabled(
+            bool(self.name.text().strip()) and not email_problem(self.email.text())
+        )
 
     @staticmethod
     def _mark(widget: QLineEdit, invalid: bool) -> None:

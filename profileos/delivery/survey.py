@@ -475,7 +475,9 @@ class SurveyBook:
         self._surveys: dict[str, Survey] = {}
 
     def load(self) -> "SurveyBook":
-        if not self.path.exists():
+        from ..core.storage import stored as _stored
+
+        if not _stored(self.path):
             return self
         # Recovered from the previous version or refused — never read
         # as empty, which the next save would write over real records.

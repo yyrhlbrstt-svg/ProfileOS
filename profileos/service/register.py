@@ -11,7 +11,6 @@ the register.
 
 from __future__ import annotations
 
-import json
 from collections import Counter
 from dataclasses import asdict
 from datetime import date, timedelta
@@ -73,8 +72,23 @@ def _from_json(data: dict[str, Any]) -> ServiceCall:
     )
 
 
-class ServiceRegister:
+from ..core.storage import MergingBook
+
+
+class ServiceRegister(MergingBook):
     """Every call this shop has taken."""
+
+    _list_key = "calls"
+    _id_field = "call_id"
+
+    def _records(self) -> dict[str, Any]:
+        return self._calls
+
+    def _to_raw(self, record: Any) -> dict[str, Any]:
+        return _to_json(record)
+
+    def _from_raw(self, raw: dict[str, Any]) -> Any:
+        return _from_json(raw)
 
     def __init__(self, path: Path) -> None:
         self.path = Path(path)
@@ -83,13 +97,13 @@ class ServiceRegister:
 
     # -- persistence --------------------------------------------------------- #
     def load(self) -> "ServiceRegister":
-        if not self.path.is_file():
+        from ..core.storage import stored as _stored
+
+        if not _stored(self.path):
             return self
         # Recovered from the previous version or refused — never read
         # as empty, which the next save would write over real records.
-        from ..core.storage import read_json
-
-        raw = read_json(self.path, default={})
+        raw = self._read_or_mark(self.path)
         for entry in raw.get("calls", []):
             try:
                 call = _from_json(entry)
@@ -97,15 +111,13 @@ class ServiceRegister:
                 _log.warning("Skipping unreadable service call: %s", entry.get("call_id"))
                 continue
             self._calls[call.call_id] = call
+        self._remember_loaded()
         return self
 
     def save(self) -> None:
-        """Write atomically: a half-written register is worse than none."""
+        """Write atomically, merged with what another writer saved meanwhile."""
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        payload = {"calls": [_to_json(call) for call in self._calls.values()]}
-        from ..core.storage import atomic_write_text
-
-        atomic_write_text(self.path, json.dumps(payload, ensure_ascii=False, indent=2))
+        self._save_merged(self.path)
 
     # -- writing ------------------------------------------------------------- #
     def add(self, call: ServiceCall) -> ServiceCall:

@@ -18,7 +18,6 @@ named, and left alone.
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from enum import StrEnum
@@ -427,8 +426,23 @@ def _states(ledger: Any) -> list[Any]:
     raise ProfileOSError("לא נמצאו פריטי מלאי בספר המלאי")
 
 
-class StocktakeBook:
+from ..core.storage import MergingBook
+
+
+class StocktakeBook(MergingBook):
     """Every count sheet the shop has opened, kept on disk."""
+
+    _list_key = "stocktakes"
+    _id_field = "sheet_id"
+
+    def _records(self) -> dict[str, Any]:
+        return self._sheets
+
+    def _to_raw(self, record: Any) -> dict[str, Any]:
+        return record.as_dict()
+
+    def _from_raw(self, raw: dict[str, Any]) -> Any:
+        return Stocktake.from_dict(raw)
 
     def __init__(self, path: Path | None = None) -> None:
         from ..core.config import get_settings
@@ -437,13 +451,13 @@ class StocktakeBook:
         self._sheets: dict[str, Stocktake] = {}
 
     def load(self) -> "StocktakeBook":
-        if not self.path.exists():
+        from ..core.storage import stored as _stored
+
+        if not _stored(self.path):
             return self
         # Recovered from the previous version or refused — never read
         # as empty, which the next save would write over real records.
-        from ..core.storage import read_json
-
-        raw = read_json(self.path, default={})
+        raw = self._read_or_mark(self.path)
         for item in raw.get("stocktakes", []):
             try:
                 sheet = Stocktake.from_dict(item)
@@ -451,17 +465,12 @@ class StocktakeBook:
                 _log.warning("Skipped an unreadable stocktake: %s", exc)
                 continue
             self._sheets[sheet.sheet_id] = sheet
+        self._remember_loaded()
         return self
 
     def save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        payload = {
-            "written": datetime.now().isoformat(timespec="seconds"),
-            "stocktakes": [sheet.as_dict() for sheet in self._sheets.values()],
-        }
-        from ..core.storage import atomic_write_text
-
-        atomic_write_text(self.path, json.dumps(payload, ensure_ascii=False, indent=2))
+        self._save_merged(self.path, {"written": datetime.now().isoformat(timespec="seconds")})
 
     def add(self, sheet: Stocktake) -> Stocktake:
         self._sheets[sheet.sheet_id] = sheet

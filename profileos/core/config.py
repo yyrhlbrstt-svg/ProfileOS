@@ -389,12 +389,43 @@ def reload_settings() -> Settings:
         raise
 
 
+def _restore_from(payload: dict[str, Any], on_disk: dict[str, Any], dotted: str) -> None:
+    """Put back the file's own value at ``dotted``, or drop it if it had none."""
+    parts = dotted.split(".")
+    source: Any = on_disk
+    for part in parts:
+        source = source.get(part) if isinstance(source, dict) else None
+        if source is None:
+            break
+    node = payload
+    for part in parts[:-1]:
+        node = node.get(part) if isinstance(node, dict) else None
+        if node is None:
+            return
+    if source is None:
+        node.pop(parts[-1], None)
+    else:
+        node[parts[-1]] = source
+
+
 def save_settings(settings: Settings) -> Path:
     """Persist ``settings`` to ``<config_dir>/settings.json`` and return the path."""
     settings.config_dir.mkdir(parents=True, exist_ok=True)
     payload = settings.model_dump(mode="json", exclude={"config_dir"})
     path = settings.settings_file
-    from .storage import write_json
+    from .storage import read_json, write_json
+
+    # A value that came from the environment belongs to that one run — a
+    # technician's test folder, a screenshot script — and must not become the
+    # installation's setting because somebody toggled the theme meanwhile.
+    overridden = [
+        dotted for suffix, dotted in _ENV_MAP.items()
+        if os.environ.get(ENV_PREFIX + suffix) is not None and dotted != "config_dir"
+    ]
+    if overridden:
+        on_disk = read_json(path, default={}) or {}
+        for dotted in overridden:
+            _restore_from(payload, on_disk, dotted)
 
     write_json(path, payload)
     _log.info("Settings saved to %s", path)

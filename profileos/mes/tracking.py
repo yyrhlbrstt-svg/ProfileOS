@@ -346,12 +346,8 @@ def work_order_from_builds(
         for copy_index in range(opening.quantity):
             suffix = f"-{copy_index + 1:02d}" if opening.quantity > 1 else ""
 
-            role_hebrew = {
-                "frame_horizontal": "מלבן אופקי", "frame_vertical": "מלבן אנכי",
-                "sash_horizontal": "כנף אופקי", "sash_vertical": "כנף אנכי",
-                "mullion": "אומנה", "transom": "משקוף רוחב",
-                "bead_horizontal": "סרגל זיגוג אופקי", "bead_vertical": "סרגל זיגוג אנכי",
-            }
+            from ..elements.model import ROLE_HEBREW as role_hebrew
+
             for cut_index, cut in enumerate(build.cuts, start=1):
                 for piece_index in range(cut.quantity):
                     item_id = f"{opening.element_id}{suffix}-P{cut_index:02d}{piece_index + 1}"

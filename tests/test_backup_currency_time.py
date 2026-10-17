@@ -388,3 +388,47 @@ class TestSecondCopyAndSettings:
         assert backup_if_due(tmp_path / "auto", mirror=unplugged) is not None
         assert not unplugged.exists()
         assert backup_status()["mirror_error"]
+
+
+class TestTheDaysWork:
+    def test_work_done_after_the_morning_backup_is_backed_up_too(self, shop, tmp_path):
+        import os
+        import time
+
+        from profileos.core.backup import backup_if_due
+
+        _populate(shop)
+        morning = backup_if_due(tmp_path / "auto")
+        assert morning is not None
+        assert backup_if_due(tmp_path / "auto") is None  # nothing changed
+
+        changed = shop / "customers.json"
+        later = time.time() + 5
+        os.utime(changed, (later, later))
+        evening = backup_if_due(tmp_path / "auto")
+        assert evening is not None and evening != morning
+
+    def test_history_is_kept_by_days_not_by_count(self, tmp_path):
+        import os
+        import time
+
+        from profileos.core.backup import prune_by_day
+
+        folder = tmp_path / "b"
+        folder.mkdir()
+        now = time.time()
+        today = time.strftime("%Y-%m-%d")
+        for hour in range(5):
+            path = folder / f"profileos-{today}-{hour:02d}0000.zip"
+            path.write_bytes(b"x")
+            os.utime(path, (now + hour, now + hour))
+        for day in ("2020-01-01", "2020-01-02"):
+            for hour in range(3):
+                path = folder / f"profileos-{day}-{hour:02d}0000.zip"
+                path.write_bytes(b"x")
+                os.utime(path, (now - 10_000 + hour, now - 10_000 + hour))
+        prune_by_day(folder, days=2)
+        names = sorted(path.name for path in folder.glob("*.zip"))
+        assert len([n for n in names if today in n]) == 5
+        assert names.count(f"profileos-2020-01-02-020000.zip") == 1
+        assert not [n for n in names if "2020-01-01" in n]

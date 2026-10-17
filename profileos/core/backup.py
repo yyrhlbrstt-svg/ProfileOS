@@ -476,6 +476,54 @@ def prune(folder: Path, *, keep: int = 14) -> list[Path]:
     return removed
 
 
+def _newest_change(root: Path) -> float:
+    """When anything in the data folder last changed."""
+    newest = 0.0
+    for path in root.rglob("*"):
+        if path.is_file() and not _should_skip(path, root):
+            try:
+                newest = max(newest, path.stat().st_mtime)
+            except OSError:
+                continue
+    return newest
+
+
+def prune_by_day(folder: Path, *, days: int = 30) -> list[Path]:
+    """Keep every backup from today and the last one of each earlier day,
+    for ``days`` days; delete the rest.
+
+    Counting archives would let a busy day of hourly backups push last
+    month out of the folder; counting days keeps the history the same
+    length however often the program is opened.
+    """
+    from datetime import date
+
+    today = date.today().isoformat()
+    by_day: dict[str, list[Path]] = {}
+    for path in Path(folder).glob("profileos-*.zip"):
+        day = path.name[len("profileos-"):len("profileos-") + 10]
+        by_day.setdefault(day, []).append(path)
+    keep_days = sorted(by_day, reverse=True)[:days]
+    removed: list[Path] = []
+    for day, paths in by_day.items():
+        paths.sort(key=lambda path: path.stat().st_mtime)
+        if day == today:
+            survivors = paths
+        elif day in keep_days:
+            survivors = paths[-1:]
+        else:
+            survivors = []
+        for path in paths:
+            if path in survivors:
+                continue
+            try:
+                path.unlink()
+                removed.append(path)
+            except OSError:  # pragma: no cover - permissions
+                _log.warning("Could not remove old backup %s", path)
+    return removed
+
+
 def backup_if_due(
     folder: Path | None = None, *, keep: int = 30, mirror: Path | None = None
 ) -> Path | None:
@@ -505,13 +553,18 @@ def backup_if_due(
         if mirror is None:
             mirror = settings.backup_mirror
         today = date.today().isoformat()
-        existing = sorted(target.glob(f"profileos-{today}-*.zip")) if target.is_dir() else []
+        existing = sorted(
+            target.glob(f"profileos-{today}-*.zip"), key=lambda path: path.stat().st_mtime
+        ) if target.is_dir() else []
         written: Path | None = None
-        if existing:
+        # Today's first backup holds the morning. Anything changed since is
+        # written again — at close, or on the hourly check while the program
+        # stays open — so the newest archive is never older than the work.
+        if existing and _newest_change(root) <= existing[-1].stat().st_mtime:
             archive = existing[-1]
         else:
             archive = write_backup(target)
-            prune(target, keep=keep)
+            prune_by_day(target, days=keep)
             written = archive
         if mirror:
             copy_to_mirror(archive, Path(mirror), keep=keep)
@@ -557,7 +610,7 @@ def copy_to_mirror(archive: Path, mirror: Path, *, keep: int = 30) -> Path | Non
         shutil.copyfile(archive, partial)
         _verify(partial)
         partial.replace(target)
-        prune(mirror, keep=keep)
+        prune_by_day(mirror, days=keep)
     except Exception as exc:  # noqa: BLE001 - the first copy already exists
         _STATUS["mirror_error"] = f"העתקה לעותק השני נכשלה: {exc}"
         _log.warning("Backup mirror failed: %s", exc)
@@ -582,6 +635,7 @@ __all__ = [
     "list_backups",
     "plan_restore",
     "prune",
+    "prune_by_day",
     "read_manifest",
     "restore",
     "write_backup",

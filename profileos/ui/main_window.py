@@ -305,6 +305,12 @@ class MainWindow(QMainWindow):
         self._autosave_timer.setSingleShot(True)
         self._autosave_timer.setInterval(1500)
         self._autosave_timer.timeout.connect(self.autosave)
+        # A program left open all week still backs up: once an hour, and only
+        # when something changed since the last archive.
+        self._backup_timer = QTimer(self)
+        self._backup_timer.setInterval(60 * 60 * 1000)
+        self._backup_timer.timeout.connect(self._hourly_backup)
+        self._backup_timer.start()
         self._save_state = ("ok", "")
         self.session.subscribe(self._on_session_change)
         self._update_safety()
@@ -477,7 +483,31 @@ class MainWindow(QMainWindow):
         except Exception:  # noqa: BLE001 - a stray JSON is not an error worth a dialog
             self.toast(f"{path.name} אינו קובץ פרויקט", "danger")
             return
-        default_store().save(job)
+        store = default_store()
+        if store.path_for(job.job_id).exists():
+            # The same number is already a job here: most likely an older copy
+            # mailed back. Replacing ours is never the quiet default.
+            from PySide6.QtWidgets import QMessageBox
+
+            box = QMessageBox(self)
+            box.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
+            box.setIcon(QMessageBox.Icon.Question)
+            box.setWindowTitle("כבר קיים פרויקט במספר הזה")
+            box.setText(
+                f"בתוכנה כבר יש פרויקט {job.job_id}. הקובץ שנפתח יכול להיות "
+                "עותק ישן שלו.\n\nמה לעשות?"
+            )
+            as_new = box.addButton("הוסף כפרויקט חדש", QMessageBox.ButtonRole.AcceptRole)
+            replace = box.addButton("החלף את הקיים", QMessageBox.ButtonRole.DestructiveRole)
+            box.addButton("ביטול", QMessageBox.ButtonRole.RejectRole)
+            box.setDefaultButton(as_new)
+            box.exec()
+            clicked = box.clickedButton()
+            if clicked is as_new:
+                job = job.model_copy(update={"job_id": store.next_id()})
+            elif clicked is not replace:
+                return
+        store.save(job)
         page = self.go_to_page("Projects")
         self.session.set_job(job)
         if job.schedule is not None:
@@ -570,6 +600,26 @@ class MainWindow(QMainWindow):
             self._autosave_timer.isActive() or self._save_state[0] == "pending"
         ):
             self.autosave()
+        # A save that failed is said while the window can still be kept open —
+        # a message on a window that is closing is a message nobody reads.
+        if self.autosave_enabled and self._save_state[0] == "danger":
+            from PySide6.QtWidgets import QMessageBox
+
+            box = QMessageBox(self)
+            box.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
+            box.setIcon(QMessageBox.Icon.Warning)
+            box.setWindowTitle("העבודה לא נשמרה")
+            box.setText(
+                "השמירה האחרונה נכשלה, והתכנון שעל המסך לא נשמר.\n"
+                f"{self._save_state[1]}\n\nלהשאיר את התוכנה פתוחה כדי לשמור?"
+            )
+            stay = box.addButton("השאר פתוח", QMessageBox.ButtonRole.RejectRole)
+            box.addButton("סגור בלי לשמור", QMessageBox.ButtonRole.DestructiveRole)
+            box.setDefaultButton(stay)
+            box.exec()
+            if box.clickedButton() is stay:
+                event.ignore()
+                return
         archive = None
         if self.auto_backup:
             from ..core.backup import backup_if_due
@@ -579,12 +629,26 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"גיבוי יומי נשמר: {archive.name}")
         super().closeEvent(event)
 
+    def _hourly_backup(self) -> None:
+        if not self.auto_backup:
+            return
+        from ..core.backup import backup_if_due
+
+        backup_if_due()
+        self._update_safety()
+
     # -- data safety ---------------------------------------------------------- #
     #: Off for windows built by tests and scripts; the application entry point
     #: turns it on, so only the real program writes the shop's files on its own.
     autosave_enabled = False
 
     def _on_session_change(self, what: str) -> None:
+        if what == "leaving":
+            # About to switch job or replace the design: what is still
+            # waiting to be written belongs to what is on screen now.
+            if self.autosave_enabled and self._autosave_timer.isActive():
+                self.autosave()
+            return
         if what == "builds" and self.autosave_enabled:
             self._autosave_timer.start()
             self._save_state = ("pending", "")
@@ -597,14 +661,15 @@ class MainWindow(QMainWindow):
         shown in the sidebar and as a notice — never only in a log — because
         the one thing worse than losing work is believing it was saved.
         """
-        from ..projects.draft import clear_draft, write_draft
+        from ..projects.draft import clear_draft, retire_draft, write_draft
 
         self._autosave_timer.stop()
         session = self.session
         try:
             if session.job is not None:
-                session.save_design_to_job()
-                clear_draft()
+                saved = session.save_design_to_job()
+                if retire_draft(saved.schedule) is not None:
+                    self.toast("תכנון שלא תויק נשמר בצד — לא נמחק", "warning")
                 self._save_state = ("ok", f"נשמר לפרויקט {session.job.job_id}")
             elif session.builds or session.unbuilt:
                 write_draft(session.to_schedule())
@@ -648,6 +713,9 @@ class MainWindow(QMainWindow):
         elif backup_state["mirror_error"] and state == "ok":
             state, detail = "warn", backup_state["mirror_error"]
             text = "⚠ העותק השני של הגיבוי לא עודכן"
+        elif backup is None and state == "ok" and not self._data_is_empty():
+            state = "warn"
+            text = "⚠ עוד לא נלקח אף גיבוי — מערכת ← גיבוי"
         elif stale and backup is not None and state == "ok":
             state = "warn"
             text = f"⚠ הגיבוי האחרון מ-{backup:%d/%m} — מערכת ← גיבוי"
@@ -663,6 +731,16 @@ class MainWindow(QMainWindow):
                           ("warn" if state in ("draft", "warn") else "danger"))
         label.style().unpolish(label)
         label.style().polish(label)
+
+    @staticmethod
+    def _data_is_empty() -> bool:
+        try:
+            from ..core.config import get_settings
+
+            root = get_settings().data_dir
+            return not root.is_dir() or not any(root.iterdir())
+        except Exception:  # noqa: BLE001
+            return True
 
     @staticmethod
     def _last_backup_day() -> Any:

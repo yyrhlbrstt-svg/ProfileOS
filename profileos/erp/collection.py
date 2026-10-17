@@ -17,7 +17,6 @@ already booked as revenue is exactly the error that hides a bad debtor.
 
 from __future__ import annotations
 
-import json
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from datetime import date, timedelta
@@ -27,6 +26,9 @@ from typing import Any
 from uuid import uuid4
 
 from ..core.errors import ProfileOSError
+from ..core.logging_setup import get_logger
+
+_log = get_logger("erp.collection")
 
 
 class ChequeState(StrEnum):
@@ -177,7 +179,10 @@ class Cheque:
         return cls(**values)
 
 
-class ChequeBook:
+from ..core.storage import MergingBook
+
+
+class ChequeBook(MergingBook):
     """The drawer, and what is in it.
 
     Kept as a plain collection rather than a ledger on purpose: none of this
@@ -195,17 +200,34 @@ class ChequeBook:
         #: tests and calculations, never for the shop's real cheques.
         self.path = Path(path) if path is not None else None
 
+    _list_key = "cheques"
+    _id_field = "cheque_id"
+
+    def _records(self) -> dict[str, Any]:
+        return self._cheques
+
+    def _to_raw(self, record: Any) -> dict[str, Any]:
+        return record.as_dict()
+
+    def _from_raw(self, raw: dict[str, Any]) -> Any:
+        return Cheque.from_dict(raw)
+
     # -- on disk ------------------------------------------------------------ #
     def load(self) -> "ChequeBook":
         """Read the drawer back. A damaged file is reported, never emptied over."""
-        if self.path is None or not self.path.is_file():
-            return self
-        from ..core.storage import read_json
+        from ..core.storage import stored as _stored
 
-        raw = read_json(self.path, default={})
+        if self.path is None or not _stored(self.path):
+            return self
+        raw = self._read_or_mark(self.path)
         for item in raw.get("cheques", []):
-            cheque = Cheque.from_dict(item)
+            try:
+                cheque = Cheque.from_dict(item)
+            except Exception as exc:  # noqa: BLE001 - kept on disk by the merge
+                _log.warning("Skipped an unreadable cheque: %s", exc)
+                continue
             self._cheques[cheque.cheque_id] = cheque
+        self._remember_loaded()
         return self
 
     def save(self) -> None:
@@ -213,10 +235,7 @@ class ChequeBook:
         if self.path is None:
             return
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        payload = {"cheques": [cheque.as_dict() for cheque in self]}
-        from ..core.storage import write_json
-
-        write_json(self.path, payload)
+        self._save_merged(self.path)
 
     def __len__(self) -> int:
         return len(self._cheques)

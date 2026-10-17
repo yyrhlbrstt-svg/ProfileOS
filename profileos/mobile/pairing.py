@@ -156,7 +156,9 @@ class DeviceRegistry:
     def load(cls, path: str | os.PathLike[str]) -> "DeviceRegistry":
         target = Path(path)
         registry = cls(path=target)
-        if not target.is_file():
+        from ..core.storage import stored as _stored
+
+        if not _stored(target):
             return registry
         from ..core.storage import read_json
 

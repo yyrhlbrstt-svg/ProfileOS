@@ -122,6 +122,10 @@ def parse_contact(text: str) -> ParsedContact:
     result = ParsedContact()
     if not text or not text.strip():
         return result
+    # Invisible direction marks travel with numbers copied out of WhatsApp
+    # and split them in two; a shared contact may arrive as a vCard.
+    text = re.sub(r"[\u200e\u200f\u202a-\u202e\u2066-\u2069]", "", text)
+    text = _from_vcard(text)
 
     tax = _TAX_ID.search(text)
     if tax:
@@ -134,16 +138,12 @@ def parse_contact(text: str) -> ParsedContact:
     for email in emails:
         text = text.replace(email, " ")
 
-    phones: list[str] = []
-    for match in _PHONE.finditer(text):
-        if whatsapp_number(match.group(0)):
-            phones.append(format_phone(match.group(0)))
+    phones, text = _take_phones(text)
     # Mobiles first: the number WhatsApp and the installer will both use.
     phones.sort(key=lambda number: not number.startswith("05"))
     if phones:
         result.phone = phones[0]
         result.extra_phones = phones[1:]
-    text = _PHONE.sub(" ", text)
 
     lines: list[str] = []
     for raw in re.split(r"[\n\r|;,]+", text):
@@ -152,11 +152,18 @@ def parse_contact(text: str) -> ParsedContact:
             lines.append(line)
 
     for line in list(lines):
-        city = next((c for c in KNOWN_CITIES if c in line), "")
-        if city and not result.city:
+        # A place only as whole words, longest name first ("מודיעין עילית"
+        # before "מודיעין"), and only when the line is that place or an
+        # address in it — "עפרה לוי" is a person, not a town.
+        city = next(
+            (c for c in _CITIES_LONGEST_FIRST
+             if re.search(rf"(?<![\w\u0590-\u05FF]){re.escape(c)}(?![\w\u0590-\u05FF])", line)),
+            "",
+        )
+        rest = line.replace(city, "", 1).strip(" ,.-–") if city else line
+        if city and not result.city and (not rest or re.search(r"\d", rest)):
             result.city = city
-            rest = line.replace(city, "").strip(" ,.-–")
-            if rest and re.search(r"\d", rest):
+            if rest:
                 result.address = rest
             lines.remove(line)
         elif re.search(r"(רח(?:וב|׳|')?\s|שד(?:רות|׳)?\s|\d+\s*/\s*\d+|ת\.?ד\.?)", line):
@@ -173,9 +180,67 @@ def parse_contact(text: str) -> ParsedContact:
     return result
 
 
+_CITIES_LONGEST_FIRST = sorted(KNOWN_CITIES, key=len, reverse=True)
+
+#: Digits with the separators people put between them.
+_NUMBERISH = re.compile(r"\+?[\d(][\d\s\-().]{6,}\d")
+
+
+def _take_phones(text: str) -> tuple[list[str], str]:
+    """Every Israeli number in ``text``, and the text without them.
+
+    A run of digits may hold two numbers side by side ("02-9973510
+    054-1234567"), so each run is split at its spaces until every piece is
+    a number or cannot be one.
+    """
+    found: list[str] = []
+
+    def pieces(run: str) -> list[str]:
+        if whatsapp_number(run):
+            return [run]
+        parts = run.split()
+        for cut in range(1, len(parts)):
+            left, right = " ".join(parts[:cut]), " ".join(parts[cut:])
+            if whatsapp_number(left):
+                return [left] + pieces(right)
+        return []
+
+    def replace(match: re.Match[str]) -> str:
+        run = re.sub(r"[()]", " ", match.group(0)).strip()
+        numbers = pieces(re.sub(r"\s+", " ", run))
+        if not numbers:
+            return match.group(0)
+        for number in numbers:
+            tidy = format_phone(number)
+            if tidy not in found:
+                found.append(tidy)
+        return " "
+
+    return found, _NUMBERISH.sub(replace, text)
+
+
+def _from_vcard(text: str) -> str:
+    """A vCard as the plain lines the rest of the reader understands."""
+    if "BEGIN:VCARD" not in text.upper():
+        return text
+    lines: list[str] = []
+    for raw in text.splitlines():
+        key, _, value = raw.partition(":")
+        key = key.split(";")[0].upper()
+        if key == "FN":
+            lines.insert(0, value)
+        elif key in ("TEL", "EMAIL", "ORG"):
+            lines.append(value)
+        elif key == "ADR":
+            lines.append(" ".join(part for part in value.split(";") if part))
+    return "\n".join(lines)
+
+
 def _name_key(name: str) -> str:
-    cleaned = re.sub(r"[\"'׳״`.,\-–]", " ", name).casefold()
-    words = [w for w in cleaned.split() if w not in ("בע\"מ", "בעמ", "ltd", "משפחת")]
+    # Quotes go first, joined rather than split: בע"מ and בעמ are one word.
+    cleaned = re.sub(r"[\"'׳״`]", "", name)
+    cleaned = re.sub(r"[.,\-–]", " ", cleaned).casefold()
+    words = [w for w in cleaned.split() if w not in ("בעמ", "ltd", "משפחת")]
     return " ".join(sorted(words))
 
 
@@ -210,6 +275,8 @@ def search_customers(customers: Iterable[Customer], text: str) -> list[Customer]
     if not needle:
         return list(customers)
     digits = re.sub(r"\D", "", needle)
+    if digits.startswith("972"):
+        digits = "0" + digits[3:]
     found: list[Customer] = []
     for customer in customers:
         haystack = " ".join((

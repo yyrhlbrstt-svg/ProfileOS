@@ -252,7 +252,9 @@ class TemplateBook:
         self._templates: dict[str, Template] = {}
 
     def load(self) -> "TemplateBook":
-        if not self.path.exists():
+        from ..core.storage import stored as _stored
+
+        if not _stored(self.path):
             return self
         # Recovered from the previous version or refused — never read
         # as empty, which the next save would write over real records.

@@ -294,6 +294,25 @@ def _chevron_files(colour: str) -> tuple[str, str, str]:
     return paths[0], paths[1], paths[1]
 
 
+def _tick_file(colour: str) -> str:
+    """A check mark for ticked boxes; a filled square alone reads as "on"
+    only to somebody who already knows it is a checkbox."""
+    import tempfile
+    from pathlib import Path
+
+    folder = Path(tempfile.gettempdir()) / "profileos-ui"
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / f"tick-{colour.lstrip('#').lower()}.svg"
+    if not path.exists():
+        path.write_text(
+            _CHEVRON.format(d="M2.3 5.2 4.2 7.1 7.8 3.2", c=colour).replace(
+                "stroke-width='1.6'", "stroke-width='1.5'"
+            ),
+            encoding="utf-8",
+        )
+    return path.as_posix()
+
+
 def stylesheet(palette: Palette, metrics: Metrics = METRICS) -> str:
     """Build the Qt stylesheet for a palette.
 
@@ -307,8 +326,14 @@ def stylesheet(palette: Palette, metrics: Metrics = METRICS) -> str:
         up_arrow, down_arrow, combo_arrow = _chevron_files(p.text_muted)
     except OSError:  # a read-only temp folder costs the glyphs, not the app
         up_arrow = down_arrow = combo_arrow = ""
+    try:
+        tick = _tick_file("#FFFFFF")
+    except OSError:
+        tick = ""
 
     light = p.mode is Mode.LIGHT
+    # WhatsApp's own green, darkened on white so it reads as text.
+    whatsapp = "#1A8D47" if light else "#25D366"
     # Derived shades, so each palette only has to state its base colours.
     sidebar_bg = "#ECECEF" if light else "#232325"
     nav_hover = "rgba(0,0,0,0.05)" if light else "rgba(255,255,255,0.07)"
@@ -362,7 +387,7 @@ QToolTip {{
 #SidebarSection {{
     font-size: {m.font_size_small}px; font-weight: 600;
     color: {p.text_faint};
-    padding: {m.space(4)}px {m.space(5)}px {m.space(1)}px;
+    padding: {m.space(2)}px {m.space(5)}px 2px;
 }}
 #SidebarScroll, #SidebarScroll > QWidget > QWidget, #SidebarNavBody {{
     background: transparent; border: none;
@@ -370,7 +395,7 @@ QToolTip {{
 QPushButton#NavButton {{
     background: transparent; border: none; border-radius: 8px;
     color: {p.text}; text-align: right;
-    padding: 0; margin: 1px {m.space(2)}px; min-height: 32px;
+    padding: 0; margin: 0 {m.space(2)}px; min-height: 28px;
     font-size: {m.font_size}px; font-weight: 400;
 }}
 QLabel#NavLabel {{ font-size: {m.font_size}px; }}
@@ -414,6 +439,7 @@ QPushButton#SidebarTheme:hover {{ color: {p.text}; background: {nav_hover}; }}
 #CardTitle {{
     font-size: {m.font_size}px; font-weight: 600; color: {p.text};
 }}
+#StatValue[empty="true"] {{ color: {p.text_faint}; }}
 #StatValue {{
     font-size: 26px; font-weight: 600; color: {p.text};
 }}
@@ -452,18 +478,21 @@ QPushButton#Primary {{
 }}
 QPushButton#Primary:hover {{ background: {p.accent_hover}; }}
 QPushButton#Primary:pressed {{ background: {p.accent_pressed}; }}
-QPushButton#Primary:disabled, QPushButton#WhatsApp:disabled {{
-    background: {p.surface_raised}; border: none; color: {p.text_faint};
+QPushButton#Primary:disabled {{
+    background: {p.accent_subtle}; border: none; color: {p.text_muted};
+}}
+QPushButton#WhatsApp:disabled {{
+    background: transparent; border-color: {p.border}; color: {p.text_faint};
 }}
 QPushButton#Ghost {{
     background: transparent; border: none; color: {p.accent}; font-weight: 500;
 }}
 QPushButton#Ghost:hover {{ background: {p.accent_subtle}; }}
 QPushButton#WhatsApp {{
-    background: #1FAF55; color: #FFFFFF; border: none; font-weight: 600;
+    background: transparent; color: {whatsapp};
+    border: {m.border_width}px solid {whatsapp}; font-weight: 600;
 }}
-QPushButton#WhatsApp:hover {{ background: #22C35E; }}
-QPushButton#WhatsApp:pressed {{ background: #1A9849; }}
+QPushButton#WhatsApp:hover {{ background: {whatsapp}; color: #FFFFFF; }}
 
 /* ---------- inputs ---------- */
 QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox, QPlainTextEdit, QTextEdit, QDateEdit {{
@@ -615,6 +644,7 @@ QRadioButton::indicator {{ border-radius: 9px; }}
 QCheckBox::indicator:checked, QRadioButton::indicator:checked {{
     background: {p.accent}; border-color: {p.accent};
 }}
+QCheckBox::indicator:checked {{ image: url({tick}); }}
 QMenu {{
     background: {p.surface}; border: {m.border_width}px solid {p.border};
     border-radius: 10px; padding: 4px;
@@ -629,7 +659,7 @@ QPushButton#PipeStep {{
     border: {m.border_width}px solid {p.border};
     border-radius: 12px;
     padding: {m.space(2)}px {m.space(3)}px;
-    min-height: 52px; text-align: right;
+    min-height: 52px; text-align: left;
     color: {p.text_muted}; font-weight: 500;
 }}
 QPushButton#PipeStep:hover {{ border-color: {p.border_strong}; color: {p.text}; }}
@@ -723,9 +753,13 @@ def badge_style(palette: Palette, kind: str = "info") -> str:
         "accent": palette.accent,
         "muted": palette.text_faint,
     }.get(kind, palette.info)
+    # Qt reads eight-digit hex as #AARRGGBB, not the CSS #RRGGBBAA, so the
+    # translucent tints are written as rgba().
+    red, green, blue = (int(colour.lstrip("#")[i:i + 2], 16) for i in (0, 2, 4))
     return (
-        f"background: {colour}22; color: {colour}; "
-        f"border: 1px solid {colour}55; border-radius: {RADIUS['pill']}px; "
+        f"background: rgba({red}, {green}, {blue}, 34); color: {colour}; "
+        f"border: 1px solid rgba({red}, {green}, {blue}, 85); "
+        f"border-radius: {RADIUS['pill']}px; "
         f"padding: 2px 10px; font-size: {METRICS.font_size_small}px; font-weight: 600;"
     )
 

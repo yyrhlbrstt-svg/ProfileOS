@@ -466,7 +466,9 @@ class RevisionBook:
         self._histories: dict[str, QuoteHistory] = {}
 
     def load(self) -> "RevisionBook":
-        if not self.path.exists():
+        from ..core.storage import stored as _stored
+
+        if not _stored(self.path):
             return self
         # Recovered from the previous version or refused — never read
         # as empty, which the next save would write over real records.

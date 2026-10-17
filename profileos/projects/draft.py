@@ -58,6 +58,25 @@ def clear_draft() -> None:
         path.unlink()
 
 
+def retire_draft(schedule: Any) -> Path | None:
+    """The work is now filed in a job: drop the draft — but only if every
+    opening in it really is in that job. Otherwise it is set aside, never
+    deleted: opening some other job must not cost an unfiled design.
+    """
+    try:
+        found = read_draft()
+    except Exception:  # noqa: BLE001 - an unreadable draft is kept as it is
+        return None
+    if found is None:
+        clear_draft()
+        return None
+    filed = {opening.element_id for opening in getattr(schedule, "openings", []) or []}
+    if all(opening.element_id in filed for opening in found[0].openings):
+        clear_draft()
+        return None
+    return set_draft_aside()
+
+
 def set_draft_aside() -> Path | None:
     """Keep a draft the person chose not to restore — renamed, never deleted."""
     path = draft_path()
@@ -69,4 +88,18 @@ def set_draft_aside() -> Path | None:
     return target
 
 
-__all__ = ["clear_draft", "draft_path", "read_draft", "set_draft_aside", "write_draft"]
+def drafts_set_aside() -> list[Path]:
+    """Drafts kept aside, newest first."""
+    folder = draft_path().parent
+    return sorted(folder.glob("draft-*.json"), reverse=True) if folder.is_dir() else []
+
+
+__all__ = [
+    "clear_draft",
+    "draft_path",
+    "drafts_set_aside",
+    "read_draft",
+    "retire_draft",
+    "set_draft_aside",
+    "write_draft",
+]

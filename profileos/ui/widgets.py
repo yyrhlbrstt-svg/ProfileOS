@@ -66,7 +66,7 @@ class StatTile(QFrame):
     """A single headline number with a label and optional trend note."""
 
     def __init__(
-        self, label: str, value: str = "-", note: str = "", parent: QWidget | None = None
+        self, label: str, value: str = "—", note: str = "", parent: QWidget | None = None
     ) -> None:
         super().__init__(parent)
         self.setObjectName("Card")
@@ -80,6 +80,16 @@ class StatTile(QFrame):
         self.value.setObjectName("StatValue")
         self.note = QLabel(note)
         self.note.setObjectName("StatLabel")
+        # A label of digits alone has no direction of its own and Qt lays it
+        # out left-to-right, at the far edge from its Hebrew title. Pinned to
+        # the right absolutely, so the figure sits under the words naming it.
+        right = (
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignAbsolute
+            | Qt.AlignmentFlag.AlignVCenter
+        )
+        for part in (self.label, self.value, self.note):
+            part.setAlignment(right)
+        self._mark_empty(value)
 
         layout.addWidget(self.label)
         layout.addWidget(self.value)
@@ -90,6 +100,14 @@ class StatTile(QFrame):
         self.value.setText(value)
         if note:
             self.note.setText(note)
+        self._mark_empty(value)
+
+    def _mark_empty(self, value: str) -> None:
+        empty = value.strip() in ("", "-", "—")
+        if bool(self.value.property("empty")) != empty:
+            self.value.setProperty("empty", empty)
+            self.value.style().unpolish(self.value)
+            self.value.style().polish(self.value)
 
 
 class _NumberFieldPolish(QObject):
@@ -251,6 +269,10 @@ class DataTable(QTableWidget):
         header = self.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         header.setHighlightSections(False)
+        header.setDefaultAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignAbsolute
+            | Qt.AlignmentFlag.AlignVCenter
+        )
         self.verticalHeader().setDefaultSectionSize(METRICS.row_height)
 
     def set_rows(
@@ -273,8 +295,11 @@ class DataTable(QTableWidget):
             for column_index, value in enumerate(row):
                 item = QTableWidgetItem("" if value is None else str(value))
                 if column_index in numeric_columns:
+                    # Absolute: in a right-to-left table a plain AlignRight is
+                    # mirrored to the left edge, away from the column's title.
                     item.setTextAlignment(
-                        Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+                        Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignAbsolute
+                        | Qt.AlignmentFlag.AlignVCenter
                     )
                     item.setFont(mono)
                 if colours and (row_index, column_index) in colours:

@@ -92,13 +92,14 @@ def _data_safety(context: dict[str, Any], today: date) -> list[Insight]:
             "warning", "קובץ פגום שוחזר מהגרסה הקודמת שלו",
             "השינוי האחרון בו אולי חסר — בדקו אותו. העותק הפגום נשמר בצד: "
             + _names(storage.RECOVERED, lambda pair: pair[0].name),
-            "", "recovered",
+            "", "recovered:" + ",".join(sorted(str(p[1]) for p in storage.RECOVERED)),
         ))
 
     status = backup_status()
     if status["error"]:
         found.append(Insight(
-            "danger", "הגיבוי האוטומטי נכשל", status["error"], "System", "backup-error",
+            "danger", "הגיבוי האוטומטי נכשל", status["error"], "System",
+            f"backup-error:{today}:{status['error']}",
         ))
     try:
         archives = sorted(default_backup_folder().glob("profileos-*.zip"))
@@ -124,7 +125,7 @@ def _data_safety(context: dict[str, Any], today: date) -> list[Insight]:
     if status["mirror_error"]:
         found.append(Insight(
             "warning", "העותק השני של הגיבוי לא עודכן", status["mirror_error"],
-            "System", "mirror-error",
+            "System", f"mirror-error:{today}:{status['mirror_error']}",
         ))
     elif has_data and not context.get("mirror"):
         found.append(Insight(
@@ -272,7 +273,19 @@ def _money(context: dict[str, Any], today: date) -> list[Insight]:
     if cheques is None:
         return []
     found: list[Insight] = []
-    bankable = cheques.bankable(today)
+    # A cheque more than six months past its date can no longer be banked
+    # (Israeli banks refuse it) — it is a debt to collect again, not money.
+    stale_after = today - timedelta(days=182)
+    stale = [cheque for cheque in cheques.held() if cheque.due < stale_after]
+    bankable = [cheque for cheque in cheques.bankable(today) if cheque.due >= stale_after]
+    if stale:
+        total = sum(cheque.amount for cheque in stale)
+        found.append(Insight(
+            "danger", f"⁦{len(stale)}⁩ צ׳קים עברו חצי שנה ולא הופקדו",
+            f"בסך ⁦{total:,.0f} ₪⁩ — הבנק כבר לא יכבד אותם; צריך לבקש מהלקוח צ׳ק חדש: "
+            + _names(stale, lambda c: c.customer or c.number),
+            "Collection", "stale:" + ",".join(sorted(c.cheque_id for c in stale)),
+        ))
     if bankable:
         total = sum(cheque.amount for cheque in bankable)
         found.append(Insight(
@@ -327,7 +340,7 @@ def _tasks(context: dict[str, Any], today: date) -> list[Insight]:
     return [Insight(
         "warning", f"⁦{len(late)}⁩ משימות מעקב שעבר זמנן",
         _names(late, lambda task: task.subject_name or task.what),
-        "Home", "tasks:" + ",".join(sorted(task.task_id for task in late)),
+        "Projects", "tasks:" + ",".join(sorted(task.task_id for task in late)),
     )]
 
 
@@ -338,7 +351,8 @@ def _draft(context: dict[str, Any], today: date) -> list[Insight]:
         return []
     return [Insight(
         "info", "יש תכנון שמור שלא שויך לפרויקט",
-        "הוא נשמר אוטומטית. פתחו פרויקט כדי לתייק אותו.", "Projects", "draft",
+        "הוא נשמר אוטומטית. פתחו פרויקט כדי לתייק אותו.", "Projects",
+        f"draft:{draft_path().stat().st_mtime:.0f}",
     )]
 
 
@@ -363,6 +377,9 @@ def gather_context(**given: Any) -> dict[str, Any]:
             context[key] = reader()
         except Exception as exc:  # noqa: BLE001 - one book, not the whole list
             _log.warning("Insights could not read %s: %s", key, exc)
+            context.setdefault("unread", []).append(key)
+            return
+        if getattr(context[key], "damaged", None) is not None:
             context.setdefault("unread", []).append(key)
 
     def store() -> Any:
@@ -415,7 +432,7 @@ def scan(today: date | None = None, **given: Any) -> list[Insight]:
         found.append(Insight(
             "danger", "חלק מהנתונים לא נקרא",
             f"לא ניתן היה לקרוא את {_BOOK_NAMES.get(key, key)} — הקובץ לא נדרס. "
-            "בדקו במסך מערכת ← גיבוי.", "System", f"unread:{key}",
+            "בדקו במסך מערכת ← גיבוי.", "System", f"unread:{key}:{today}",
         ))
     found.sort(key=lambda insight: _ORDER.get(insight.severity, 3))
     return found
@@ -437,13 +454,20 @@ def dismissed() -> set[str]:
         return set()
 
 
+def _dismissed_strict() -> set[str]:
+    from .core.storage import read_json
+
+    return set(read_json(_dismissed_path(), default=[]) or [])
+
+
 def dismiss(key: str) -> None:
     """Put one insight aside. Its key changes when what it is about changes —
     a new late quotation brings the line back — so nothing is hidden for good.
     """
     from .core.storage import write_json
 
-    keys = dismissed() | {key}
+    # Read strictly: a list that cannot be read is not rewritten as one line.
+    keys = _dismissed_strict() | {key}
     write_json(_dismissed_path(), sorted(keys)[-500:])
 
 

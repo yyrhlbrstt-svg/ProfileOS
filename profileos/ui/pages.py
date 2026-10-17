@@ -300,7 +300,7 @@ class HomePage(Page):
         buttons = QHBoxLayout()
         buttons.setSpacing(METRICS.space(2))
         for label, handler in (
-            ("הערכת מחיר מהירה  Ctrl+E", self._quick_estimate),
+            ("הערכת מחיר מהירה  \u2066Ctrl+E\u2069", self._quick_estimate),
             ("פרויקט חדש", lambda: self._go("Projects")),
             ("חפש פתח", self._find_opening),
             ("חפש פרופיל", self._find_profile),
@@ -1048,6 +1048,7 @@ class ProjectsPage(Page):
         advance = QPushButton("עדכון סטטוס")
         advance.clicked.connect(self.advance_status)
         row.addWidget(advance)
+        self._advance_button = advance
 
         pack = QPushButton("תיק עבודה להדפסה")
         pack.clicked.connect(self.export_dossier)
@@ -1061,6 +1062,10 @@ class ProjectsPage(Page):
         row.addWidget(notify)
         row.addStretch(1)
         detail.add_layout(row)
+        # Nothing to act on until a job is chosen — and the buttons say so.
+        self._job_actions = [self.open_button, advance, pack, notify, self.status_combo]
+        for widget in self._job_actions:
+            widget.setEnabled(False)
         layout.addWidget(detail)
 
         note = QLabel(
@@ -1089,6 +1094,8 @@ class ProjectsPage(Page):
         self.show_costing(job)
         self.show_attachments(job)
         self.status_combo.clear()
+        for widget in getattr(self, "_job_actions", []):
+            widget.setEnabled(job is not None)
         if job is None:
             self.job_summary.setText("לא נבחר פרויקט")
             return
@@ -1159,12 +1166,25 @@ class ProjectsPage(Page):
             self.report(ProfileOSError("בחר פרויקט מהרשימה"), "לא נבחר פרויקט")
             return
 
+        # Work designed with no project open is the shop's work too. Before
+        # this job's openings replace it on screen, it is either carried into
+        # the job or kept aside as a draft — never simply dropped.
+        unfiled = []
+        if self.session.job is None and (self.session.builds or self.session.unbuilt):
+            unfiled = self._ask_about_unfiled(job)
+            if unfiled is None:
+                return
+
+        # The job is switched first, so anything still waiting to be saved
+        # is written to the job (or draft) it belongs to.
+        self.session.set_job(job)
         problems: list[str] = []
         if job.schedule is not None:
             problems = self.session.load_schedule(job.schedule)
         else:
             self.session.clear_builds()
-        self.session.set_job(job)
+        for build in unfiled:
+            self.session.add_build(build)
         for problem in problems[:3]:
             self.status(problem)
         self.status(
@@ -1173,6 +1193,42 @@ class ProjectsPage(Page):
             else f"נפתח {job.job_id} — עדיין אין בו פתחים"
         )
         self.refresh()
+
+    def _ask_about_unfiled(self, job: Any) -> list[Any] | None:
+        """Carry the unfiled openings into ``job``, set them aside, or cancel.
+
+        Returns the builds to add to the job, an empty list when they were
+        set aside, or ``None`` to stay where we are.
+        """
+        from ..projects.draft import set_draft_aside, write_draft
+
+        count = len(self.session.builds) + len(self.session.unbuilt)
+        box = QMessageBox(self)
+        box.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setWindowTitle("יש תכנון שלא תויק")
+        box.setText(
+            f"על המסך ⁦{count}⁩ פתחים שלא שייכים לאף פרויקט.\n\n"
+            f"להוסיף אותם לפרויקט {job.job_id} — {job.name}?"
+        )
+        carry = box.addButton("הוסף לפרויקט", QMessageBox.ButtonRole.AcceptRole)
+        aside = box.addButton("שמור בצד כטיוטה", QMessageBox.ButtonRole.DestructiveRole)
+        box.addButton("ביטול", QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(carry)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is carry:
+            return list(self.session.builds)
+        if clicked is aside:
+            try:
+                write_draft(self.session.to_schedule())
+                set_draft_aside()
+            except Exception as exc:  # noqa: BLE001
+                self.report(exc, "הטיוטה לא נשמרה — הפרויקט לא נפתח")
+                return None
+            self.status("התכנון נשמר בצד כטיוטה")
+            return []
+        return None
 
     def save_current(self) -> None:
         """Write what is on screen into the open job."""
@@ -1719,7 +1775,7 @@ class ProfilePage(Page):
         check_card.add(run)
         self.checks = DataTable(["בדיקה", "דרישה", "כושר", "ניצולת"])
         check_card.add(self.checks, 1)
-        self.max_span = QLabel("—")
+        self.max_span = QLabel("")
         self.max_span.setObjectName("StatLabel")
         check_card.add(self.max_span)
         side_layout.addWidget(check_card, 1)
@@ -2692,8 +2748,10 @@ class ElementPage(Page):
             "hardware": (str(summary["hardware_items"]), ""),
         })
 
+        from ..elements.model import role_hebrew
+
         self.cuts.set_rows(
-            [[c.role, c.profile_id, f"{c.length:.1f}", c.quantity,
+            [[role_hebrew(c.role), c.profile_id, f"{c.length:.1f}", c.quantity,
               f"{c.angle_left:g}/{c.angle_right:g}"]
              for c in sorted(build.cuts, key=lambda c: (c.role, -c.length))],
             numeric_columns=(2, 3, 4),
@@ -3071,7 +3129,12 @@ class NestingPage(Page):
         row.setSpacing(METRICS.space(4))
         self.kerf = QDoubleSpinBox(); self.kerf.setRange(0, 20); self.kerf.setValue(3.5); self.kerf.setSuffix(" mm")
         self.stock = QComboBox(); self.stock.setEditable(True); self.stock.addItems(["6000", "6500", "6000,6500", "7000"])
-        self.strategy = QComboBox(); self.strategy.addItems(["auto", "milp", "ffd", "bfd"])
+        self.strategy = QComboBox()
+        for label, value in (
+            ("אוטומטי — הטוב מבין כולם", "auto"), ("אופטימלי (איטי יותר)", "milp"),
+            ("מהיר — ההתאמה הראשונה", "ffd"), ("מהיר — ההתאמה הטובה", "bfd"),
+        ):
+            self.strategy.addItem(label, value)
         self.profile = QComboBox()
         for label, widget in [("עובי להב", self.kerf), ("אורכי מלאי", self.stock),
                               ("אסטרטגיה", self.strategy), ("פרופיל", self.profile)]:
@@ -3126,7 +3189,7 @@ class NestingPage(Page):
 
         project = Project(name="פרויקט", items=collect_cut_items(self.session.builds))
         try:
-            report = nest_project(project, strategy=self.strategy.currentText())
+            report = nest_project(project, strategy=self.strategy.currentData() or "auto")
         except Exception as exc:  # noqa: BLE001
             self.report(exc, "האופטימיזציה נכשלה")
             return
@@ -3225,7 +3288,7 @@ class MachiningPage(Page):
         setup_card = Card("קיבוע — עיבודים מעל המוט, מלחציים מתחתיו")
         self.clamp_view = ClampView(self.colours)
         setup_card.add(self.clamp_view, 1)
-        self.clamp_status = QLabel("—")
+        self.clamp_status = QLabel("")
         self.clamp_status.setObjectName("StatLabel")
         setup_card.add(self.clamp_status)
         self.body.addWidget(setup_card, 1)
@@ -3835,7 +3898,7 @@ class ShopFloorPage(Page):
         row.addWidget(scan)
         row.addStretch(1)
         scan_card.add_layout(row)
-        self.scan_result = QLabel("—")
+        self.scan_result = QLabel("")
         self.scan_result.setObjectName("StatLabel")
         scan_card.add(self.scan_result)
         self.body.addWidget(scan_card)
@@ -6768,12 +6831,27 @@ class SystemPage(Page):
             self.report(exc, "השחזור נכשל")
             return
 
-        self.status(
-            f"שוחזר אל {root}"
-            + (f" · הנתונים הקודמים ב-{aside}" if aside else "")
-            + " — סגרו ופתחו את התוכנה"
+        # Every open screen still holds the data from before the restore, and
+        # the next autosave would write it straight back over what was just
+        # restored. So the program closes here, writing nothing, and opens
+        # clean on the restored folder.
+        window = self.window()
+        if hasattr(window, "autosave_enabled"):
+            window.autosave_enabled = False
+            window.auto_backup = False
+        done = QMessageBox(self)
+        done.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
+        done.setIcon(QMessageBox.Icon.Information)
+        done.setWindowTitle("השחזור הושלם")
+        done.setText(
+            "הנתונים שוחזרו מהגיבוי."
+            + (f"\nהנתונים שהיו לפני כן נשמרו בצד ב:\n{aside}" if aside else "")
+            + "\n\nהתוכנה תיסגר עכשיו. פתחו אותה מחדש כדי לעבוד על הנתונים ששוחזרו."
         )
-        self.show_backups()
+        done.exec()
+        from PySide6.QtWidgets import QApplication
+
+        QApplication.quit()
 
     # -- audit ------------------------------------------------------------------ #
     def _audit_tab(self) -> QWidget:
@@ -7034,7 +7112,7 @@ class SurveyPage(Page):
         second.addStretch(1)
         entry.add_layout(second)
 
-        self.survey_result = QLabel("—")
+        self.survey_result = QLabel("")
         self.survey_result.setObjectName("StatLabel")
         self.survey_result.setWordWrap(True)
         entry.add(self.survey_result)
@@ -7296,7 +7374,7 @@ class ReportsPage(Page):
 
     def build(self) -> None:
         refresh = QPushButton("רענן")
-        refresh.setObjectName("Primary")
+        refresh.setObjectName("Ghost")
         refresh.clicked.connect(self.refresh)
         self.header.add_action(refresh)
 

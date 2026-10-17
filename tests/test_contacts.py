@@ -93,3 +93,40 @@ def test_search_by_any_part_of_a_number_or_a_place():
     assert [c.name for c in search_customers(book, "4567")] == ["משה כהן"]
     assert [c.name for c in search_customers(book, "עפרה")] == ["דוד לוי"]
     assert len(search_customers(book, "")) == 2
+
+
+class TestWhatQAFound:
+    def test_a_first_name_that_is_also_a_town_is_a_name(self):
+        assert parse_contact("עפרה לוי\n0541234567").name == "עפרה לוי"
+        assert parse_contact("אדם לוי, 052-1234567").city == ""
+        assert parse_contact("עליזה פרץ").name == "עליזה פרץ"
+
+    def test_the_longer_town_name_wins(self):
+        assert parse_contact("מודיעין עילית").city == "מודיעין עילית"
+
+    def test_two_numbers_side_by_side_are_both_kept(self):
+        parsed = parse_contact("02-9973510 054-1234567 משה")
+        assert parsed.phone == "054-123-4567"
+        assert parsed.extra_phones == ["02-997-3510"]
+
+    def test_numbers_as_people_write_them(self):
+        assert parse_contact("(02) 997-3510").phone == "02-997-3510"
+        assert parse_contact("00972-54-1234567").phone == "054-123-4567"
+        assert parse_contact("054‎-1234567 דנה").phone == "054-123-4567"
+
+    def test_a_shared_vcard(self):
+        parsed = parse_contact(
+            "BEGIN:VCARD\nVERSION:3.0\nFN:רונית לוי\nTEL;TYPE=CELL:+972 54-765-4321\n"
+            "TEL:054-765-4321\nEND:VCARD"
+        )
+        assert parsed.name == "רונית לוי"
+        assert parsed.phone == "054-765-4321"
+        assert parsed.extra_phones == []
+
+    def test_company_suffix_spelled_two_ways(self):
+        book = [_customer(name='דאדי בע"מ')]
+        assert find_duplicates(book, name="דאדי בעמ")
+
+    def test_search_with_the_country_code(self):
+        book = [_customer(phone="054-123-4567")]
+        assert search_customers(book, "+972 54 123")

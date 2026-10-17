@@ -17,7 +17,7 @@ import json
 import os
 from datetime import date
 from pathlib import Path
-from typing import Iterable, Iterator
+from typing import Any, Iterable, Iterator
 
 from ..core.errors import ProfileOSError
 from ..core.logging_setup import get_logger
@@ -121,8 +121,17 @@ class JobStore:
             return None
         trash = self.root / ".trash"
         trash.mkdir(parents=True, exist_ok=True)
-        target = trash / f"{path.stem}-{datetime.now():%Y%m%d-%H%M%S}{path.suffix}"
+        stamp = f"{datetime.now():%Y%m%d-%H%M%S}"
+        target = trash / f"{path.stem}-{stamp}{path.suffix}"
         os.replace(path, target)
+        # Its previous version and its documents go with it, so a new job
+        # never inherits a deleted customer's site photos.
+        for companion, name in (
+            (path.with_name(path.name + ".bak"), f"{path.stem}-{stamp}{path.suffix}.bak"),
+            (self.root / path.stem, f"{path.stem}-{stamp}"),
+        ):
+            if companion.exists():
+                os.replace(companion, trash / name)
         _log.info("Deleted job %s (kept in %s)", job_id, target)
         return target
 
@@ -140,15 +149,19 @@ class JobStore:
         # Counted from the file names as well as the readable jobs: a job file
         # that cannot be read right now still owns its number, and handing that
         # number out again would save a new job over one still recoverable.
+        # Deleted jobs in the recycle bin keep theirs too: a number reused is
+        # a paper job card that now points at two different customers.
+        import re
+
         ids = {job.job_id for job in self.all()}
         if self.root.is_dir():
-            ids |= {path.stem for path in self.root.glob("*.json")}
-            ids |= {path.stem.split(".")[0] for path in self.root.glob("*.json.*")}
+            ids |= {path.name for path in self.root.glob("*.json*")}
+            ids |= {path.name for path in (self.root / ".trash").glob("*")}
         for job_id in ids:
             if job_id.startswith(prefix):
-                tail = job_id[len(prefix):]
-                if tail.isdigit():
-                    used = max(used, int(tail))
+                serial = re.match(r"\d+", job_id[len(prefix):])
+                if serial:
+                    used = max(used, int(serial.group(0)))
         return f"{prefix}{used + 1:04d}"
 
     def create(self, name: str, *, customer: Customer | None = None, **fields) -> JobFile:
@@ -205,23 +218,47 @@ class CustomerBook:
         payload = {"customers": [c.model_dump() for c in customers]}
         _atomic_write(self.path, json.dumps(payload, indent=2, ensure_ascii=False))
 
+    def _change(self, change) -> Any:
+        """Read, change and write the book while holding its lock, so two
+        computers adding a customer at the same moment both keep theirs."""
+        from ..core.sharing import Locked, locked
+        from ..core.storage import atomic_write_text
+
+        def apply() -> Any:
+            customers, result = change(self.all())
+            payload = {"customers": [c.model_dump() for c in customers]}
+            atomic_write_text(self.path, json.dumps(payload, indent=2, ensure_ascii=False))
+            return result
+
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with locked(self.path):
+                return apply()
+        except Locked:
+            _log.warning("Wrote %s while another machine held the lock", self.path.name)
+            return apply()
+
     def add(self, name: str, **fields) -> Customer:
         """Add a customer, numbering them so two of the same name stay apart."""
         if not name.strip():
             raise ProfileOSError("ללקוח חייב להיות שם")
-        existing = self.all()
-        serial = len(existing) + 1
-        used = {c.customer_id for c in existing}
-        while f"C-{serial:04d}" in used:
-            serial += 1
-        customer = Customer(customer_id=f"C-{serial:04d}", name=name.strip(), **fields)
-        self.save_all(existing + [customer])
-        return customer
+
+        def change(existing: list[Customer]) -> tuple[list[Customer], Customer]:
+            serial = len(existing) + 1
+            used = {c.customer_id for c in existing}
+            while f"C-{serial:04d}" in used:
+                serial += 1
+            customer = Customer(customer_id=f"C-{serial:04d}", name=name.strip(), **fields)
+            return existing + [customer], customer
+
+        return self._change(change)
 
     def update(self, customer: Customer) -> Customer:
-        others = [c for c in self.all() if c.customer_id != customer.customer_id]
-        self.save_all(others + [customer])
-        return customer
+        def change(existing: list[Customer]) -> tuple[list[Customer], Customer]:
+            others = [c for c in existing if c.customer_id != customer.customer_id]
+            return others + [customer], customer
+
+        return self._change(change)
 
 
 def default_store() -> JobStore:

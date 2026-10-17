@@ -19,7 +19,6 @@ weight and confusing them helps nobody.
 
 from __future__ import annotations
 
-import json
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
@@ -84,6 +83,18 @@ class Entry:
         }
 
 
+def _entry_from(item: dict[str, Any]) -> Entry:
+    return Entry(
+        entry_id=item.get("entry_id", ""),
+        person=item["person"], job_id=item.get("job_id", ""),
+        operation=item.get("operation", ""),
+        on=date.fromisoformat(item["on"]),
+        minutes=int(item["minutes"]), note=item.get("note", ""),
+        rework=bool(item.get("rework", False)),
+        rate=float(item.get("rate", 0.0)),
+    )
+
+
 def minutes_between(start: str, end: str) -> int:
     """Minutes between two clock times, as somebody writes them on a sheet.
 
@@ -112,8 +123,23 @@ def minutes_between(start: str, end: str) -> int:
     return int(delta.total_seconds() // 60)
 
 
-class TimeBook:
+from ..core.storage import MergingBook
+
+
+class TimeBook(MergingBook):
     """Where the shop's hours went."""
+
+    _list_key = "entries"
+    _id_field = "entry_id"
+
+    def _records(self) -> dict[str, Any]:
+        return self._entries
+
+    def _to_raw(self, record: Any) -> dict[str, Any]:
+        return record.as_dict()
+
+    def _from_raw(self, raw: dict[str, Any]) -> Any:
+        return _entry_from(raw)
 
     def __init__(self, path: Path | None = None) -> None:
         self.path = Path(path) if path is not None else None
@@ -123,38 +149,28 @@ class TimeBook:
 
     # -- persistence --------------------------------------------------------- #
     def load(self) -> "TimeBook":
-        if self.path is None or not self.path.is_file():
+        from ..core.storage import stored as _stored
+
+        if self.path is None or not _stored(self.path):
             return self
         # Recovered from the previous version or refused — never read
         # as empty, which the next save would write over real records.
-        from ..core.storage import read_json
-
-        raw = read_json(self.path, default={})
+        raw = self._read_or_mark(self.path)
         for item in raw.get("entries", []):
             try:
-                entry = Entry(
-                    entry_id=item.get("entry_id", ""),
-                    person=item["person"], job_id=item.get("job_id", ""),
-                    operation=item.get("operation", ""),
-                    on=date.fromisoformat(item["on"]),
-                    minutes=int(item["minutes"]), note=item.get("note", ""),
-                    rework=bool(item.get("rework", False)),
-                    rate=float(item.get("rate", 0.0)),
-                )
-            except Exception:  # noqa: BLE001 - one bad row, not the book
+                entry = _entry_from(item)
+            except Exception:  # noqa: BLE001 - one bad row, kept on disk by the merge
                 _log.warning("Skipping unreadable time entry: %s", item.get("entry_id"))
                 continue
             self._entries[entry.entry_id] = entry
+        self._remember_loaded()
         return self
 
     def save(self) -> None:
         if self.path is None:
             return
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        payload = {"entries": [entry.as_dict() for entry in self._entries.values()]}
-        from ..core.storage import atomic_write_text
-
-        atomic_write_text(self.path, json.dumps(payload, ensure_ascii=False, indent=2))
+        self._save_merged(self.path)
 
     # -- writing ------------------------------------------------------------- #
     def add(self, entry: Entry) -> Entry:

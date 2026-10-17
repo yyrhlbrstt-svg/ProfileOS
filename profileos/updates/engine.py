@@ -91,7 +91,9 @@ class InstalledState:
         self.load()
 
     def load(self) -> None:
-        if not self.path.is_file():
+        from ..core.storage import stored as _stored
+
+        if not _stored(self.path):
             return
         try:
             raw = json.loads(self.path.read_text(encoding="utf-8"))

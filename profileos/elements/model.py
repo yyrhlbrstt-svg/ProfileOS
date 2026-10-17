@@ -362,7 +362,23 @@ class ElementSchedule(RoundTrips):
         return next((o for o in self.openings if o.element_id == element_id), None)
 
 
+#: What each cut is called on the shop floor. The engine's names are for the
+#: code; these are what goes on a screen, a label and a cut list.
+ROLE_HEBREW: dict[str, str] = {
+    "frame_horizontal": "מלבן אופקי", "frame_vertical": "מלבן אנכי",
+    "sash_horizontal": "כנף אופקי", "sash_vertical": "כנף אנכי",
+    "mullion": "אומנה", "transom": "משקוף רוחב",
+    "bead_horizontal": "סרגל זיגוג אופקי", "bead_vertical": "סרגל זיגוג אנכי",
+}
+
+
+def role_hebrew(role: str) -> str:
+    return ROLE_HEBREW.get(role, role)
+
+
 __all__ = [
+    "ROLE_HEBREW",
+    "role_hebrew",
     "ElementSchedule",
     "OpeningType",
     "HingeSide",
