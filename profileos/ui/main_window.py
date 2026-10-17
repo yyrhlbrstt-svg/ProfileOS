@@ -225,12 +225,20 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.colours = palette
         self.session = Session()
+        #: Set by the application entry point. Off by default so that a window
+        #: built by a test or a script never writes into the shop's backups.
+        self.auto_backup = False
 
         from ..branding import active_brand
 
         self.setWindowTitle(active_brand().window_title())
         self.setWindowIcon(app_icon())
         self._size_to_screen()
+        application = QApplication.instance()
+        if application is not None:
+            from .widgets import install_number_field_polish
+
+            install_number_field_polish(application)
 
         central = QWidget()
         layout = QHBoxLayout(central)
@@ -239,6 +247,16 @@ class MainWindow(QMainWindow):
 
         self.sidebar = Sidebar()
         layout.addWidget(self.sidebar)
+        # The theme switch sits where it can be found — a bright workshop
+        # screen is exactly where nobody remembers a keyboard shortcut.
+        self.theme_button = QPushButton()
+        self.theme_button.setObjectName("SidebarTheme")
+        self.theme_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.theme_button.setToolTip("החלפת ערכת צבעים (Ctrl+T)")
+        self.theme_button.clicked.connect(self.toggle_theme)
+        outer = self.sidebar.layout()
+        outer.insertWidget(outer.count() - 1, self.theme_button)
+        self._label_theme_button()
 
         self.stack = QStackedWidget()
         layout.addWidget(self.stack, 1)
@@ -338,6 +356,11 @@ class MainWindow(QMainWindow):
             action.triggered.connect(lambda _checked=False, i=index: self.go_to(i))
             self.addAction(action)
 
+        estimate_action = QAction(self)
+        estimate_action.setShortcut(QKeySequence("Ctrl+E"))
+        estimate_action.triggered.connect(self.quick_estimate)
+        self.addAction(estimate_action)
+
         theme_action = QAction(self)
         theme_action.setShortcut(QKeySequence("Ctrl+T"))
         theme_action.triggered.connect(self.toggle_theme)
@@ -356,6 +379,15 @@ class MainWindow(QMainWindow):
     def save_job(self) -> None:
         """Ctrl+S from anywhere: write the work into the open job file."""
         self.page("Projects").save_current()
+
+    def quick_estimate(self) -> None:
+        """Ctrl+E: a phone price in seconds; accepting it opens the real design."""
+        from .dialogs import QuickEstimateDialog
+
+        dialog = QuickEstimateDialog(self)
+        if dialog.exec() and dialog.estimate is not None:
+            page = self.go_to_page("Element")
+            page.apply_preset(dialog.estimate.preset)
 
     def open_palette(self) -> None:
         """The Ctrl+K search box: every page and common action, one keystroke."""
@@ -507,12 +539,44 @@ class MainWindow(QMainWindow):
                     widget.palette_colours = palette
                     widget.update()
 
+    def closeEvent(self, event: Any) -> None:  # noqa: N802 - Qt override
+        """Take the day's backup on the way out, then close.
+
+        Nobody remembers to back up; everybody closes the program. One archive
+        a day, the last thirty kept, beside the data folder — so a dead hard
+        disk costs at most a day.
+        """
+        archive = None
+        if self.auto_backup:
+            from ..core.backup import backup_if_due
+
+            archive = backup_if_due()
+        if archive is not None:
+            self.statusBar().showMessage(f"גיבוי יומי נשמר: {archive.name}")
+        super().closeEvent(event)
+
     def toggle_theme(self) -> None:
         self.apply_palette(LIGHT if self.colours.mode.value == "dark" else DARK)
-        self.toast(
-            "עברת לערכה הבהירה" if self.colours.mode.value == "light"
-            else "עברת לערכה הכהה"
-        )
+        light = self.colours.mode.value == "light"
+        self._label_theme_button()
+        self.toast("עברת לערכה הבהירה" if light else "עברת לערכה הכהה")
+        # Remembered, so the next launch opens the way it was left.
+        try:
+            from ..core.config import get_settings, save_settings
+
+            settings = get_settings()
+            settings.theme = "light" if light else "dark"
+            save_settings(settings)
+        except Exception:  # noqa: BLE001 - the switch itself already happened
+            pass
+
+    def _label_theme_button(self) -> None:
+        button = getattr(self, "theme_button", None)
+        if button is not None:
+            button.setText(
+                "☾  ערכה כהה" if self.colours.mode.value == "light"
+                else "☀  ערכה בהירה"
+            )
 
     def _update_status(self) -> None:
         self.statusBar().showMessage(self.session.describe())

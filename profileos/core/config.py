@@ -168,6 +168,9 @@ class Settings(BaseModel):
     #: the choice has to survive a restart rather than living in a variable.
     #: This build is דאדי בע"מ's own installation, not a white-label default.
     brand_id: str = "dadi"
+    #: "dark" for the office, "light" for a workshop screen in daylight. Kept
+    #: in settings so the choice survives a restart.
+    theme: str = "dark"
     #: Directories scanned by the hot-reload plugin framework.
     plugin_dirs: list[Path] = Field(default_factory=list)
     #: Poll interval for the plugin/config watcher, in seconds.

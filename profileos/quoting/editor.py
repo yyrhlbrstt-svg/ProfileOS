@@ -360,14 +360,14 @@ class QuoteDraft:
             variant.warnings = list(variant.quotation.warnings)
             if variant.finish.rate_per_kg and not variant.finish.provenance.may_be_cut_to:
                 variant.warnings.append(
-                    f"Finish '{variant.finish.name}' is priced at a stand-in "
-                    f"{variant.finish.rate_per_kg:.2f}/kg; enter the coater's own rate "
-                    "to firm it up."
+                    f"הגמר ״{variant.finish.hebrew}״ מתומחר במחיר זמני "
+                    f"⁦{variant.finish.rate_per_kg:.2f}⁩ ₪/ק״ג — הזינו את מחיר הצבעייה "
+                    "כדי לקבע אותו."
                 )
             if not mass_complete:
                 variant.warnings.append(
-                    "Some profile masses are missing from the library; the finish "
-                    "cost uses a typical 1.6 kg/m for those and is approximate."
+                    "לחלק מהפרופילים אין משקל בספרייה; עלות הגמר שלהם מחושבת לפי "
+                    "⁦1.6⁩ ק״ג/מ׳ טיפוסי והיא הערכה."
                 )
 
         self._apply_overrides()

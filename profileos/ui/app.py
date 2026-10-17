@@ -11,7 +11,7 @@ from ..core.logging_setup import configure_logging, get_logger
 _log = get_logger("ui.app")
 
 
-def run(argv: Sequence[str] | None = None, *, theme: str = "dark") -> int:
+def run(argv: Sequence[str] | None = None, *, theme: str | None = None) -> int:
     """Start the desktop application and return its exit code."""
     from PySide6.QtCore import Qt
     from PySide6.QtGui import QFont
@@ -73,6 +73,14 @@ def run(argv: Sequence[str] | None = None, *, theme: str = "dark") -> int:
     font.setPointSize(10 if METRICS.density == "comfortable" else 9)
     application.setFont(font)
 
+    if theme is None:
+        # Whatever was chosen last time — a shop that switched to the light
+        # theme for the workshop screen should not have to switch every
+        # morning.
+        try:
+            theme = get_settings().theme
+        except Exception:  # noqa: BLE001 - a theme is not worth a failed start
+            theme = "dark"
     palette = LIGHT if theme == "light" else DARK
     application.setStyleSheet(stylesheet(palette))
 
@@ -88,6 +96,7 @@ def run(argv: Sequence[str] | None = None, *, theme: str = "dark") -> int:
         return 1
 
     window = MainWindow(palette)
+    window.auto_backup = True
     if session is not None:
         window.set_session_owner(session)
     window.show()

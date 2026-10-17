@@ -17,10 +17,13 @@ already booked as revenue is exactly the error that hides a bad debtor.
 
 from __future__ import annotations
 
+import json
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from enum import StrEnum
+from pathlib import Path
+from typing import Any
 from uuid import uuid4
 
 from ..core.errors import ProfileOSError
@@ -145,6 +148,34 @@ class Cheque:
             f"⁦{self.due.strftime('%d/%m/%Y')}⁩ · {self.state.hebrew}"
         )
 
+    # -- on disk ------------------------------------------------------------ #
+    _DATES = ("due", "received", "deposited_on", "cleared_on", "bounced_on")
+
+    def as_dict(self) -> dict[str, Any]:
+        raw: dict[str, Any] = {
+            key: getattr(self, key) for key in self.__dataclass_fields__
+        }
+        for key in self._DATES:
+            value = raw[key]
+            raw[key] = value.isoformat() if value else None
+        raw["state"] = self.state.value
+        return raw
+
+    @classmethod
+    def from_dict(cls, raw: dict[str, Any]) -> "Cheque":
+        values = {key: raw[key] for key in cls.__dataclass_fields__ if key in raw}
+        for key in cls._DATES:
+            if values.get(key):
+                values[key] = date.fromisoformat(str(values[key]))
+            elif key in values:
+                values[key] = None
+        for key in ("due", "received"):
+            if values.get(key) is None:
+                values.pop(key, None)
+        values["state"] = ChequeState(values.get("state", "held"))
+        values["amount"] = float(values.get("amount", 0.0))
+        return cls(**values)
+
 
 class ChequeBook:
     """The drawer, and what is in it.
@@ -154,10 +185,38 @@ class ChequeBook:
     noticing that a customer has been paying it in paper.
     """
 
-    def __init__(self, cheques: list[Cheque] | None = None) -> None:
+    def __init__(
+        self, cheques: list[Cheque] | None = None, *, path: Path | None = None
+    ) -> None:
         self._cheques: dict[str, Cheque] = {
             cheque.cheque_id: cheque for cheque in (cheques or [])
         }
+        #: Where the drawer is kept. ``None`` keeps it in memory only — for
+        #: tests and calculations, never for the shop's real cheques.
+        self.path = Path(path) if path is not None else None
+
+    # -- on disk ------------------------------------------------------------ #
+    def load(self) -> "ChequeBook":
+        """Read the drawer back. A damaged file is reported, never emptied over."""
+        if self.path is None or not self.path.is_file():
+            return self
+        raw = json.loads(self.path.read_text(encoding="utf-8"))
+        for item in raw.get("cheques", []):
+            cheque = Cheque.from_dict(item)
+            self._cheques[cheque.cheque_id] = cheque
+        return self
+
+    def save(self) -> None:
+        """Write the drawer, all at once: a half-written file is never left."""
+        if self.path is None:
+            return
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {"cheques": [cheque.as_dict() for cheque in self]}
+        temporary = self.path.with_suffix(".tmp")
+        temporary.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        temporary.replace(self.path)
 
     def __len__(self) -> int:
         return len(self._cheques)
@@ -263,4 +322,16 @@ class ChequeBook:
         }
 
 
-__all__ = ["Cheque", "ChequeBook", "ChequeState", "PaymentMethod"]
+def default_cheques() -> ChequeBook:
+    """The shop's own drawer, from its data folder.
+
+    Every cheque typed into the collection screen used to live only as long as
+    the window did. Post-dated cheques are months of the shop's money; they
+    are kept on disk like every other record.
+    """
+    from ..core.config import get_settings
+
+    return ChequeBook(path=get_settings().data_dir / "cheques.json").load()
+
+
+__all__ = ["Cheque", "ChequeBook", "ChequeState", "PaymentMethod", "default_cheques"]

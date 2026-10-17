@@ -264,7 +264,7 @@ class TestSafetyGlass:
         opening.set_cell(Cell(column=0, row=0, sash=Sash(opening_type=OpeningType.DOOR)))
         build = ElementBuilder().build(opening)
         assert build.non_compliant_glass
-        assert any("safety glass" in w for w in build.warnings)
+        assert any("זכוכית בטיחותית" in w for w in build.warnings)
 
 
 # --------------------------------------------------------------------------- #
@@ -297,7 +297,7 @@ class TestBom:
 
     def test_unnested_bom_warns_about_offcut(self, builds):
         bom = build_bom(builds)
-        assert any("finished length" in w for w in bom.warnings)
+        assert any("אורכים נטו" in w for w in bom.warnings)
 
     def test_grouping_by_supplier(self, builds):
         bom = build_bom(builds)
@@ -356,7 +356,7 @@ class TestPricing:
         bom = build_bom(builds)
         quote = build_quotation(builds, bom, project_name="T")
         assert quote.unpriced_codes
-        assert any("no price" in w for w in quote.warnings)
+        assert any("אין מחיר" in w for w in quote.warnings)
 
     def test_margin_of_100_percent_is_rejected(self):
         with pytest.raises(QuotingError):

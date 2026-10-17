@@ -92,7 +92,20 @@ _PATHS["cheque"] = (
     "<path d='M6.4 11h6M6.4 14h3.6'/><path d='m15 13.6 1.7 1.7 3-3.6'/>"
 )
 
+#: Rising columns on a baseline: the numbers the owner asks for.
+_PATHS["chart"] = (
+    "<path d='M3.5 20.5h17'/><path d='M6.5 20.5v-6M11 20.5v-10M15.5 20.5v-7.5"
+    "M20 20.5V5.5'/>"
+)
+#: A tape measure: the case, its hook, and the blade run out to a tick.
+_PATHS["tape"] = (
+    "<circle cx='9' cy='12' r='5.5'/><circle cx='9' cy='12' r='1.6'/>"
+    "<path d='M14.5 15.5h6v-3'/><path d='M17.5 15.5v-1.5'/>"
+)
+
 PAGE_ICONS: dict[str, str] = {
+    "Reports": "chart",
+    "Survey": "tape",
     "Home": "home",
     "Projects": "folder",
     "Profile": "section",

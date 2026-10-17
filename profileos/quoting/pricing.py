@@ -357,8 +357,8 @@ def build_quotation(
     quote.unpriced_codes = unpriced
     if unpriced:
         quote.warnings.append(
-            f"{len(unpriced)} material code(s) have no price and are excluded "
-            f"from the cost: {', '.join(sorted(set(unpriced))[:8])}"
+            f"ל-⁦{len(unpriced)}⁩ פריטים אין מחיר והם לא נכללו בעלות: "
+            f"⁦{', '.join(sorted(set(unpriced))[:8])}⁩"
         )
 
     hours = labour.hours_for(builds)

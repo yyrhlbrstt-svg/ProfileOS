@@ -86,6 +86,11 @@ class CommandPalette(QDialog):
                 run=lambda t=page.title: window.go_to_page(t),
             ))
         commands.append(Command(
+            label="הערכת מחיר מהירה (Ctrl+E)",
+            keywords="estimate הערכה מחיר טלפון כמה עולה",
+            run=window.quick_estimate,
+        ))
+        commands.append(Command(
             label="החלפת ערכת נושא (בהיר/כהה)",
             keywords="theme ערכת נושא בהיר כהה",
             run=window.toggle_theme,

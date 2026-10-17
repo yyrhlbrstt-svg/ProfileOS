@@ -259,6 +259,39 @@ UI_FONTS = ("Heebo", "Segoe UI", "Noto Sans Hebrew", "DejaVu Sans", "sans-serif"
 MONO_FONTS = ("JetBrains Mono", "SF Mono", "Cascadia Mono", "DejaVu Sans Mono", "monospace")
 
 
+_CHEVRON = (
+    "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10'>"
+    "<path d='{d}' fill='none' stroke='{c}' stroke-width='1.6' "
+    "stroke-linecap='round' stroke-linejoin='round'/></svg>"
+)
+
+
+def _chevron_files(colour: str) -> tuple[str, str, str]:
+    """Up, down and combo-box chevrons as small SVG files, for QSS to load.
+
+    Qt's style sheets cannot draw an arrow from borders the way a browser can
+    — the trick renders as a bar or a square — and an arrow nobody can see is
+    a button nobody presses. ``image: url(...)`` is the supported route, so
+    the glyphs are written once per colour to a cache folder and referenced.
+    """
+    import tempfile
+    from pathlib import Path
+
+    folder = Path(tempfile.gettempdir()) / "profileos-ui"
+    folder.mkdir(parents=True, exist_ok=True)
+    tag = colour.lstrip("#").lower()
+    paths = []
+    for name, d in (
+        ("up", "M2.5 6.5 5 4l2.5 2.5"),
+        ("down", "M2.5 3.5 5 6l2.5-2.5"),
+    ):
+        path = folder / f"chevron-{name}-{tag}.svg"
+        if not path.exists():
+            path.write_text(_CHEVRON.format(d=d, c=colour), encoding="utf-8")
+        paths.append(path.as_posix())
+    return paths[0], paths[1], paths[1]
+
+
 def stylesheet(palette: Palette, metrics: Metrics = METRICS) -> str:
     """Build the Qt stylesheet for a palette.
 
@@ -268,6 +301,10 @@ def stylesheet(palette: Palette, metrics: Metrics = METRICS) -> str:
     p, m = palette, metrics
     font = ", ".join(f'"{name}"' for name in UI_FONTS)
     mono = ", ".join(f'"{name}"' for name in MONO_FONTS)
+    try:
+        up_arrow, down_arrow, combo_arrow = _chevron_files(p.text_muted)
+    except OSError:  # a read-only temp folder costs the glyphs, not the app
+        up_arrow = down_arrow = combo_arrow = ""
 
     return f"""
 /* ---------- base ---------- */
@@ -309,6 +346,26 @@ QToolTip {{
 #SidebarScroll, #SidebarScroll > QWidget > QWidget, #SidebarNavBody {{
     background: transparent; border: none;
 }}
+QLabel#EstimateResult {{
+    font-size: {m.font_size + 4}px; font-weight: 600; color: {p.text};
+    padding: {m.space(2)}px 0;
+}}
+QLabel#EmptyState {{
+    color: {p.text_muted}; font-size: {m.font_size + 2}px; line-height: 160%;
+    padding: {m.space(4)}px;
+}}
+QPushButton#WhatsApp {{
+    background: #1F8F55; color: #FFFFFF; border: none; font-weight: 600;
+}}
+QPushButton#WhatsApp:hover {{ background: #24A862; }}
+QPushButton#WhatsApp:pressed {{ background: #197A48; }}
+QPushButton#SidebarTheme {{
+    background: transparent; border: none;
+    border-top: {m.border_width}px solid {p.border};
+    color: {p.text_muted}; font-size: {m.font_size_small}px;
+    padding: {m.space(2)}px {m.space(4)}px;
+}}
+QPushButton#SidebarTheme:hover {{ color: {p.text}; background: {p.surface_raised}; }}
 #SidebarFooter {{
     font-size: {m.font_size_small}px; color: {p.text_faint};
     padding: {m.space(2)}px {m.space(4)}px;
@@ -377,6 +434,9 @@ QPushButton#Primary {{
 }}
 QPushButton#Primary:hover {{ background: {p.accent_hover}; border-color: {p.accent_hover}; }}
 QPushButton#Primary:pressed {{ background: {p.accent_pressed}; }}
+QPushButton#Primary:disabled, QPushButton#WhatsApp:disabled {{
+    background: {p.surface}; border-color: {p.border}; color: {p.text_faint};
+}}
 QPushButton#Ghost {{
     background: transparent; border: {m.border_width}px solid {p.border_strong};
 }}
@@ -420,10 +480,20 @@ QDoubleSpinBox::up-button:hover, QDoubleSpinBox::down-button:hover {{
     background: {p.border};
 }}
 QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {{
-    width: 7px; height: 7px;
+    image: url("{up_arrow}"); width: 9px; height: 9px;
 }}
 QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {{
-    width: 7px; height: 7px;
+    image: url("{down_arrow}"); width: 9px; height: 9px;
+}}
+QComboBox::down-arrow {{
+    image: url("{combo_arrow}"); width: 10px; height: 10px;
+}}
+QProgressBar#ReadinessBar {{
+    background: {p.surface_sunken}; border: none;
+    border-radius: {m.space(1)}px;
+}}
+QProgressBar#ReadinessBar::chunk {{
+    background: {p.accent}; border-radius: {m.space(1)}px;
 }}
 QComboBox QAbstractItemView {{
     background: {p.surface_raised};

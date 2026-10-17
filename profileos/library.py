@@ -731,7 +731,17 @@ def _take_series(words: list[str]) -> tuple[list[str], str, str]:
             and not any(candidate in term for term in terms if len(term) > 2)
         ]
         return rest, entry.id, entry.display
-    return words, "", ""
+    # A maker named without a series — "הזזה 240/210 קליל" — says who, not
+    # which. It cannot choose a series, and left in as a search word it would
+    # filter out every opening (no family is called "קליל"). So it is set
+    # aside and the opening is found on its own terms, priced on the typical
+    # rules that every result already says it uses.
+    from .systems.israel import MANUFACTURERS
+
+    makers: set[str] = set()
+    for maker in MANUFACTURERS:
+        makers |= {_folds(maker.hebrew), _folds(maker.name), _folds(maker.id)}
+    return [word for word in words if word not in makers], "", ""
 
 
 def parse_query(text: str) -> Query:

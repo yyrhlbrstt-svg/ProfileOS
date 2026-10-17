@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMessageBox,
     QPlainTextEdit,
+    QProgressBar,
     QPushButton,
     QScrollArea,
     QSpinBox,
@@ -158,6 +159,43 @@ class Page(QWidget):
         elif hasattr(window, "statusBar"):
             window.statusBar().showMessage(message, 6000)
 
+    def go_design(self) -> None:
+        """Take the operator to where an opening is designed."""
+        window = self.window()
+        if hasattr(window, "go_to_page"):
+            window.go_to_page("Element")
+
+
+def canvas_with_empty_state(page: "Page", canvas: QWidget, text: str) -> QWidget:
+    """``canvas`` behind a friendly empty state, as a two-page stack.
+
+    An empty black rectangle reads as "broken". Until there is something to
+    draw, the page says what will appear here and offers the one button that
+    leads to it; index 1 of the stack is the canvas itself.
+    """
+    from PySide6.QtWidgets import QStackedWidget
+
+    empty = QWidget()
+    layout = QVBoxLayout(empty)
+    layout.addStretch(1)
+    label = QLabel(text)
+    label.setObjectName("EmptyState")
+    label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    layout.addWidget(label)
+    go = QPushButton("לתכנון פתח")
+    go.setObjectName("Primary")
+    go.clicked.connect(page.go_design)
+    row = QHBoxLayout()
+    row.addStretch(1)
+    row.addWidget(go)
+    row.addStretch(1)
+    layout.addLayout(row)
+    layout.addStretch(1)
+    stack = QStackedWidget()
+    stack.addWidget(empty)
+    stack.addWidget(canvas)
+    return stack
+
 
 class HomePage(Page):
     """Where the day starts: what has been done, and what the next step is.
@@ -201,6 +239,17 @@ class HomePage(Page):
         self.next_label.setTextFormat(Qt.TextFormat.RichText)
         self.body.addWidget(self.next_label)
 
+        # -- the business, before the current window ------------------------ #
+        # What an owner asks first thing is not "which step is this window
+        # on" but "what is out with customers, what is on the floor, what do
+        # I owe a phone call today". Every figure here is read from the job
+        # files, the task book and the service register — nothing seeded.
+        self.business = StatRow([
+            ("quoted", "הצעות פתוחות"), ("backlog", "הוזמן ובייצור"),
+            ("tasks", "משימות להיום"), ("service", "קריאות שירות"),
+        ])
+        self.body.addWidget(self.business)
+
         # -- the pipeline ------------------------------------------------- #
         pipeline = Card("קו הייצור")
         row = QHBoxLayout()
@@ -234,6 +283,7 @@ class HomePage(Page):
         buttons = QHBoxLayout()
         buttons.setSpacing(METRICS.space(2))
         for label, handler in (
+            ("הערכת מחיר מהירה  Ctrl+E", self._quick_estimate),
             ("פרויקט חדש", lambda: self._go("Projects")),
             ("חפש פתח", self._find_opening),
             ("חפש פרופיל", self._find_profile),
@@ -246,28 +296,6 @@ class HomePage(Page):
         buttons.addStretch(1)
         actions.add_layout(buttons)
         self.body.addWidget(actions)
-
-        # What this installation can actually do this morning. It sits above
-        # the order book because a shop that does not know it cannot cut yet
-        # finds out at the saw.
-        setup = Card("מצב ההקמה")
-        self.readiness_headline = QLabel("")
-        self.readiness_headline.setObjectName("StatLabel")
-        self.readiness_headline.setWordWrap(True)
-        setup.add(self.readiness_headline)
-        self.readiness_table = DataTable(
-            ["", "מה", "מצב", "מה זה חוסם", "איך סוגרים"],
-            empty_text="הכול מוכן",
-        )
-        # The home page shows the next few things to do, not the whole audit:
-        # a twelve-row checklist on the front page is a checklist nobody reads.
-        # The full list is on the System page and on the command line.
-        self.readiness_table.setFixedHeight(METRICS.row_height * 5)
-        setup.add(self.readiness_table)
-        self.readiness_more = QLabel("")
-        self.readiness_more.setObjectName("Hint")
-        setup.add(self.readiness_more)
-        self.body.addWidget(setup)
 
         # What somebody has to do today. It sits above the order book because
         # a follow-up nobody sees on the morning it is due is a follow-up that
@@ -303,6 +331,41 @@ class HomePage(Page):
         hint.setObjectName("Hint")
         recent.add(hint)
         self.body.addWidget(recent)
+
+        # What this installation can actually do. One line and a bar by
+        # default; the list itself opens on request. Kept on the page because
+        # a shop that does not know it cannot cut yet finds out at the saw —
+        # but below the business, because it is not the business.
+        setup = Card("מצב ההקמה")
+        setup_row = QHBoxLayout()
+        setup_row.setSpacing(METRICS.space(3))
+        self.readiness_headline = QLabel("")
+        self.readiness_headline.setObjectName("StatLabel")
+        self.readiness_headline.setWordWrap(True)
+        setup_row.addWidget(self.readiness_headline, 1)
+        self.readiness_toggle = QPushButton("הצג פירוט")
+        self.readiness_toggle.setObjectName("Ghost")
+        self.readiness_toggle.setCheckable(True)
+        self.readiness_toggle.toggled.connect(self._toggle_readiness)
+        setup_row.addWidget(self.readiness_toggle)
+        setup.add_layout(setup_row)
+        self.readiness_bar = QProgressBar()
+        self.readiness_bar.setObjectName("ReadinessBar")
+        self.readiness_bar.setTextVisible(False)
+        self.readiness_bar.setFixedHeight(METRICS.space(2))
+        setup.add(self.readiness_bar)
+        self.readiness_table = DataTable(
+            ["", "מה", "מצב", "מה זה חוסם", "איך סוגרים"],
+            empty_text="הכול מוכן",
+        )
+        self.readiness_table.setFixedHeight(METRICS.row_height * 5)
+        self.readiness_table.setVisible(False)
+        setup.add(self.readiness_table)
+        self.readiness_more = QLabel("")
+        self.readiness_more.setObjectName("Hint")
+        self.readiness_more.setVisible(False)
+        setup.add(self.readiness_more)
+        self.body.addWidget(setup)
 
         note = QLabel(
             "כל צעד בקו נשען על הקודם לו: הפרופיל שנמדד הוא זה שנבנה ממנו "
@@ -437,6 +500,85 @@ class HomePage(Page):
         self.readiness_headline.setStyleSheet(
             f"color: {self.colours.success if report.may_cut else self.colours.warning};"
         )
+        total = len(report)
+        self.readiness_bar.setRange(0, max(total, 1))
+        self.readiness_bar.setValue(total - len(outstanding))
+
+    def _toggle_readiness(self, shown: bool) -> None:
+        self.readiness_table.setVisible(shown)
+        self.readiness_more.setVisible(shown)
+        self.readiness_toggle.setText("הסתר פירוט" if shown else "הצג פירוט")
+
+    def show_business(self) -> None:
+        """The shop at a glance: what is out, what is in, what is due.
+
+        Read straight from what is on disk. A figure that cannot be read is
+        shown as a dash rather than a zero — "nothing" and "could not tell"
+        are different answers to an owner.
+        """
+        from ..projects import JobStatus, default_store
+
+        try:
+            jobs = default_store().all()
+        except Exception:  # noqa: BLE001 - the dashboard must open regardless
+            _log.exception("Could not read the job store for the dashboard")
+            jobs = None
+        if jobs is None:
+            self.business.update_many({"quoted": ("—", ""), "backlog": ("—", "")})
+        else:
+            quoted = [job for job in jobs if job.status is JobStatus.QUOTED]
+            backlog = [
+                job for job in jobs
+                if job.status in (JobStatus.WON, JobStatus.IN_PRODUCTION)
+            ]
+            quoted_value = sum(job.quote_total for job in quoted)
+            backlog_value = sum(job.quote_total for job in backlog)
+            self.business.update_many({
+                "quoted": (
+                    f"⁦{len(quoted)}⁩",
+                    f"⁦{quoted_value:,.0f} ₪⁩ אצל לקוחות" if quoted_value else "אין הצעות פתוחות",
+                ),
+                "backlog": (
+                    f"⁦{len(backlog)}⁩",
+                    f"⁦{backlog_value:,.0f} ₪⁩ לביצוע" if backlog_value else "אין עבודות בתור",
+                ),
+            })
+
+        try:
+            from ..projects.followups import default_tasks
+
+            summary = default_tasks().summary()
+            overdue = summary["overdue"]
+            self.business.set(
+                "tasks", f"⁦{summary['due_today'] + overdue}⁩",
+                f"⁦{overdue}⁩ באיחור" if overdue else "אין איחורים",
+            )
+            if overdue:
+                self.business.tiles["tasks"].value.setStyleSheet(
+                    f"color: {self.colours.danger};"
+                )
+            else:
+                self.business.tiles["tasks"].value.setStyleSheet("")
+        except Exception:  # noqa: BLE001
+            self.business.set("tasks", "—", "")
+
+        try:
+            from ..service.register import default_register
+
+            register = default_register()
+            open_calls = register.open_calls()
+            late = register.overdue()
+            self.business.set(
+                "service", f"⁦{len(open_calls)}⁩",
+                f"⁦{len(late)}⁩ חרגו מזמן התגובה" if late else "פתוחות",
+            )
+        except Exception:  # noqa: BLE001
+            self.business.set("service", "—", "")
+
+    def _quick_estimate(self) -> None:
+        window = self.window()
+        if hasattr(window, "quick_estimate"):
+            window.quick_estimate()
 
     def _find_opening(self) -> None:
         """Straight from the front door to a built window."""
@@ -471,6 +613,7 @@ class HomePage(Page):
             "צהריים טובים" if 12 <= now.hour < 17 else "ערב טוב"
         )
         self.greeting.setText(f"{part}, {self._brand_name}")
+        self.show_business()
         self.show_readiness()
         self.show_today()
         when = (
@@ -800,6 +943,13 @@ class ProjectsPage(Page):
         pack = QPushButton("תיק עבודה להדפסה")
         pack.clicked.connect(self.export_dossier)
         row.addWidget(pack)
+
+        # The customer asks "where is my order?" — the shop answers with one
+        # click, in its own words, before the customer has to ask twice.
+        notify = QPushButton("עדכון ללקוח בוואטסאפ")
+        notify.setObjectName("WhatsApp")
+        notify.clicked.connect(self.notify_customer)
+        row.addWidget(notify)
         row.addStretch(1)
         detail.add_layout(row)
         layout.addWidget(detail)
@@ -953,6 +1103,33 @@ class ProjectsPage(Page):
             self.session.set_job(job)
         self.refresh()
         self.status(f"{job.job_id} עודכן ל{target.hebrew}")
+
+    def notify_customer(self) -> None:
+        """Open WhatsApp on the customer's chat with the status already written."""
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+
+        from ..branding import active_brand
+        from ..sharing import customer_phone, status_message, whatsapp_link, whatsapp_number
+
+        job = self._selected_job()
+        if job is None:
+            self.report(ProfileOSError("בחר פרויקט מהרשימה"), "אין למי לשלוח")
+            return
+        brand = active_brand()
+        phone = customer_phone(job)
+        message = status_message(
+            brand_name=brand.document_name,
+            status=job.status.value,
+            customer_name=job.customer_name,
+            job_name=job.name,
+            phone=brand.phone or "",
+        )
+        QDesktopServices.openUrl(QUrl(whatsapp_link(phone, message)))
+        self.status(
+            f"נפתח וואטסאפ עם עדכון ״{job.status.hebrew}״"
+            + ("" if whatsapp_number(phone) else " — ללקוח אין טלפון בתיק, בחר צ׳אט")
+        )
 
     def export_dossier(self) -> None:
         """Write the whole job as one printable page.
@@ -1701,6 +1878,24 @@ class ElementPage(Page):
         self.view = ElevationView(self.colours)
         inner.addWidget(self.view)
 
+        # Live drawing: every field that changes the shape redraws it, a
+        # quarter-second after the last change so typing "2400" draws once.
+        from PySide6.QtCore import QTimer as _QTimer
+
+        self._preview_timer = _QTimer(self)
+        self._preview_timer.setSingleShot(True)
+        self._preview_timer.setInterval(250)
+        self._preview_timer.timeout.connect(self._preview)
+        for _spin in (
+            self.width, self.height, self.columns, self.rows,
+            self.sash_column, self.sash_row,
+        ):
+            _spin.valueChanged.connect(self._schedule_preview)
+        for _combo in (self.kind, self.sash_type, self.shape, self.system, self.glass):
+            _combo.currentIndexChanged.connect(self._schedule_preview)
+        # And once on opening, so the page never starts on an empty canvas.
+        self._preview_timer.start()
+
         lower = QWidget()
         lower_layout = QVBoxLayout(lower)
         lower_layout.setContentsMargins(0, 0, 0, 0)
@@ -2192,6 +2387,58 @@ class ElementPage(Page):
                 "סווג אותה בעמוד ״קטלוג״ ואז חזור לכאן."
             ) from exc
 
+    def _opening_from_form(self) -> Any:
+        """The opening the form currently describes. Raises if it cannot be one."""
+        from ..elements import Cell, ElementKind, Opening, OpeningType, Sash
+
+        opening = Opening(
+            name=self.name.currentText() or "Element",
+            kind=ElementKind(self.kind.currentData()),
+            width=self.width.value(), height=self.height.value(),
+            quantity=self.quantity.value(),
+            glass_spec_id=self.glass.currentData(),
+            system_id=self.system.currentData() or "generic",
+            shape=self.shape.currentData() or "rectangle",
+            height_right=self.height_right.value() or None,
+            rise=self.rise.value() or None,
+        )
+        opening.divide_evenly(self.columns.value(), self.rows.value())
+        sash_type = OpeningType(self.sash_type.currentData())
+        if sash_type is not OpeningType.FIXED:
+            column = min(self.sash_column.value(), opening.column_count - 1)
+            row = min(self.sash_row.value(), opening.row_count - 1)
+            opening.set_cell(Cell(column=column, row=row, sash=Sash(opening_type=sash_type)))
+        return opening
+
+    def _schedule_preview(self, *_args: Any) -> None:
+        """Redraw shortly after the last keystroke, not on every one."""
+        timer = getattr(self, "_preview_timer", None)
+        if timer is not None:
+            timer.start()
+
+    def _preview(self) -> None:
+        """Draw what the form says, live, without committing anything.
+
+        The drawing next to the form is the fastest error check there is: a
+        transposed width and height, a mullion in the wrong bay, a sash on the
+        wrong side are all obvious the moment they are drawn. Nothing here
+        touches the job — "בנה פתח" is still what adds the element — and a
+        form that is half-typed simply leaves the last good drawing up.
+        """
+        try:
+            opening = self._opening_from_form()
+            build = self._builder(opening).build(
+                opening, sill_height=self.sill_height.value()
+            )
+        except Exception:  # noqa: BLE001 - a half-typed form is not an error
+            return
+        self.view.set_build(build)
+        self.header.set_subtitle(
+            f"תצוגה מקדימה: {opening.name} · "
+            f"\u2066{opening.width:.0f} × {opening.height:.0f}\u2069 מ״מ — "
+            "לחץ ״בנה פתח״ כדי להוסיף לפרויקט"
+        )
+
     def build_element(self) -> None:
         from ..elements import Cell, ElementBuilder, ElementKind, Opening, OpeningType, Sash
 
@@ -2475,7 +2722,11 @@ class DrawingsPage(Page):
 
         self.canvas = QSvgWidget()
         self.canvas.setMinimumHeight(420)
-        self.body.addWidget(self.canvas, 1)
+        self.canvas_stack = canvas_with_empty_state(
+            self, self.canvas,
+            "עדיין אין שרטוט להציג.\nתכנן פתח — והחזית וחתך הקיר ישורטטו כאן.",
+        )
+        self.body.addWidget(self.canvas_stack, 1)
 
         self.stamp = QLabel()
         self.stamp.setObjectName("Hint")
@@ -2576,6 +2827,7 @@ class DrawingsPage(Page):
         except Exception as exc:  # noqa: BLE001
             self.report(exc, "לא ניתן להציג את הגיליון")
             return
+        self.canvas_stack.setCurrentIndex(1)
         self.canvas.load(svg.encode("utf-8"))
 
     def export_package(self) -> None:
@@ -2958,6 +3210,14 @@ class QuotePage(Page):
         save.clicked.connect(self.save_documents)
         self.header.add_action(save)
 
+        # The quotation goes where the customer actually reads it. One click:
+        # the PDF is written into the job's own folder, that folder opens,
+        # and WhatsApp opens on the customer's chat with the message typed.
+        send = QPushButton("שלח ללקוח בוואטסאפ")
+        send.setObjectName("WhatsApp")
+        send.clicked.connect(self.send_whatsapp)
+        self.header.add_action(send)
+
         self.stats = StatRow([
             ("net", "לפני מע״מ"), ("vat", "מע״מ"), ("gross", "סה״כ לתשלום"),
             ("margin", "רווח אחרי עריכות"), ("kg", "אלומיניום"),
@@ -2983,7 +3243,7 @@ class QuotePage(Page):
         from ..quoting.editor import FINISHES
 
         for finish in FINISHES.values():
-            self.finish.addItem(f"{finish.hebrew} · {finish.name}", finish.id)
+            self.finish.addItem(finish.hebrew, finish.id)
         self.finish.setCurrentIndex(1)
         self.margin = QDoubleSpinBox(); self.margin.setRange(0, 90); self.margin.setValue(25); self.margin.setSuffix(" %")
         for label, widget in [("סדרה", self.system), ("זכוכית", self.glass),
@@ -3187,11 +3447,14 @@ class QuotePage(Page):
             self.notes.setPlainText("\n".join(f"• {w}" for w in warnings) or "אין אזהרות.")
 
             self.stats.update_many({
-                "net": (f"{totals['net']:,.0f}", variant.policy.currency),
+                "net": (
+                    f"{totals['net']:,.0f}",
+                    "₪" if variant.policy.currency == "ILS" else variant.policy.currency,
+                ),
                 "vat": (f"{totals['vat']:,.0f}", f"{variant.policy.tax_pct:g}%"),
                 "gross": (f"{totals['gross']:,.0f}", ""),
-                "margin": (f"{sheet['margin_after_edits']:,.0f}", "after hand edits"),
-                "kg": (f"{variant.aluminium_kg:,.0f}", variant.finish.name),
+                "margin": (f"{sheet['margin_after_edits']:,.0f}", "אחרי עריכות ידניות"),
+                "kg": (f"{variant.aluminium_kg:,.0f}", f"ק״ג · {variant.finish.hebrew}"),
             })
             self.header.set_subtitle(
                 f"{draft.quotation.quote_id} · בתוקף עד "
@@ -3212,14 +3475,79 @@ class QuotePage(Page):
         base = Path(directory) / self.draft.quotation.quote_id
         customer = base.with_suffix(".customer.html")
         internal = base.with_suffix(".internal.html")
-        customer.write_text(render_quotation(self.draft, language=self.session.language),
-                            encoding="utf-8")
+        customer_html = render_quotation(self.draft, language=self.session.language)
+        customer.write_text(customer_html, encoding="utf-8")
         internal.write_text(
             render_quotation(self.draft, language=self.session.language, internal=True),
             encoding="utf-8",
         )
-        self.status(f"נשמרו {customer.name} ו-{internal.name}")
+        written = [customer.name, internal.name]
+        try:
+            from .pdf import html_to_pdf
+
+            written.append(html_to_pdf(customer_html, base.with_suffix(".pdf")).name)
+        except Exception as exc:  # noqa: BLE001 - the HTML copies already exist
+            _log.warning("Quotation PDF not written: %s", exc)
+        self.status("נשמרו " + ", ".join(written))
         self._record_in_job()
+
+    def _quote_folder(self) -> Path:
+        """Where a job's quotations live: one folder per job, in the data dir.
+
+        Asking "where to save?" every time is a question with one sensible
+        answer; the folder is opened afterwards so the file is still one
+        click from wherever it needs to go.
+        """
+        from ..core.config import get_settings
+
+        job = self.session.job
+        name = job.job_id if job is not None else "ללא-פרויקט"
+        return get_settings().data_dir / "quotes" / name
+
+    def send_whatsapp(self) -> None:
+        """PDF to the job folder, the folder open, the chat open with the text."""
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+
+        from ..branding import active_brand
+        from ..quoting.document import render_quotation
+        from ..sharing import customer_phone, quote_message, whatsapp_link, whatsapp_number
+        from .pdf import html_to_pdf
+
+        if self.draft is None:
+            self.report(ProfileOSError("תמחר את הפרויקט קודם"), "אין מה לשלוח")
+            return
+        quote = self.draft.quotation
+        folder = self._quote_folder()
+        try:
+            pdf = html_to_pdf(
+                render_quotation(self.draft, language=self.session.language),
+                folder / f"{quote.quote_id}.pdf",
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "לא ניתן להפיק PDF")
+            return
+        self._record_in_job()
+
+        job = self.session.job
+        brand = active_brand()
+        phone = customer_phone(job) if job is not None else ""
+        message = quote_message(
+            brand_name=brand.document_name,
+            customer_name=getattr(job, "customer_name", "") or self.draft.customer,
+            job_name=getattr(job, "name", "") or self.draft.project_name,
+            quote_id=quote.quote_id,
+            total=self.draft.totals()["gross"],
+            currency=quote.currency,
+            valid_days=quote.policy.valid_days,
+            phone=brand.phone or "",
+        )
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
+        QDesktopServices.openUrl(QUrl(whatsapp_link(phone, message)))
+        self.status(
+            f"נשמר {pdf.name} — גרור אותו לצ׳אט שנפתח"
+            + ("" if whatsapp_number(phone) else " (ללקוח אין טלפון נייד בתיק — בחר צ׳אט)")
+        )
 
     def _record_in_job(self) -> None:
         """Write the quoted figure onto the open job, and move it along.
@@ -4637,6 +4965,11 @@ class CollectionPage(Page):
         bounce.clicked.connect(self.bounce)
         self.header.add_action(bounce)
 
+        remind = QPushButton("תזכורת בוואטסאפ")
+        remind.setObjectName("WhatsApp")
+        remind.clicked.connect(self.remind_customer)
+        self.header.add_action(remind)
+
         self.stats = StatRow([
             ("in_hand", "במגירה ₪"), ("bankable", "להפקדה היום ₪"),
             ("bounced", "חזרו ₪"), ("days", "ימי אשראי ממוצעים"),
@@ -4691,12 +5024,23 @@ class CollectionPage(Page):
         self._cheques: list[Any] = []
 
     def book(self) -> Any:
-        """The drawer, kept for the life of the window."""
-        from ..erp.collection import ChequeBook
+        """The drawer — on disk, so a cheque typed in is still there tomorrow."""
+        from ..erp.collection import ChequeBook, default_cheques
 
         if self._book is None:
-            self._book = ChequeBook()
+            try:
+                self._book = default_cheques()
+            except Exception as exc:  # noqa: BLE001 - say so, never silently lose
+                _log.exception("Cheque drawer unreadable")
+                self.report(exc, "לא ניתן לקרוא את מגירת הצ׳קים")
+                self._book = ChequeBook()
         return self._book
+
+    def _save(self) -> None:
+        try:
+            self.book().save()
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "שמירת הצ׳קים נכשלה")
 
     def new_cheque(self) -> None:
         from .dialogs import NewChequeDialog
@@ -4720,6 +5064,7 @@ class CollectionPage(Page):
         except Exception as exc:  # noqa: BLE001
             self.report(exc, "לא ניתן לרשום את הצ׳ק")
             return
+        self._save()
         self.refresh()
         self.status(f"נרשם צ׳ק ⁦{cheque.amount:,.0f}⁩ ₪ מ{cheque.customer}")
 
@@ -4740,8 +5085,38 @@ class CollectionPage(Page):
         except Exception as exc:  # noqa: BLE001 - a post-dated cheque says why
             self.report(exc, "אי אפשר להפקיד")
             return
+        self._save()
         self.refresh()
         self.status(f"הופקד ⁦{cheque.amount:,.0f}⁩ ₪")
+
+    def remind_customer(self) -> None:
+        """A polite, specific reminder about one cheque, ready to send."""
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+
+        from ..branding import active_brand
+        from ..erp.collection import ChequeState
+        from ..sharing import cheque_message, phone_for, whatsapp_link, whatsapp_number
+
+        cheque = self._selected()
+        if cheque is None:
+            self.report(ProfileOSError("בחר צ׳ק מהרשימה"), "לא נבחר צ׳ק")
+            return
+        brand = active_brand()
+        phone = phone_for(job_id=cheque.job_id, customer_name=cheque.customer)
+        message = cheque_message(
+            brand_name=brand.document_name,
+            customer_name=cheque.customer,
+            amount=cheque.amount,
+            due=cheque.due,
+            bounced=cheque.state is ChequeState.BOUNCED,
+            phone=brand.phone or "",
+        )
+        QDesktopServices.openUrl(QUrl(whatsapp_link(phone, message)))
+        self.status(
+            "נפתח וואטסאפ עם תזכורת"
+            + ("" if whatsapp_number(phone) else " — ללקוח אין טלפון בתיק, בחר צ׳אט")
+        )
 
     def bounce(self) -> None:
         cheque = self._selected()
@@ -4749,6 +5124,7 @@ class CollectionPage(Page):
             self.report(ProfileOSError("בחר צ׳ק מהרשימה"), "לא נבחר צ׳ק")
             return
         cheque.bounce(reason="חזר")
+        self._save()
         self.refresh()
         self.status(f"סומן כחוזר: ⁦{cheque.amount:,.0f}⁩ ₪", )
 
@@ -6945,7 +7321,11 @@ class ViewPage(Page):
 
         self.canvas = QSvgWidget()
         self.canvas.setMinimumHeight(420)
-        self.body.addWidget(self.canvas, 1)
+        self.canvas_stack = canvas_with_empty_state(
+            self, self.canvas,
+            "עדיין אין פתח להציג.\nתכנן פתח — והוא יופיע כאן בתלת-ממד.",
+        )
+        self.body.addWidget(self.canvas_stack, 1)
 
         note = QLabel(
             "המודל נבנה מאותם חתכי פרופיל ולפי אותם כללי מערכת שמייצרים את "
@@ -6956,22 +7336,39 @@ class ViewPage(Page):
         note.setWordWrap(True)
         self.body.addWidget(note)
 
-        for widget in (self.element, self.view, self.finish, self.glass):
+        for widget in (self.view, self.finish, self.glass):
             widget.currentTextChanged.connect(self._redraw)
+        # A different window is a different model, not a different camera.
+        self.element.currentIndexChanged.connect(
+            lambda _index: self.render_scene() if self.session.builds else None
+        )
         self._scene = None
+        self._scene_for = ""
 
     def refresh(self) -> None:
         ids = [build.opening.element_id for build in self.session.builds]
-        current = self.element.currentText()
+        current = self.element.currentData() or ""
         self.element.blockSignals(True)
         self.element.clear()
-        self.element.addItems(ids)
+        # The window's own mark is what the shop calls it; the id rides along.
+        for build in self.session.builds:
+            self.element.addItem(build.opening.name or build.opening.element_id,
+                                 build.opening.element_id)
         if current in ids:
-            self.element.setCurrentText(current)
+            self.element.setCurrentIndex(ids.index(current))
         self.element.blockSignals(False)
         self.header.set_subtitle(
             f"{len(ids)} פתחים מתוכננים" if ids else "תכנן פתח קודם"
         )
+        # Something to show means show it — a page that waits for "הצג" when
+        # the answer is already known is one click too many.
+        if not ids:
+            self._scene = None
+            self.canvas_stack.setCurrentIndex(0)
+            return
+        self.canvas_stack.setCurrentIndex(1)
+        if self._scene is None or self._scene_for != (self.element.currentData() or ""):
+            self.render_scene()
 
     def _build_for(self, element_id: str):
         """The build the picker names — or the first one, if it names nothing.
@@ -6993,7 +7390,7 @@ class ViewPage(Page):
     def render_scene(self) -> None:
         from ..viz3d import ViewStyle, build_element_scene
 
-        build = self._build_for(self.element.currentText())
+        build = self._build_for(self.element.currentData() or "")
         if build is None:
             self.report(
                 ProfileOSError("עדיין לא תוכננו פתחים. תכנן פתח בעמוד ״פתח״ ואז חזור לכאן."), "אין מה להציג"
@@ -7007,6 +7404,8 @@ class ViewPage(Page):
         except Exception as exc:  # noqa: BLE001
             self.report(exc, "לא ניתן לבנות את המודל")
             return
+        self._scene_for = build.opening.element_id
+        self.canvas_stack.setCurrentIndex(1)
 
         scene = self._scene
         size = scene.size
@@ -7050,6 +7449,7 @@ class ViewPage(Page):
         except Exception as exc:  # noqa: BLE001
             self.report(exc, "לא ניתן להציג את המבט")
             return
+        self.canvas_stack.setCurrentIndex(1)
         self.canvas.load(svg.encode("utf-8"))
 
     def export_ifc(self) -> None:

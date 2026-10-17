@@ -196,7 +196,7 @@ class TestOptions:
 class TestFinishes:
     def test_the_shipped_rates_admit_they_are_stand_ins(self, draft):
         draft.set_finish("anodized")
-        assert any("stand-in" in warning for warning in draft.variant().warnings)
+        assert any("מחיר זמני" in warning for warning in draft.variant().warnings)
 
     def test_a_confirmed_rate_needs_a_source(self):
         with pytest.raises(QuoteEditError):

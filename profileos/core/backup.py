@@ -382,12 +382,43 @@ def prune(folder: Path, *, keep: int = 14) -> list[Path]:
     return removed
 
 
+def backup_if_due(folder: Path | None = None, *, keep: int = 30) -> Path | None:
+    """Write today's backup if none exists yet, and keep the last ``keep``.
+
+    The backup a small shop has is the one that happened without anybody
+    remembering to make it. Run when the application closes: at most one a
+    day, into the default folder beside the data, oldest pruned. Returns the
+    archive written, or ``None`` when today already has one or there is no
+    data yet. Never raises — a failed backup must not stop the window
+    closing; it is logged instead.
+    """
+    from datetime import date
+
+    try:
+        from .config import get_settings
+
+        root = get_settings().data_dir
+        if not root.is_dir() or not any(root.iterdir()):
+            return None
+        target = Path(folder) if folder is not None else default_backup_folder()
+        today = date.today().isoformat()
+        if target.is_dir() and any(target.glob(f"profileos-{today}-*.zip")):
+            return None
+        archive = write_backup(target, root=root)
+        prune(target, keep=keep)
+        return archive
+    except Exception as exc:  # noqa: BLE001 - closing the window comes first
+        _log.warning("Automatic backup skipped: %s", exc)
+        return None
+
+
 def _unused(_: Iterable[Any]) -> None:  # pragma: no cover - typing helper
     return None
 
 
 __all__ = [
     "MANIFEST_NAME",
+    "backup_if_due",
     "default_backup_folder",
     "Manifest",
     "RestorePlan",

@@ -1277,7 +1277,7 @@ class TestServiceAndCollectionScreens:
         )
 
     def test_a_post_dated_cheque_cannot_be_deposited_from_the_screen(
-        self, window, monkeypatch
+        self, window, monkeypatch, job_dir
     ):
         from datetime import date, timedelta
 
@@ -1298,7 +1298,7 @@ class TestServiceAndCollectionScreens:
         page.deposit()
         assert recorded and "דחוי" in recorded[0]
 
-    def test_the_drawer_totals_what_is_still_expected(self, window):
+    def test_the_drawer_totals_what_is_still_expected(self, window, job_dir):
         from datetime import date, timedelta
 
         from profileos.erp.collection import Cheque
@@ -1314,6 +1314,24 @@ class TestServiceAndCollectionScreens:
         pump()
         assert page.cheques_table.rowCount() == 3
         assert book.in_hand == 3000
+
+    def test_a_cheque_entered_is_still_there_after_a_restart(self, window, job_dir):
+        """The drawer is on disk: closing the program must not empty it."""
+        from datetime import date, timedelta
+
+        from profileos.erp.collection import Cheque, default_cheques
+
+        page = window.go_to_page("Collection")
+        page.book().add(Cheque(
+            customer="כהן", amount=2500, due=date.today() + timedelta(days=30),
+            job_id="J-2026-0001",
+        ))
+        page._save()
+        reopened = default_cheques()
+        assert len(reopened) == 1
+        cheque = next(iter(reopened))
+        assert cheque.amount == 2500 and cheque.customer == "כהן"
+        assert cheque.due == date.today() + timedelta(days=30)
 
     def test_the_costing_panel_answers_for_the_selected_job(self, window, job_dir):
         from profileos.projects import default_store

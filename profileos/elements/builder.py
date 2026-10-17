@@ -36,6 +36,13 @@ from .rules import SystemRules, get_system_rules
 _log = get_logger("elements.builder")
 
 
+def _hebrew_reason(reason: str | None) -> str:
+    """The safety-glass reason in Hebrew, imported late to avoid a cycle."""
+    from .feasibility import hebrew_safety_reason
+
+    return hebrew_safety_reason(reason)
+
+
 @dataclass
 class Rect:
     """An axis-aligned rectangle in element coordinates."""
@@ -394,8 +401,8 @@ class ElementBuilder:
             rect = rects[cell.key]
             if rect.width <= 0 or rect.height <= 0:
                 build.warnings.append(
-                    f"Cell {cell.key} has a non-positive daylight opening "
-                    f"({rect.width:.1f} x {rect.height:.1f} mm); divisions are too close."
+                    f"תא {cell.key}: אין פתח אור "
+                    f"(⁦{rect.width:.1f} × {rect.height:.1f}⁩ מ״מ) — החלוקות צפופות מדי."
                 )
                 continue
             self._add_cell(build, opening, rules, cell, rect, sill_height)
@@ -526,8 +533,8 @@ class ElementBuilder:
         build_up = self._resolve_glass(cell, opening, build)
         if build_up.total_thickness > rules.glass.max_glass_thickness:
             build.warnings.append(
-                f"Cell {cell.key}: glass is {build_up.total_thickness:.0f} mm thick but the "
-                f"system accepts at most {rules.glass.max_glass_thickness:.0f} mm."
+                f"תא {cell.key}: עובי הזכוכית ⁦{build_up.total_thickness:.0f}⁩ מ״מ, אבל "
+                f"הסדרה מקבלת לכל היותר ⁦{rules.glass.max_glass_thickness:.0f}⁩ מ״מ."
             )
 
         required, reason = safety_glass_required(
@@ -621,7 +628,7 @@ class ElementBuilder:
         inner_height = sash_height - 2.0 * face
         if inner_width <= 0 or inner_height <= 0:
             build.warnings.append(
-                f"Cell {cell.key}: sash profile leaves no daylight opening."
+                f"תא {cell.key}: פרופיל הכנף לא משאיר פתח אור."
             )
             return Rect(rect.x, rect.y, max(inner_width, 1.0), max(inner_height, 1.0))
 
@@ -648,8 +655,8 @@ class ElementBuilder:
         entries = rules.hardware.get(group, [])
         if not entries and sash.opening_type.is_operable:
             build.warnings.append(
-                f"Cell {cell_key}: no hardware rules for opening type "
-                f"{sash.opening_type.value!r} in system {rules.id!r}."
+                f"תא {cell_key}: אין כללי פרזול לסוג פתיחה "
+                f"״{sash.opening_type.value}״ בסדרה ״{rules.id}״."
             )
 
         for entry in entries:
@@ -703,17 +710,17 @@ class ElementBuilder:
 
         if asked and build is not None:
             build.warnings.append(
-                f"Cell {cell.key}: glass {asked[0]!r} is not in this "
-                f"installation's catalogue; {self.default_glass.id!r} was used "
-                "instead. Check the specification before ordering."
+                f"תא {cell.key}: הזכוכית ״{asked[0]}״ לא קיימת בקטלוג; "
+                f"נעשה שימוש ב-״{self.default_glass.id}״ במקומה. בדקו את המפרט "
+                "לפני הזמנה."
             )
         return self.default_glass
 
     def _check_compliance(self, build: ElementBuild) -> None:
         for panel in build.non_compliant_glass:
             build.warnings.append(
-                f"Pane {panel.mark} ({panel.describe()}) requires safety glass "
-                f"({panel.safety_reason}) but the specified build-up is not safety glass."
+                f"שמשה {panel.mark} ({panel.describe()}) מחייבת זכוכית בטיחותית "
+                f"({_hebrew_reason(panel.safety_reason)}), אבל הזיגוג שנבחר אינו בטיחותי."
             )
 
 

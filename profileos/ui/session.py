@@ -242,7 +242,8 @@ class Session:
                 f"⁦{self.nesting_report.overall_yield_pct:.1f}%⁩"
             )
         if self.quote:
-            parts.append(f"⁦{self.quote.net_price:,.0f} {self.quote.currency}⁩")
+            symbol = "₪" if self.quote.currency == "ILS" else self.quote.currency
+            parts.append(f"⁦{self.quote.net_price:,.0f} {symbol}⁩")
         if self.work_order:
             parts.append(f"{len(self.work_order)} פריטים שוחררו")
         return "  ·  ".join(parts) or "מוכן"

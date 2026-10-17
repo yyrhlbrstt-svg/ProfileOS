@@ -224,8 +224,8 @@ def build_bom(
                 )
             )
         bom.warnings.append(
-            "Profile quantities are finished lengths — nest the project to "
-            "price the bars actually consumed."
+            "כמויות הפרופיל הן אורכים נטו — הריצו אופטימיזציית חיתוך כדי "
+            "לתמחר את המוטות שייצרכו בפועל."
         )
 
     # -- glass --------------------------------------------------------------- #

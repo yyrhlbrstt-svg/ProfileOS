@@ -86,6 +86,37 @@ class TestBackup:
             read_manifest(broken)
 
 
+class TestDailyBackup:
+    """The backup nobody has to remember: one a day, taken on close."""
+
+    def test_first_close_of_the_day_writes_one(self, shop, tmp_path):
+        from profileos.core.backup import backup_if_due
+
+        _populate(shop)
+        archive = backup_if_due(tmp_path / "auto")
+        assert archive is not None and archive.is_file()
+
+    def test_second_close_the_same_day_does_not(self, shop, tmp_path):
+        from profileos.core.backup import backup_if_due
+
+        _populate(shop)
+        assert backup_if_due(tmp_path / "auto") is not None
+        assert backup_if_due(tmp_path / "auto") is None
+        assert len(list((tmp_path / "auto").glob("*.zip"))) == 1
+
+    def test_an_empty_installation_is_not_backed_up(self, shop, tmp_path):
+        from profileos.core.backup import backup_if_due
+
+        assert backup_if_due(tmp_path / "auto") is None
+
+    def test_a_failure_never_raises(self, shop, tmp_path):
+        """Closing the window comes first; a bad target is logged, not thrown."""
+        from profileos.core.backup import backup_if_due
+
+        _populate(shop)
+        assert backup_if_due(shop / "inside") is None
+
+
 class TestRestoring:
     def test_a_plan_says_what_would_be_replaced_and_changes_nothing(self, shop, tmp_path):
         _populate(shop)

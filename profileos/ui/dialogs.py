@@ -396,3 +396,68 @@ __all__ = [
     "NewJobDialog",
     "NewServiceCallDialog",
 ]
+
+
+class QuickEstimateDialog(_FormDialog):
+    """A price over the phone: type what the customer said, read the answer.
+
+    Accepting the dialog means "design this properly" — the caller takes
+    :attr:`estimate` and opens it on the element page as a real opening.
+    """
+
+    accept_text = "העבר לתכנון מלא"
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        from PySide6.QtCore import QTimer
+        from PySide6.QtWidgets import QLabel
+
+        super().__init__("הערכת מחיר מהירה", parent)
+        self.setMinimumWidth(560)
+
+        self.query = QLineEdit()
+        self.query.setPlaceholderText("מה הלקוח ביקש? למשל: הזזה 2 כנפיים 240/210")
+        self.grid.add("מה מבקשים", self.query)
+
+        self.result = QLabel("הקלד סוג פתח ומידה — המחיר יופיע כאן.")
+        self.result.setObjectName("EstimateResult")
+        self.result.setWordWrap(True)
+        # Two lines of large type: the answer must never be the thing clipped.
+        self.result.setMinimumHeight(METRICS.space(20))
+        self.grid.add("הערכה", self.result)
+
+        note = QLabel(
+            "הערכה בלבד — לא הצעת מחיר מחייבת. מחושבת באותם כללים כמו הצעה "
+            "מלאה, לפי המחירון שהוזן ובהעדרו לפי מחירי ברירת מחדל."
+        )
+        note.setObjectName("Hint")
+        note.setWordWrap(True)
+        self.layout().insertWidget(1, note)
+
+        self.estimate: Any = None
+        self.ok_button.setEnabled(False)
+        self._timer = QTimer(self)
+        self._timer.setSingleShot(True)
+        self._timer.setInterval(300)
+        self._timer.timeout.connect(self._update)
+        self.query.textChanged.connect(lambda _text: self._timer.start())
+        self.query.setFocus()
+
+    def _update(self) -> None:
+        from ..quoting.estimate import estimate
+
+        text = self.query.text().strip()
+        if not text:
+            self.estimate = None
+        else:
+            try:
+                self.estimate = estimate(text)
+            except Exception:  # noqa: BLE001 - half a sentence is not an error
+                self.estimate = None
+        self.ok_button.setEnabled(self.estimate is not None)
+        if self.estimate is None:
+            self.result.setText(
+                "לא זוהה פתח — נסה סוג ומידה, למשל ״חלון ציר 120/140״"
+                if text else "הקלד סוג פתח ומידה — המחיר יופיע כאן."
+            )
+        else:
+            self.result.setText(self.estimate.describe())

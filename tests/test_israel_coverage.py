@@ -75,8 +75,7 @@ class TestGlassIsNeverSubstitutedInSilence:
             Opening(name="B1", width=1500, height=1100,
                     glass_spec_id="lam-99-9"),
         ])[0]
-        assert any("not in this installation's catalogue" in w
-                   for w in build.warnings)
+        assert any("לא קיימת בקטלוג" in w for w in build.warnings)
 
     def test_a_specification_it_has_is_used_without_comment(self):
         build = build_elements([
@@ -84,11 +83,11 @@ class TestGlassIsNeverSubstitutedInSilence:
                     glass_spec_id="lam-66-2"),
         ])[0]
         assert build.glass[0].build_up.id == "lam-66-2"
-        assert not any("catalogue" in w for w in build.warnings)
+        assert not any("לא קיימת בקטלוג" in w for w in build.warnings)
 
     def test_naming_nothing_is_not_a_missing_specification(self):
         build = build_elements([Opening(name="W1", width=1500, height=1100)])[0]
-        assert not any("catalogue" in w for w in build.warnings)
+        assert not any("לא קיימת בקטלוג" in w for w in build.warnings)
 
 
 class TestTheSystemHouses:

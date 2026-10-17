@@ -9,9 +9,11 @@ from __future__ import annotations
 
 from typing import Any, Iterable, Sequence
 
-from PySide6.QtCore import QRectF, Qt, QTimer
+from PySide6.QtCore import QEvent, QObject, QRectF, Qt, QTimer
 from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (
+    QAbstractSpinBox,
+    QApplication,
     QFrame,
     QGridLayout,
     QHBoxLayout,
@@ -88,6 +90,34 @@ class StatTile(QFrame):
         self.value.setText(value)
         if note:
             self.note.setText(note)
+
+
+class _NumberFieldPolish(QObject):
+    """Sit every number field's text on the right, away from its arrows.
+
+    In a right-to-left window Qt puts a spin box's step buttons on the left
+    edge, and left-aligned digits run straight into them. Right-aligned is
+    also simply where a Hebrew reader looks for the value. Done once, as the
+    widget is polished, so it covers every field on every page and dialog —
+    including the ones built after the window opens.
+    """
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:  # noqa: N802
+        if event.type() == QEvent.Type.Polish and isinstance(watched, QAbstractSpinBox):
+            watched.setAlignment(
+                Qt.AlignmentFlag.AlignRight
+                | Qt.AlignmentFlag.AlignAbsolute
+                | Qt.AlignmentFlag.AlignVCenter
+            )
+        return False
+
+
+def install_number_field_polish(application: QApplication) -> None:
+    """Install :class:`_NumberFieldPolish` once per application."""
+    if getattr(application, "_number_field_polish", None) is None:
+        polish = _NumberFieldPolish(application)
+        application.installEventFilter(polish)
+        application._number_field_polish = polish
 
 
 class StatRow(QWidget):
