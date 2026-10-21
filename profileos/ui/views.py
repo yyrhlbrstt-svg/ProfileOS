@@ -80,10 +80,15 @@ class CanvasView(QWidget):
         self._last_mouse = QPoint()
         self._world_bounds: tuple[float, float, float, float] | None = None
         self._fitted = False
+        #: Set once somebody zooms or pans; until then the drawing follows
+        #: the widget's size, so it is never left in a corner at a quarter
+        #: of the room it has.
+        self._user_moved = False
 
         self.show_grid = True
         self.show_axes = True
-        self.margin = 28.0
+        # Room for the dimension labels drawn outside the outline.
+        self.margin = 48.0
 
     # -- transform ---------------------------------------------------------- #
     def to_screen(self, x: float, y: float) -> QPointF:
@@ -106,6 +111,7 @@ class CanvasView(QWidget):
         """Declare the drawing extent and refit on the next paint."""
         self._world_bounds = bounds
         self._fitted = False
+        self._user_moved = False
         self.update()
 
     def fit(self) -> None:
@@ -143,6 +149,7 @@ class CanvasView(QWidget):
         cursor = event.position()
         world_before = self.to_world(cursor)
 
+        self._user_moved = True
         self._scale = max(1e-4, min(self._scale * factor, 1e5))
         # Re-anchor so the world point under the cursor maps back to it.
         self._offset = QPointF(
@@ -161,6 +168,8 @@ class CanvasView(QWidget):
         position = event.position()
         if self._panning:
             delta = position.toPoint() - self._last_mouse
+            if delta.x() or delta.y():
+                self._user_moved = True
             self._offset += QPointF(delta.x(), delta.y())
             self._last_mouse = position.toPoint()
             self.update()
@@ -172,11 +181,12 @@ class CanvasView(QWidget):
         self.unsetCursor()
 
     def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:
+        self._user_moved = False
         self.fit()
 
     def resizeEvent(self, event: Any) -> None:
         super().resizeEvent(event)
-        if not self._fitted:
+        if not self._fitted or not self._user_moved:
             self.fit()
 
     # -- painting ------------------------------------------------------------ #

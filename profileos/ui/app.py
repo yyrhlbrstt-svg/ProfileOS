@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import sys
 from typing import Sequence
 
@@ -51,6 +53,7 @@ def run(argv: Sequence[str] | None = None, *, theme: str | None = None) -> int:
     # Numbers inside text stay left-to-right on their own; that is bidi, not
     # layout, and Qt handles it per text run.
     application.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
+    _install_hebrew_buttons(application)
 
     load_fonts()
 
@@ -143,6 +146,24 @@ def _install_error_handler(window: object) -> None:
         box.exec()
 
     sys.excepthook = show
+
+
+def _install_hebrew_buttons(application: Any) -> None:
+    """Qt's own words — Yes, No, Cancel, OK, Save — in Hebrew.
+
+    Every standard dialog button and file dialog otherwise speaks English
+    in the middle of a Hebrew program. Qt ships the translation; it only has
+    to be loaded. Kept on the application so it is not collected.
+    """
+    from PySide6.QtCore import QLibraryInfo, QTranslator
+
+    folder = QLibraryInfo.path(QLibraryInfo.LibraryPath.TranslationsPath)
+    application._translators = []
+    for name in ("qtbase_he", "qt_he"):
+        translator = QTranslator(application)
+        if translator.load(name, folder):
+            application.installTranslator(translator)
+            application._translators.append(translator)
 
 
 def main() -> None:  # pragma: no cover - console entry point

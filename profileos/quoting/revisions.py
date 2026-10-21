@@ -20,7 +20,6 @@ same.
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
@@ -454,8 +453,20 @@ def _lines_of(quotation: Any) -> Iterable[Line]:
         )
 
 
-class RevisionBook:
+from ..core.storage import MergingBook
+
+
+class RevisionBook(MergingBook):
     """Every job's quotation history, kept on disk."""
+
+    _list_key = "histories"
+    _id_field = "job_id"
+
+    def _to_raw(self, record: Any) -> dict[str, Any]:
+        return record.as_dict()
+
+    def _from_raw(self, raw: dict[str, Any]) -> Any:
+        return QuoteHistory.from_dict(raw)
 
     def __init__(self, path: Path | None = None) -> None:
         from ..core.config import get_settings
@@ -472,9 +483,7 @@ class RevisionBook:
             return self
         # Recovered from the previous version or refused — never read
         # as empty, which the next save would write over real records.
-        from ..core.storage import read_json
-
-        raw = read_json(self.path, default={})
+        raw = self._read_or_mark(self.path)
         for item in raw.get("histories", []):
             try:
                 history = QuoteHistory.from_dict(item)
@@ -482,22 +491,27 @@ class RevisionBook:
                 _log.warning("Skipped an unreadable quote history: %s", exc)
                 continue
             self._histories[history.job_id] = history
+        self._remember_loaded()
         return self
 
     def save(self) -> None:
+        """Write this copy's changes, merged with what is on disk now."""
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        payload = {
-            "written": datetime.now().isoformat(timespec="seconds"),
-            "histories": [h.as_dict() for h in self._histories.values()],
-        }
-        from ..core.storage import atomic_write_text
-
-        atomic_write_text(self.path, json.dumps(payload, ensure_ascii=False, indent=2))
+        self._save_merged(self.path, {"written": datetime.now().isoformat(timespec="seconds")})
 
     def for_job(self, job_id: str) -> QuoteHistory:
         if job_id not in self._histories:
             self._histories[job_id] = QuoteHistory(job_id=job_id)
         return self._histories[job_id]
+
+    def _records(self) -> dict[str, Any]:
+        # A history only looked at is not a change: an empty one held here
+        # must not overwrite revisions another copy saved for that job.
+        for job_id in [key for key, history in self._histories.items()
+                       if not history.as_dict().get("revisions")
+                       and key not in getattr(self, "_loaded", {})]:
+            del self._histories[job_id]
+        return self._histories
 
     def __len__(self) -> int:
         return len(self._histories)

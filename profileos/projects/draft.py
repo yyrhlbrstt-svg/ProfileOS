@@ -52,10 +52,14 @@ def read_draft() -> tuple[Any, str] | None:
 
 
 def clear_draft() -> None:
-    """The work now lives in a job; the draft has done its job."""
-    path = draft_path()
-    if path.is_file():
-        path.unlink()
+    """The work now lives in a job; the draft has done its job.
+
+    Moved to the recycle bin with its previous version — unlinking the file
+    alone leaves the ``.bak``, which the next read would bring back.
+    """
+    from ..core.storage import discard
+
+    discard(draft_path())
 
 
 def retire_draft(schedule: Any) -> Path | None:
@@ -79,11 +83,25 @@ def retire_draft(schedule: Any) -> Path | None:
 
 def set_draft_aside() -> Path | None:
     """Keep a draft the person chose not to restore — renamed, never deleted."""
+    from ..core.storage import backup_path
+
     path = draft_path()
     if not path.is_file():
         return None
-    target = path.with_name(f"draft-{datetime.now():%Y%m%d-%H%M%S}.json")
+    stamp = f"{datetime.now():%Y%m%d-%H%M%S}"
+    target = path.with_name(f"draft-{stamp}.json")
+    serial = 2
+    # Never over an earlier draft set aside in the same second.
+    while target.exists():
+        target = path.with_name(f"draft-{stamp}-{serial}.json")
+        serial += 1
     path.replace(target)
+    # Its previous version goes to the bin, or it would come back as the draft.
+    bak = backup_path(path)
+    if bak.exists():
+        trash = path.parent / ".trash"
+        trash.mkdir(parents=True, exist_ok=True)
+        bak.replace(trash / f"draft-{stamp}-{serial}.json.bak")
     _log.info("Draft set aside as %s", target.name)
     return target
 

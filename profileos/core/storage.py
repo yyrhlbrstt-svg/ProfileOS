@@ -127,13 +127,13 @@ def _read_bytes(path: Path) -> bytes:
     for attempt in range(6):
         try:
             return path.read_bytes()
-        except FileNotFoundError:
+        except (FileNotFoundError, IsADirectoryError, NotADirectoryError):
             raise
         except OSError as exc:
             last = exc
             time.sleep(0.05 * (attempt + 1))
     raise StorageError(
-        f"הקובץ {path.name} תפוס כרגע על ידי תוכנה אחרת (גיבוי ענן, אנטי-וירוס). "
+        f"הקובץ ⁦{path.name}⁩ תפוס כרגע על ידי תוכנה אחרת (גיבוי ענן, אנטי-וירוס). "
         "שום דבר לא שונה — נסו שוב בעוד רגע.",
         file=str(path), reason=str(last),
     ) from last
@@ -160,8 +160,8 @@ def _parse(path: Path, parse: Callable[[str], Any]) -> Any:
         return parse(text)
     except Exception as exc:  # noqa: BLE001
         raise StorageError(
-            f"הקובץ {path.name} תקין אבל לא ניתן לקרוא אותו בגרסה הזאת של התוכנה "
-            "(אולי נכתב בגרסה חדשה יותר). הוא לא שונה.",
+            f"הקובץ ⁦{path.name}⁩ תקין, אבל הגרסה הזאת של התוכנה לא יודעת לקרוא אותו "
+            "(אולי נכתב בגרסה חדשה יותר). הוא לא שונה — עדכנו את התוכנה ונסו שוב.",
             file=str(path), reason=str(exc),
         ) from exc
 
@@ -188,8 +188,10 @@ def read_text_checked(
             return default
         try:
             value = _parse(bak, parse)
-        except Exception:  # noqa: BLE001 - nothing usable: the file stays missing
-            return default
+        except _Damaged:
+            return default  # nothing usable: the file stays missing
+        # A previous version that is busy or from a newer version raises: the
+        # default here would let the next save write over that .bak.
         try:
             shutil.copy2(bak, path)
         except OSError as exc:
@@ -209,7 +211,7 @@ def read_text_checked(
             value = None
         if value is None:
             raise StorageError(
-                f"הקובץ {path.name} פגום ואין עותק קודם תקין. "
+                f"הקובץ ⁦{path.name}⁩ פגום ואין עותק קודם תקין. "
                 "הנתונים לא נדרסו — הקובץ נשאר במקומו לשחזור מגיבוי.",
                 file=str(path), reason=str(first),
             ) from first
@@ -224,6 +226,28 @@ def read_text_checked(
         )
         _note_recovery(path, damaged)
         return value
+
+
+def discard(path: Path | str) -> Path | None:
+    """Put a file *and its previous version* in the folder's ``.trash``.
+
+    Unlinking only the file leaves its ``.bak`` beside it, and the next read
+    brings the old contents back as if nothing had been deleted. Returns
+    where the file went, or ``None`` if there was nothing to discard.
+    """
+    path = Path(path)
+    trash = path.parent / ".trash"
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+    moved: Path | None = None
+    for item, suffix in ((path, ""), (backup_path(path), ".bak")):
+        if not item.exists():
+            continue
+        trash.mkdir(parents=True, exist_ok=True)
+        target = trash / f"{path.stem}-{stamp}{path.suffix}{suffix}"
+        os.replace(item, target)
+        if not suffix:
+            moved = target
+    return moved
 
 
 def stored(path: Path | str) -> bool:
@@ -338,6 +362,7 @@ def _note_recovery(path: Path, damaged: Path) -> None:
 
 
 __all__ = [
+    "discard",
     "stored",
     "MergingBook",
     "RECOVERED",

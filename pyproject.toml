@@ -59,6 +59,7 @@ profileos = [
     "**/*.txt",
     "**/*.dxf",
     "**/*.csv",
+    "**/*.qml",
 ]
 
 [tool.pytest.ini_options]

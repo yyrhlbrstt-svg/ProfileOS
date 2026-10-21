@@ -20,7 +20,6 @@ a few months the figure is shown struck through rather than offered.
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
@@ -85,7 +84,7 @@ class Template:
         if self.last_price_per_m2 is None:
             return "לא תומחר"
         age = self.price_age_days or 0
-        figure = f"⁦{self.last_price_per_m2:,.0f}⁩ ₪/מ״ר"
+        figure = f"⁦{self.last_price_per_m2:,.0f} ₪⁩/מ״ר"
         if self.price_is_stale:
             return f"{figure} · לפני ⁦{age}⁩ ימים — לתמחר מחדש"
         return f"{figure} · לפני ⁦{age}⁩ ימים"
@@ -240,8 +239,23 @@ def template_from_opening(
     return template
 
 
-class TemplateBook:
+from ..core.storage import MergingBook
+
+
+class TemplateBook(MergingBook):
     """Every configuration the shop has saved, kept on disk."""
+
+    _list_key = "templates"
+    _id_field = "template_id"
+
+    def _records(self) -> dict[str, Any]:
+        return self._templates
+
+    def _to_raw(self, record: Any) -> dict[str, Any]:
+        return record.as_dict()
+
+    def _from_raw(self, raw: dict[str, Any]) -> Any:
+        return Template.from_dict(raw)
 
     def __init__(self, path: Path | None = None) -> None:
         from ..core.config import get_settings
@@ -258,9 +272,7 @@ class TemplateBook:
             return self
         # Recovered from the previous version or refused — never read
         # as empty, which the next save would write over real records.
-        from ..core.storage import read_json
-
-        raw = read_json(self.path, default={})
+        raw = self._read_or_mark(self.path)
         for item in raw.get("templates", []):
             try:
                 template = Template.from_dict(item)
@@ -268,17 +280,13 @@ class TemplateBook:
                 _log.warning("Skipped an unreadable template: %s", exc)
                 continue
             self._templates[template.template_id] = template
+        self._remember_loaded()
         return self
 
     def save(self) -> None:
+        """Write this copy's changes, merged with what is on disk now."""
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        payload = {
-            "written": datetime.now().isoformat(timespec="seconds"),
-            "templates": [t.as_dict() for t in self._templates.values()],
-        }
-        from ..core.storage import atomic_write_text
-
-        atomic_write_text(self.path, json.dumps(payload, ensure_ascii=False, indent=2))
+        self._save_merged(self.path, {"written": datetime.now().isoformat(timespec="seconds")})
 
     def add(self, template: Template) -> Template:
         self._templates[template.template_id] = template

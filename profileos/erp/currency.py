@@ -76,7 +76,7 @@ class Rate:
     def describe(self) -> str:
         return (
             f"⁦1⁩ {CURRENCIES.get(self.currency, self.currency)} = "
-            f"⁦{self.per_unit:.4f}⁩ ₪ · ⁦{self.on.strftime('%d/%m/%Y')}⁩"
+            f"⁦{self.per_unit:.4f} ₪⁩ · ⁦{self.on.strftime('%d/%m/%Y')}⁩"
         )
 
 
@@ -97,9 +97,9 @@ class Conversion:
 
     def describe(self) -> str:
         if self.currency == HOME or self.rate is None:
-            return f"⁦{self.home_amount:,.2f}⁩ ₪"
+            return f"⁦{self.home_amount:,.2f} ₪⁩"
         return (
-            f"⁦{self.amount:,.2f}⁩ {self.currency} → ⁦{self.home_amount:,.2f}⁩ ₪ "
+            f"⁦{self.amount:,.2f}⁩ {self.currency} → ⁦{self.home_amount:,.2f} ₪⁩ "
             f"(⁦{self.rate.per_unit:.4f}⁩, ⁦{self.rate.on.strftime('%d/%m/%Y')}⁩)"
         )
 
@@ -110,6 +110,8 @@ class RateBook:
     def __init__(self, path: Path | None = None) -> None:
         self.path = Path(path) if path is not None else None
         self._rates: dict[str, list[Rate]] = {}
+        #: Rows this version could not read, written back exactly as found.
+        self._unparsed: list = []
         #: Set when the file could not be read; saves are then refused.
         self.damaged: Exception | None = None
         if self.path is not None:
@@ -144,6 +146,7 @@ class RateBook:
                 )
             except Exception:  # noqa: BLE001 - one bad row, not the book
                 _log.warning("Skipping unreadable rate: %s", entry)
+                self._unparsed.append(entry)
         return self
 
     def save(self) -> None:
@@ -159,7 +162,7 @@ class RateBook:
                     "on": rate.on.isoformat(), "source": rate.source,
                 }
                 for rates in self._rates.values() for rate in rates
-            ]
+            ] + self._unparsed
         }
         from ..core.storage import atomic_write_text
 

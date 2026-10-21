@@ -513,6 +513,20 @@ QPlainTextEdit:focus, QTextEdit:focus, QDateEdit:focus {{
     border-color: {p.accent};
 }}
 QLineEdit[invalid="true"] {{ border-color: {p.danger}; }}
+QFrame#SegmentBar {{
+    background: {p.surface_raised}; border-radius: 9px;
+}}
+QPushButton#Segment {{
+    background: transparent; border: none; border-radius: 7px;
+    padding: 4px 16px; min-height: 24px;
+    color: {p.text_muted}; font-weight: 500;
+}}
+QPushButton#Segment:hover {{ color: {p.text}; }}
+QPushButton#Segment:checked {{
+    background: {p.surface}; color: {p.text}; font-weight: 600;
+    border: {m.border_width}px solid {p.border};
+}}
+QPushButton#Segment:disabled {{ color: {p.text_faint}; }}
 QLabel#FieldError {{ color: {p.danger}; font-size: {m.font_size_small}px; }}
 QLabel#FieldWarning {{
     color: {p.text}; background: {p.surface_raised};

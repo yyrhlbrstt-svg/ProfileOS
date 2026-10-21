@@ -362,6 +362,9 @@ def load_settings(config_dir: str | os.PathLike[str] | None = None, **overrides:
 
     data = _deep_merge(data, _env_overrides())
     data = _deep_merge(data, overrides)
+    # The folder the settings were read from is the folder they belong to:
+    # an explicit argument beats the environment, which beats the default.
+    data["config_dir"] = str(base_dir)
 
     try:
         settings = Settings.model_validate(data)
@@ -383,7 +386,12 @@ def reload_settings() -> Settings:
     previous = _SETTINGS
     _SETTINGS = None
     try:
-        return load_settings(config_dir=previous.config_dir if previous else None)
+        # Re-read from where the settings live now: the environment if it
+        # names a folder, otherwise the folder they were last read from.
+        keep = previous.config_dir if previous and not os.environ.get(
+            ENV_PREFIX + "CONFIG_DIR"
+        ) else None
+        return load_settings(config_dir=keep)
     except ConfigError:
         _SETTINGS = previous  # keep the last good configuration
         raise

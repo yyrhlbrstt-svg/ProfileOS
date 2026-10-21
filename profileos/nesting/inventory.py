@@ -52,6 +52,8 @@ class RemnantInventory:
         self.path = Path(path) if path is not None else None
         self._lock = threading.RLock()
         self._remnants: list[RemnantBar] = []
+        #: Rows this version could not read, written back exactly as found.
+        self._unparsed: list = []
         if self.path is not None and self.path.is_file():
             self.load()
 
@@ -79,14 +81,17 @@ class RemnantInventory:
 
         entries = raw.get("remnants", raw) if isinstance(raw, dict) else raw
         loaded: list[RemnantBar] = []
+        unparsed: list = []
         for entry in entries:
             try:
                 loaded.append(RemnantBar.model_validate(entry))
             except Exception as exc:  # noqa: BLE001 - skip a bad row, keep the rest
                 _log.warning("Skipping malformed remnant record: %s", exc)
+                unparsed.append(entry)
 
         with self._lock:
             self._remnants = loaded
+            self._unparsed = unparsed
         _log.info("Loaded %d remnant(s) from %s", len(loaded), target)
         return len(loaded)
 
@@ -101,7 +106,8 @@ class RemnantInventory:
             payload = {
                 "version": 1,
                 "updated_at": datetime.now(timezone.utc).isoformat(),
-                "remnants": [r.model_dump(mode="json") for r in self._remnants],
+                "remnants": [r.model_dump(mode="json") for r in self._remnants]
+                + self._unparsed,
             }
 
         # Write to a sibling temp file then replace, so an interrupted write

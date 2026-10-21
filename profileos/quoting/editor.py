@@ -361,7 +361,7 @@ class QuoteDraft:
             if variant.finish.rate_per_kg and not variant.finish.provenance.may_be_cut_to:
                 variant.warnings.append(
                     f"הגמר ״{variant.finish.hebrew}״ מתומחר במחיר זמני "
-                    f"⁦{variant.finish.rate_per_kg:.2f}⁩ ₪/ק״ג — הזינו את מחיר הצבעייה "
+                    f"⁦{variant.finish.rate_per_kg:.2f} ₪⁩/ק״ג — הזינו את מחיר הצבעייה "
                     "כדי לקבע אותו."
                 )
             if not mass_complete:

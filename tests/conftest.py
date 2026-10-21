@@ -7,7 +7,16 @@ from pathlib import Path
 
 import pytest
 
-from profileos.core.logging_setup import configure_logging
+# Every test run gets its own settings folder: a test that restores a
+# backup or saves settings must never touch the real installation's.
+import os as _os
+import tempfile as _tempfile
+
+_os.environ.setdefault(
+    "PROFILEOS_CONFIG_DIR", _tempfile.mkdtemp(prefix="profileos-test-config-")
+)
+
+from profileos.core.logging_setup import configure_logging  # noqa: E402
 
 # The FEA backend emits numpy deprecation chatter that drowns the test output.
 warnings.filterwarnings("ignore", category=DeprecationWarning)
@@ -83,3 +92,14 @@ def rect_polygon():
         )
 
     return _make
+
+
+@pytest.fixture(autouse=True)
+def _forget_process_wide_notes():
+    """Recoveries and backup outcomes are remembered for the whole run of
+    the program; one test's must not show up in the next one's sidebar."""
+    from profileos.core import backup, storage
+
+    yield
+    storage.RECOVERED.clear()
+    backup._STATUS.update(error="", last="", mirror_error="")

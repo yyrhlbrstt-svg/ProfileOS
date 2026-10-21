@@ -261,6 +261,9 @@ def build_element_scene(
             continue
 
         glazing = rect
+        #: How this cell's leaf moves, for a viewer that can open it: the
+        #: sash outline, which way it opens and on which side it hangs.
+        leaf: dict[str, Any] | None = None
         if cell.sash is not None and style.show_sashes:
             overlap = rules.sash.frame_overlap
             sash_rect_x = rect.x - overlap
@@ -271,6 +274,13 @@ def build_element_scene(
             # A closed sash stands proud of the frame by a little; showing it
             # flush makes an opening light indistinguishable from a fixed one.
             z = depth * 0.12
+            leaf = {
+                "cell": f"{cell.column}-{cell.row}",
+                "type": cell.sash.opening_type.value,
+                "hinge": cell.sash.hinge_side.value,
+                "rect": [sash_rect_x, sash_rect_y, sash_w, sash_h],
+                "z": z,
+            }
             for name, start, end in [
                 ("sash bottom",
                  (sash_rect_x + half_s, sash_rect_y + half_s, z),
@@ -291,7 +301,7 @@ def build_element_scene(
                         start_angle=45.0, end_angle=45.0,
                         name=f"{name} {cell.key}", material="aluminium",
                         metadata={"profile": sash_profile, "role": "sash",
-                                  "cell": list(cell.key)},
+                                  "cell": list(cell.key), "leaf": leaf},
                     )
                 )
             glazing = type(rect)(
@@ -330,7 +340,8 @@ def build_element_scene(
                  (depth * 0.12 if cell.sash is not None and style.show_sashes else 0.0)),
                 name=f"glass {cell.key}", material="glass",
                 metadata={"cell": list(cell.key),
-                          "size": [round(pane_w, 1), round(pane_h, 1)]},
+                          "size": [round(pane_w, 1), round(pane_h, 1)],
+                          "leaf": leaf},
             )
         )
 

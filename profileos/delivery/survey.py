@@ -30,7 +30,6 @@ on a measurement sheet look identical the morning the saw runs.
 
 from __future__ import annotations
 
-import json
 import math
 from dataclasses import dataclass, field
 from datetime import date, datetime
@@ -465,8 +464,23 @@ def survey_for_job(job: Any, *, clearance_per_side: float | None = None) -> Surv
     return survey
 
 
-class SurveyBook:
+from ..core.storage import MergingBook
+
+
+class SurveyBook(MergingBook):
     """Every measurement sheet the shop has taken, kept on disk."""
+
+    _list_key = "surveys"
+    _id_field = "survey_id"
+
+    def _records(self) -> dict[str, Any]:
+        return self._surveys
+
+    def _to_raw(self, record: Any) -> dict[str, Any]:
+        return record.as_dict()
+
+    def _from_raw(self, raw: dict[str, Any]) -> Any:
+        return Survey.from_dict(raw)
 
     def __init__(self, path: Path | None = None) -> None:
         from ..core.config import get_settings
@@ -481,9 +495,7 @@ class SurveyBook:
             return self
         # Recovered from the previous version or refused — never read
         # as empty, which the next save would write over real records.
-        from ..core.storage import read_json
-
-        raw = read_json(self.path, default={})
+        raw = self._read_or_mark(self.path)
         for item in raw.get("surveys", []):
             try:
                 survey = Survey.from_dict(item)
@@ -491,17 +503,13 @@ class SurveyBook:
                 _log.warning("Skipped an unreadable survey: %s", exc)
                 continue
             self._surveys[survey.survey_id] = survey
+        self._remember_loaded()
         return self
 
     def save(self) -> None:
+        """Write this copy's changes, merged with what is on disk now."""
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        payload = {
-            "written": datetime.now().isoformat(timespec="seconds"),
-            "surveys": [survey.as_dict() for survey in self._surveys.values()],
-        }
-        from ..core.storage import atomic_write_text
-
-        atomic_write_text(self.path, json.dumps(payload, ensure_ascii=False, indent=2))
+        self._save_merged(self.path, {"written": datetime.now().isoformat(timespec="seconds")})
 
     def add(self, survey: Survey) -> Survey:
         self._surveys[survey.survey_id] = survey

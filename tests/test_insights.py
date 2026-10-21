@@ -67,7 +67,7 @@ def test_a_quotation_nobody_chased_is_found(shop):
 
 def test_a_won_job_that_never_reached_the_floor(shop):
     found = _scan(jobs=[_job("J-3", JobStatus.WON, since=TODAY - timedelta(days=20))])
-    assert "לא נכנסו לייצור" in _titles(found)
+    assert "לא נכנס לייצור" in _titles(found)
 
 
 def test_a_late_job_is_urgent(shop):
@@ -99,7 +99,7 @@ def test_cheques_to_bank_and_cheques_that_bounced(shop):
     bounced.bounce(TODAY - timedelta(days=2), "אין כיסוי")
     titles = _titles(_scan(jobs=[], cheques=book))
     assert "להפקיד" in titles
-    assert "חזרו" in titles
+    assert "חזר ועדיין" in titles
 
 
 def test_nothing_to_say_is_nothing_said(shop):
@@ -121,7 +121,7 @@ def test_a_broken_rule_does_not_hide_the_others(shop, monkeypatch):
 
     monkeypatch.setattr(insights, "RULES", (broken,) + insights.RULES)
     found = _scan(jobs=[_job("J-3", JobStatus.WON, since=TODAY - timedelta(days=20))])
-    assert "לא נכנסו לייצור" in _titles(found)
+    assert "לא נכנס לייצור" in _titles(found)
 
 
 def test_a_cheque_past_six_months_is_a_debt_not_a_deposit(shop):

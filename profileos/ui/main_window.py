@@ -226,6 +226,16 @@ class Sidebar(QWidget):
             button.set_collapsed(collapsed)
 
 
+def _day_and_time(stamp: str) -> str:
+    """An ISO stamp the way the shop writes it: 17/10/2026 14:05."""
+    from datetime import datetime
+
+    try:
+        return datetime.fromisoformat(stamp).strftime("%d/%m/%Y %H:%M")
+    except (TypeError, ValueError):
+        return stamp.replace("T", " ")[:16]
+
+
 class MainWindow(QMainWindow):
     """The main application window."""
 
@@ -459,7 +469,7 @@ class MainWindow(QMainWindow):
         event.acceptProposedAction()
         self.open_path(paths[0])
         if len(paths) > 1:
-            self.toast(f"נפתח {paths[0].name}; {len(paths) - 1} קבצים נוספים דולגו")
+            self.toast(f"נפתח ⁦{paths[0].name}⁩; ⁦{len(paths) - 1}⁩ קבצים נוספים דולגו")
 
     def open_path(self, path: Any) -> None:
         """Open one file: a drawing goes to the profile page, a job to the store."""
@@ -587,6 +597,14 @@ class MainWindow(QMainWindow):
                 if widget is not None and hasattr(widget, "palette_colours"):
                     widget.palette_colours = palette
                     widget.update()
+            # The live 3D views sit on the page's own ground colour.
+            for attribute in ("live", "_model_view"):
+                model = getattr(page, attribute, None)
+                if model is not None and hasattr(model, "set_background"):
+                    model.set_background(
+                        palette.surface_sunken,
+                        "#FFFFFF" if palette.mode.value == "light" else palette.surface_raised,
+                    )
 
     def closeEvent(self, event: Any) -> None:  # noqa: N802 - Qt override
         """Take the day's backup on the way out, then close.
@@ -673,7 +691,7 @@ class MainWindow(QMainWindow):
                 self._save_state = ("ok", f"נשמר לפרויקט {session.job.job_id}")
             elif session.builds or session.unbuilt:
                 write_draft(session.to_schedule())
-                self._save_state = ("draft", "נשמר כטיוטה — פתח פרויקט כדי לתייק")
+                self._save_state = ("draft", "נשמר כטיוטה — פתחו פרויקט כדי לתייק")
             else:
                 clear_draft()
                 self._save_state = ("ok", "")
@@ -702,27 +720,29 @@ class MainWindow(QMainWindow):
 
         backup_state = backup_status()
         stale = backup is None or (date.today() - backup).days > 2
-        if storage.RECOVERED:
+        # A failed save outranks everything: it is the one line that means
+        # work is at risk right now.
+        if state == "danger":
+            text = "✕ השמירה נכשלה — העבודה עדיין על המסך"
+        elif storage.RECOVERED:
             names = ", ".join(path.name for path, _damaged in storage.RECOVERED[:2])
             state, text = "warn", f"⚠ שוחזר מגרסה קודמת: {names}"
-        elif state == "danger":
-            text = "✕ השמירה נכשלה — ראה הודעה"
         elif backup_state["error"]:
             state, detail = "danger", backup_state["error"]
-            text = "✕ הגיבוי האוטומטי נכשל — מערכת ← גיבוי"
+            text = "✕ הגיבוי האוטומטי נכשל — מערכת ← גיבוי ושחזור"
         elif backup_state["mirror_error"] and state == "ok":
             state, detail = "warn", backup_state["mirror_error"]
             text = "⚠ העותק השני של הגיבוי לא עודכן"
         elif backup is None and state == "ok" and not self._data_is_empty():
             state = "warn"
-            text = "⚠ עוד לא נלקח אף גיבוי — מערכת ← גיבוי"
+            text = "⚠ עוד לא נלקח אף גיבוי — מערכת ← גיבוי ושחזור"
         elif stale and backup is not None and state == "ok":
             state = "warn"
-            text = f"⚠ הגיבוי האחרון מ-{backup:%d/%m} — מערכת ← גיבוי"
+            text = f"⚠ הגיבוי האחרון מ-⁦{backup:%d/%m}⁩ — מערכת ← גיבוי ושחזור"
         elif state == "pending":
             text = "… שומר"
         elif state == "draft":
-            text = "● נשמר כטיוטה · פתח פרויקט כדי לתייק"
+            text = "● נשמר כטיוטה · פתחו פרויקט כדי לתייק"
         else:
             text = f"✓ כל השינויים נשמרו · {backup_text}"
         label.setText(text)
@@ -774,7 +794,7 @@ class MainWindow(QMainWindow):
         box.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
         box.setIcon(QMessageBox.Icon.Question)
         box.setWindowTitle("נמצאה עבודה שלא תויקה")
-        when = saved_at.replace("T", " ")[:16]
+        when = _day_and_time(saved_at)
         box.setText(
             f"בפעם הקודמת תוכננו ⁦{len(schedule.openings)}⁩ פתחים שלא נשמרו "
             f"לשום פרויקט (נשמרו אוטומטית ב-⁦{when}⁩).\n\nלהחזיר אותם למסך?"
@@ -786,7 +806,7 @@ class MainWindow(QMainWindow):
             problems = self.session.load_schedule(schedule)
             for problem in problems[:3]:
                 self.toast(problem, "danger")
-            self.toast(f"הוחזרו {len(self.session.builds)} פתחים — פתח פרויקט כדי לתייק")
+            self.toast(f"הוחזרו ⁦{len(self.session.builds)}⁩ פתחים — פתחו פרויקט כדי לתייק")
             return True
         set_draft_aside()
         return False

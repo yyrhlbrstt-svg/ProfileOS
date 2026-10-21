@@ -75,6 +75,8 @@ class ProvingRecord:
     def __init__(self, path: Path) -> None:
         self.path = Path(path)
         self._proofs: dict[tuple[str, str], Proof] = {}
+        #: Rows this version could not read, written back exactly as found.
+        self._unparsed: list = []
         self.load()
 
     def load(self) -> "ProvingRecord":
@@ -99,13 +101,14 @@ class ProvingRecord:
                 )
             except Exception:  # noqa: BLE001
                 _log.warning("Skipping unreadable proof: %s", entry)
+                self._unparsed.append(entry)
                 continue
             self._proofs[proof.key] = proof
         return self
 
     def save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        payload = {"proofs": [proof.as_dict() for proof in self._proofs.values()]}
+        payload = {"proofs": [proof.as_dict() for proof in self._proofs.values()] + self._unparsed}
         from ..core.storage import atomic_write_text
 
         atomic_write_text(self.path, json.dumps(payload, ensure_ascii=False, indent=2))

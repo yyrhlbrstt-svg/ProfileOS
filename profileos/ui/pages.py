@@ -153,6 +153,22 @@ class Page(QWidget):
             box.setDetailedText(traceback.format_exc())
         box.exec()
 
+    def checked_book(self, book: Any, what: str) -> Any:
+        """Say so when a book opened read-only because its file is damaged
+        or busy — once per page, not on every click — and keep it uncached
+        by returning ``False`` for ``keep``, so a busy file is retried."""
+        problem = getattr(book, "damaged", None)
+        if problem is None:
+            return book
+        told = self.__dict__.setdefault("_told_damaged", set())
+        if what not in told:
+            told.add(what)
+            self.report(
+                problem,
+                f"{what} לא נקרא — מוצג ריק לקריאה בלבד, ושום דבר לא נשמר עליו",
+            )
+        return book
+
     def status(self, message: str) -> None:
         window = self.window()
         if hasattr(window, "toast"):
@@ -196,6 +212,19 @@ def canvas_with_empty_state(page: "Page", canvas: QWidget, text: str) -> QWidget
     stack.addWidget(empty)
     stack.addWidget(canvas)
     return stack
+
+
+def _short_stamp(stamp: str) -> str:
+    """An ISO stamp as the shop writes dates: 17/10/2026 14:05."""
+    from datetime import datetime
+
+    try:
+        moment = datetime.fromisoformat(stamp)
+    except (TypeError, ValueError):
+        return stamp.replace("T", " ")[:16]
+    if moment.tzinfo is not None:
+        moment = moment.astimezone()
+    return moment.strftime("%d/%m/%Y %H:%M")
 
 
 class HomePage(Page):
@@ -396,6 +425,26 @@ class HomePage(Page):
 
         brand = active_brand()
         self._brand_name = brand.display_name
+
+        # A live screen: while the home page is open it keeps itself current —
+        # a task that falls due, a cheque that becomes bankable, a quotation
+        # entered on another computer — without anybody pressing anything.
+        from PySide6.QtCore import QTimer
+
+        self._live_timer = QTimer(self)
+        self._live_timer.setInterval(60_000)
+        self._live_timer.timeout.connect(self._tick)
+        self._live_timer.start()
+
+    def _tick(self) -> None:
+        if not self.isVisible():
+            return
+        try:
+            self.show_business()
+            self.scan_insights()
+            self.show_today()
+        except Exception:  # noqa: BLE001 - a refresh that fails waits for the next one
+            _log.exception("Live refresh of the home page failed")
 
     # -- behaviour -------------------------------------------------------- #
     def _go(self, page_title: str) -> None:
@@ -899,7 +948,10 @@ class ProjectsPage(Page):
             from ..projects.followups import default_tasks
 
             self._tasks = default_tasks()
-        return self._tasks
+        book = self.checked_book(self._tasks, "יומן המשימות")
+        if book.damaged is not None:
+            self._tasks = None  # read again next time: a busy file clears
+        return book
 
     def schedule_chase(self) -> None:
         from datetime import date as _date
@@ -987,7 +1039,7 @@ class ProjectsPage(Page):
         self.unchased_table.set_rows([
             [
                 job.job_id, job.customer_name or "—",
-                f"⁦{job.quote_total:,.0f}⁩ ₪" if job.quote_total else "—",
+                f"⁦{job.quote_total:,.0f} ₪⁩" if job.quote_total else "—",
                 job.quoted_on[:10] if job.quoted_on else "—",
             ]
             for job in book.unchased_quotes(jobs)
@@ -1170,6 +1222,7 @@ class ProjectsPage(Page):
         # this job's openings replace it on screen, it is either carried into
         # the job or kept aside as a draft — never simply dropped.
         unfiled = []
+        self._carry_unbuilt: list[Any] = []
         if self.session.job is None and (self.session.builds or self.session.unbuilt):
             unfiled = self._ask_about_unfiled(job)
             if unfiled is None:
@@ -1185,6 +1238,12 @@ class ProjectsPage(Page):
             self.session.clear_builds()
         for build in unfiled:
             self.session.add_build(build)
+        if unfiled and self._carry_unbuilt:
+            # Openings that did not build travel too, so they are filed with
+            # the job rather than living on only in a draft set aside.
+            self.session.unbuilt.extend(self._carry_unbuilt)
+            self._carry_unbuilt = []
+            self.session._notify("builds")
         for problem in problems[:3]:
             self.status(problem)
         self.status(
@@ -1218,6 +1277,7 @@ class ProjectsPage(Page):
         box.exec()
         clicked = box.clickedButton()
         if clicked is carry:
+            self._carry_unbuilt = list(self.session.unbuilt)
             return list(self.session.builds)
         if clicked is aside:
             try:
@@ -2121,7 +2181,7 @@ class ElementPage(Page):
 
         inner = QSplitter(Qt.Orientation.Vertical)
         self.view = ElevationView(self.colours)
-        inner.addWidget(self.view)
+        inner.addWidget(self._drawing_or_model())
 
         # Live drawing: every field that changes the shape redraws it, a
         # quarter-second after the last change so typing "2400" draws once.
@@ -2655,6 +2715,71 @@ class ElementPage(Page):
             opening.set_cell(Cell(column=column, row=row, sash=Sash(opening_type=sash_type)))
         return opening
 
+    # -- the drawing, or the same opening live in 3D ------------------------ #
+    def _drawing_or_model(self) -> QWidget:
+        """The elevation, with a switch to the live 3D model of the same form.
+
+        Both follow the form as it is typed. The 3D model is only built when
+        somebody asks for it — it is the heavier of the two — and a machine
+        with no 3D graphics keeps the switch, greyed, with the reason.
+        """
+        from PySide6.QtWidgets import QButtonGroup, QStackedWidget
+
+        from .viewer3d import supported
+
+        box = QWidget()
+        layout = QVBoxLayout(box)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(METRICS.space(2))
+
+        bar = QHBoxLayout()
+        segment = QFrame()
+        segment.setObjectName("SegmentBar")
+        segment_row = QHBoxLayout(segment)
+        segment_row.setContentsMargins(2, 2, 2, 2)
+        segment_row.setSpacing(2)
+        self._mode_group = QButtonGroup(self)
+        for index, label in enumerate(("שרטוט", "תלת-ממד חי")):
+            button = QPushButton(label)
+            button.setObjectName("Segment")
+            button.setCheckable(True)
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
+            self._mode_group.addButton(button, index)
+            segment_row.addWidget(button)
+        self._mode_group.button(0).setChecked(True)
+        if not supported():
+            model_button = self._mode_group.button(1)
+            model_button.setEnabled(False)
+            model_button.setToolTip("במחשב הזה אין תמיכה בגרפיקה תלת-ממדית")
+        bar.addWidget(segment)
+        bar.addStretch(1)
+        layout.addLayout(bar)
+
+        self._canvas_stack = QStackedWidget()
+        self._canvas_stack.addWidget(self.view)
+        layout.addWidget(self._canvas_stack, 1)
+        self._model_view = None
+        self._last_build = None
+        self._mode_group.idClicked.connect(self._set_canvas_mode)
+        return box
+
+    def _set_canvas_mode(self, mode: int) -> None:
+        if mode == 1 and self._model_view is None:
+            from .viewer3d import Viewer3D
+
+            self._model_view = Viewer3D(background=self.colours.surface_sunken)
+            self._canvas_stack.addWidget(self._model_view)
+        self._canvas_stack.setCurrentIndex(mode)
+        if mode == 1 and self._last_build is not None:
+            self._model_view.show_build(self._last_build, keep_camera=False)
+
+    def _show_build(self, build: Any) -> None:
+        """Draw the opening — and, if the 3D model is on screen, rebuild it."""
+        self._last_build = build
+        self.view.set_build(build)
+        if self._model_view is not None and self._canvas_stack.currentIndex() == 1:
+            self._model_view.show_build(build, keep_camera=True)
+
     def _schedule_preview(self, *_args: Any) -> None:
         """Redraw shortly after the last keystroke, not on every one."""
         timer = getattr(self, "_preview_timer", None)
@@ -2677,7 +2802,7 @@ class ElementPage(Page):
             )
         except Exception:  # noqa: BLE001 - a half-typed form is not an error
             return
-        self.view.set_build(build)
+        self._show_build(build)
         self.header.set_subtitle(
             f"תצוגה מקדימה: {opening.name} · "
             f"\u2066{opening.width:.0f} × {opening.height:.0f}\u2069 מ״מ — "
@@ -2737,7 +2862,7 @@ class ElementPage(Page):
             return
 
         self.session.add_build(build)
-        self.view.set_build(build)
+        self._show_build(build)
 
         summary = build.summary()
         self.stats.update_many({
@@ -3518,6 +3643,8 @@ class QuotePage(Page):
             self.lines.EditTrigger.DoubleClicked | self.lines.EditTrigger.EditKeyPressed
         )
         self.lines.itemChanged.connect(self._line_edited)
+        # The description is the sentence; the figures size to themselves.
+        self.lines.stretch(1)
         lines_card.add(self.lines, 1)
         undo = QPushButton("בטל עריכה אחרונה")
         undo.clicked.connect(self.undo_edit)
@@ -4001,7 +4128,10 @@ class ShopFloorPage(Page):
             from ..erp.timesheets import default_timebook
 
             self._timebook = default_timebook()
-        return self._timebook
+        book = self.checked_book(self._timebook, "דיווח השעות")
+        if book.damaged is not None:
+            self._timebook = None
+        return book
 
     def book_hours(self) -> None:
         from ..erp.timesheets import minutes_between
@@ -4035,7 +4165,7 @@ class ShopFloorPage(Page):
                 entry.on.isoformat(), entry.person, entry.job_id or "—",
                 entry.operation or entry.note or "—",
                 f"⁦{entry.hours:.2f}⁩",
-                f"⁦{entry.cost:,.2f}⁩ ₪" if entry.rate else "—",
+                f"⁦{entry.cost:,.2f} ₪⁩" if entry.rate else "—",
                 "כן" if entry.rework else "",
             ])
         self.hours_table.set_rows(rows)
@@ -4549,17 +4679,35 @@ class PlumbingPage(Page):
 
         # One spin box per fixture: a schedule is a count, and typing counts is
         # faster than any dialog that adds them one at a time.
-        grid = FieldGrid()
+        # Three short columns rather than one row per fixture stretched across
+        # the screen: a count is four digits, not a sentence.
+        from PySide6.QtWidgets import QGridLayout
+
+        grid = QWidget()
+        cells = QGridLayout(grid)
+        cells.setContentsMargins(0, 0, 0, 0)
+        cells.setHorizontalSpacing(METRICS.space(3))
+        cells.setVerticalSpacing(METRICS.space(2))
         self.counts: dict[str, QSpinBox] = {}
-        for item in FIXTURES:
+        columns = 3
+        for index, item in enumerate(FIXTURES):
             box = QSpinBox()
             box.setRange(0, 9999)
             box.setValue(TYPICAL_DWELLING.get(item.id, 0) * 8)
+            box.setMaximumWidth(METRICS.space(28))
             box.valueChanged.connect(self._recount)
             self.counts[item.id] = box
-            grid.add(item.hebrew, box)
+            caption = QLabel(item.hebrew)
+            caption.setObjectName("FieldLabel")
+            row, column = divmod(index, columns)
+            cells.addWidget(caption, row, column * 2)
+            cells.addWidget(box, row, column * 2 + 1)
+        for column in range(columns):
+            cells.setColumnStretch(column * 2, 1)
+        cells.setRowStretch(len(FIXTURES) // columns + 1, 1)
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
         scroll.setWidget(grid)
         layout.addWidget(scroll, 1)
 
@@ -5071,7 +5219,7 @@ class ServicePage(Page):
     def _register(self) -> Any:
         from ..service import default_register
 
-        return default_register()
+        return self.checked_book(default_register(), "יומן קריאות השירות")
 
     def new_call(self) -> None:
         from .dialogs import NewServiceCallDialog
@@ -5286,7 +5434,7 @@ class CollectionPage(Page):
 
         if self._book is None:
             try:
-                self._book = default_cheques()
+                self._book = self.checked_book(default_cheques(), "מגירת הצ׳קים")
             except Exception as exc:  # noqa: BLE001 - say so, never silently lose
                 _log.exception("Cheque drawer unreadable")
                 self.report(exc, "לא ניתן לקרוא את מגירת הצ׳קים")
@@ -5295,21 +5443,27 @@ class CollectionPage(Page):
                 self._book = ChequeBook()
         return self._book
 
-    def _save(self) -> None:
+    def _save(self) -> bool:
+        """Write the drawer. On failure the screen goes back to what is on
+        disk, so it never shows a cheque that was not actually kept."""
         book = self.book()
-        if book.path is None:
+        if book.path is None or getattr(book, "damaged", None) is not None:
             self.report(
                 ProfileOSError(
                     "מגירת הצ׳קים לא נטענה מהדיסק, ולכן השינוי לא נשמר. "
-                    "שחזר את הקובץ מגיבוי ונסה שוב."
+                    "שחזרו את הקובץ מגיבוי (מערכת ← גיבוי ושחזור) ונסו שוב."
                 ),
                 "השינוי לא נשמר",
             )
-            return
+            self._book = None
+            return False
         try:
             book.save()
         except Exception as exc:  # noqa: BLE001
-            self.report(exc, "שמירת הצ׳קים נכשלה")
+            self.report(exc, "שמירת הצ׳קים נכשלה — השינוי לא נשמר")
+            self._book = None
+            return False
+        return True
 
     def new_cheque(self) -> None:
         from .dialogs import NewChequeDialog
@@ -5333,9 +5487,11 @@ class CollectionPage(Page):
         except Exception as exc:  # noqa: BLE001
             self.report(exc, "לא ניתן לרשום את הצ׳ק")
             return
-        self._save()
+        if not self._save():
+            self.refresh()
+            return
         self.refresh()
-        self.status(f"נרשם צ׳ק ⁦{cheque.amount:,.0f}⁩ ₪ מ{cheque.customer}")
+        self.status(f"נרשם צ׳ק ⁦{cheque.amount:,.0f} ₪⁩ מ{cheque.customer}")
 
     def _selected(self) -> Any:
         model = self.cheques_table.selectionModel()
@@ -5356,7 +5512,7 @@ class CollectionPage(Page):
             return
         self._save()
         self.refresh()
-        self.status(f"הופקד ⁦{cheque.amount:,.0f}⁩ ₪")
+        self.status(f"הופקד ⁦{cheque.amount:,.0f} ₪⁩")
 
     def remind_customer(self) -> None:
         """A polite, specific reminder about one cheque, ready to send."""
@@ -5395,7 +5551,7 @@ class CollectionPage(Page):
         cheque.bounce(reason="חזר")
         self._save()
         self.refresh()
-        self.status(f"סומן כחוזר: ⁦{cheque.amount:,.0f}⁩ ₪", )
+        self.status(f"סומן כחוזר: ⁦{cheque.amount:,.0f} ₪⁩", )
 
     def refresh(self) -> None:
         book = self.book()
@@ -6170,6 +6326,10 @@ class SystemPage(Page):
             ["", "מה", "מצב", "מה יש כרגע", "מה זה חוסם", "איך סוגרים"],
             empty_text="אין בדיקות",
         )
+        # The two columns that say what to do are sentences: they wrap
+        # instead of ending in "…" exactly where the instruction was.
+        self.setup_table.setWordWrap(True)
+        self.setup_table.stretch(5)
         layout.addWidget(self.setup_table, 1)
 
         note = QLabel(
@@ -6208,6 +6368,7 @@ class SystemPage(Page):
             ])
             colours[(index, 0)] = tone[check.state]
         self.setup_table.set_rows(rows, colours=colours)
+        self.setup_table.resizeRowsToContents()
         self.setup_headline.setText(report.verdict())
         self.setup_headline.setStyleSheet(
             f"color: {self.colours.success if report.may_cut else self.colours.warning};"
@@ -6714,7 +6875,7 @@ class SystemPage(Page):
                 if count
             )
             rows.append([
-                manifest.created[:16].replace("T", " "),
+                _short_stamp(manifest.created),
                 manifest.brand or "—",
                 f"⁦{manifest.files}⁩",
                 f"⁦{manifest.bytes / 1_048_576:.1f}⁩ MB",
@@ -6839,6 +7000,9 @@ class SystemPage(Page):
         if hasattr(window, "autosave_enabled"):
             window.autosave_enabled = False
             window.auto_backup = False
+            timer = getattr(window, "_autosave_timer", None)
+            if timer is not None:
+                timer.stop()
         done = QMessageBox(self)
         done.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
         done.setIcon(QMessageBox.Icon.Information)
@@ -7316,17 +7480,29 @@ class SurveyPage(Page):
         job = getattr(self.session, "job", None)
         schedule = getattr(job, "schedule", None) if job is not None else None
         original_ids: dict[str, str] = {}
+        ambiguous: set[str] = set()
         for original in getattr(schedule, "openings", []) or []:
             key = str(getattr(original, "reference", "") or original.name)
-            if key:
-                original_ids[key] = original.element_id
+            if not key:
+                continue
+            if key in original_ids:
+                ambiguous.add(key)
+            original_ids[key] = original.element_id
+        # Two openings sharing a name cannot say which one was measured:
+        # matched to neither, so neither is replaced by the other's size.
+        for key in ambiguous:
+            original_ids.pop(key, None)
 
         built = 0
         problems: list[str] = []
+        used: set[str] = set()
         for opening in self._survey.to_openings():
             key = str(opening.reference or opening.name)
-            if key in original_ids:
+            if key in original_ids and original_ids[key] not in used:
                 opening.element_id = original_ids[key]
+                used.add(opening.element_id)
+            elif key in ambiguous:
+                problems.append(f"{key}: יש בפרויקט כמה פתחים בשם הזה — נוסף כפתח חדש, בדקו")
             try:
                 builder = (
                     ElementBuilder() if opening.system_id in ("", "generic")
@@ -7515,16 +7691,16 @@ class ReportsPage(Page):
         average = report.average_order()
         self.stats.update_many({
             "won": (
-                f"⁦{report.won_value:,.0f}⁩ ₪",
+                f"⁦{report.won_value:,.0f} ₪⁩",
                 f"⁦{report.won_count}⁩ תיקים",
             ),
             "rate": (
                 f"⁦{rate.value:.0f}%⁩",
                 f"מתוך ⁦{report.decided}⁩ שהוכרעו" if report.decided else "טרם הוכרע",
             ),
-            "average": (f"⁦{average.value:,.0f}⁩ ₪", ""),
+            "average": (f"⁦{average.value:,.0f} ₪⁩", ""),
             "backlog": (
-                f"⁦{live.open_value:,.0f}⁩ ₪",
+                f"⁦{live.open_value:,.0f} ₪⁩",
                 f"⁦{sum(live.counts.values())}⁩ תיקים",
             ),
             "late": (
@@ -7562,7 +7738,7 @@ class ReportsPage(Page):
             margin = "—" if line.margin is None else f"⁦{line.margin:.1f}%⁩"
             rows.append([
                 line.name or "—", f"⁦{line.jobs}⁩", f"⁦{line.won}⁩",
-                f"⁦{line.lost}⁩", f"⁦{line.value:,.0f}⁩ ₪",
+                f"⁦{line.lost}⁩", f"⁦{line.value:,.0f} ₪⁩",
                 f"⁦{line.win_rate:.0f}%⁩", margin,
             ])
             if line.margin is not None:
@@ -7662,10 +7838,19 @@ class ViewPage(Page):
         controls.add_layout(row)
         self.body.addWidget(controls)
 
+        # The live model where the machine can draw it; the SVG render — which
+        # needs nothing — where it cannot.
+        from .viewer3d import Viewer3D, supported
+
+        self.live = None
+        if supported():
+            self.live = Viewer3D(background=self.colours.surface_sunken)
+            self.live.setMinimumHeight(480)
+            self.body.addWidget(self._live_controls())
         self.canvas = QSvgWidget()
         self.canvas.setMinimumHeight(420)
         self.canvas_stack = canvas_with_empty_state(
-            self, self.canvas,
+            self, self.live if self.live is not None else self.canvas,
             "עדיין אין פתח להציג.\nתכנן פתח — והוא יופיע כאן בתלת-ממד.",
         )
         self.body.addWidget(self.canvas_stack, 1)
@@ -7687,6 +7872,148 @@ class ViewPage(Page):
         )
         self._scene = None
         self._scene_for = ""
+        if self.live is not None:
+            # The SVG pickers belong to the paper render; the live view has
+            # its own controls above it.
+            controls.setVisible(False)
+            # Live: a change to the design shows here without asking.
+            self.session.subscribe(self._session_changed)
+
+    def _live_controls(self) -> QWidget:
+        """View presets, finish, glass, wall, opening — the showroom controls."""
+        from PySide6.QtWidgets import QButtonGroup, QSlider
+
+        from .viewer3d import FINISHES, VIEWS
+
+        card = Card("")
+        row = QHBoxLayout()
+        row.setSpacing(METRICS.space(3))
+
+        caption = QLabel("פתח")
+        caption.setObjectName("FieldLabel")
+        row.addWidget(caption)
+        self.live_element = QComboBox()
+        self.live_element.currentIndexChanged.connect(self._pick_live_element)
+        row.addWidget(self.live_element)
+
+        segment = QFrame()
+        segment.setObjectName("SegmentBar")
+        segment_row = QHBoxLayout(segment)
+        segment_row.setContentsMargins(2, 2, 2, 2)
+        segment_row.setSpacing(2)
+        self._view_group = QButtonGroup(self)
+        self._view_group.setExclusive(True)
+        for index, (key, label) in enumerate(VIEWS):
+            button = QPushButton(label)
+            button.setObjectName("Segment")
+            button.setCheckable(True)
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
+            button.clicked.connect(lambda _c=False, k=key: self.live.set_view(k))
+            self._view_group.addButton(button, index)
+            segment_row.addWidget(button)
+        self._view_group.button(0).setChecked(True)
+        row.addWidget(segment)
+        row.addStretch(1)
+
+        caption = QLabel("גוון")
+        caption.setObjectName("FieldLabel")
+        row.addWidget(caption)
+        self.live_finish = QComboBox()
+        for key, label in FINISHES:
+            self.live_finish.addItem(label, key)
+        self.live_finish.currentIndexChanged.connect(
+            lambda _i: self.live.set_finish(self.live_finish.currentData())
+        )
+        row.addWidget(self.live_finish)
+        card.add_layout(row)
+
+        second = QHBoxLayout()
+        second.setSpacing(METRICS.space(3))
+        caption = QLabel("פתיחת הכנפיים")
+        caption.setObjectName("FieldLabel")
+        second.addWidget(caption)
+        self.live_open = QSlider(Qt.Orientation.Horizontal)
+        self.live_open.setRange(0, 100)
+        self.live_open.setMaximumWidth(METRICS.space(60))
+        self.live_open.valueChanged.connect(lambda value: self.live.set_open(value / 100.0))
+        second.addWidget(self.live_open)
+        toggle_open = QPushButton("פתח / סגור")
+        toggle_open.clicked.connect(
+            lambda: self.live_open.setValue(0 if self.live_open.value() > 50 else 100)
+        )
+        second.addWidget(toggle_open)
+
+        self.live_glass = QCheckBox("זכוכית")
+        self.live_glass.setChecked(True)
+        self.live_glass.toggled.connect(self.live.set_show_glass)
+        second.addWidget(self.live_glass)
+        self.live_wall = QCheckBox("בתוך קיר")
+        self.live_wall.toggled.connect(self.live.set_show_wall)
+        second.addWidget(self.live_wall)
+        self.live_spin = QCheckBox("סיבוב להצגה")
+        self.live_spin.toggled.connect(self.live.set_turntable)
+        second.addWidget(self.live_spin)
+        second.addStretch(1)
+
+        copy = QPushButton("העתק תמונה")
+        copy.setToolTip("להדבקה בוואטסאפ או במייל ללקוח")
+        copy.clicked.connect(self.copy_image)
+        second.addWidget(copy)
+        save = QPushButton("שמור תמונה…")
+        save.clicked.connect(self.save_image)
+        second.addWidget(save)
+        card.add_layout(second)
+
+        hint = QLabel(
+            "גרירה מסובבת · גלגלת מקרבת · גרירה ימנית מזיזה · "
+            "המודל מתעדכן לבד כשמשנים את הפתח"
+        )
+        hint.setObjectName("Hint")
+        card.add(hint)
+        return card
+
+    def _pick_live_element(self, _index: int) -> None:
+        if self.live is None:
+            return
+        wanted = self.live_element.currentData() or ""
+        if wanted and wanted != (self.element.currentData() or ""):
+            index = self.element.findData(wanted)
+            if index >= 0:
+                self.element.setCurrentIndex(index)
+
+    def _session_changed(self, what: str) -> None:
+        if what != "builds" or self.live is None:
+            return
+        # Only while the page is on screen; otherwise refresh() does it on arrival.
+        if self.isVisible():
+            self._scene = None
+            self.refresh()
+
+    def copy_image(self) -> None:
+        from PySide6.QtWidgets import QApplication
+
+        image = self.live.image() if self.live is not None else None
+        if image is None or image.isNull():
+            self.status("אין תמונה להעתיק")
+            return
+        QApplication.clipboard().setImage(image)
+        self.status("התמונה הועתקה — אפשר להדביק אותה בוואטסאפ או במייל")
+
+    def save_image(self) -> None:
+        image = self.live.image() if self.live is not None else None
+        if image is None or image.isNull():
+            self.status("אין תמונה לשמור")
+            return
+        name = (self.element.currentText() or "פתח").replace("/", "-")
+        path, _ = QFileDialog.getSaveFileName(
+            self, "שמירת תמונה", str(Path.home() / f"{name}.png"), "תמונה (*.png *.jpg)"
+        )
+        if not path:
+            return
+        if image.save(path):
+            self.status(f"נשמרה תמונה: {Path(path).name}")
+        else:
+            self.report(ProfileOSError("התמונה לא נשמרה — בדקו את התיקייה"), "שמירה נכשלה")
 
     def refresh(self) -> None:
         ids = [build.opening.element_id for build in self.session.builds]
@@ -7700,6 +8027,13 @@ class ViewPage(Page):
         if current in ids:
             self.element.setCurrentIndex(ids.index(current))
         self.element.blockSignals(False)
+        if self.live is not None:
+            self.live_element.blockSignals(True)
+            self.live_element.clear()
+            for index in range(self.element.count()):
+                self.live_element.addItem(self.element.itemText(index), self.element.itemData(index))
+            self.live_element.setCurrentIndex(self.element.currentIndex())
+            self.live_element.blockSignals(False)
         self.header.set_subtitle(
             f"{len(ids)} פתחים מתוכננים" if ids else "תכנן פתח קודם"
         )
@@ -7747,8 +8081,11 @@ class ViewPage(Page):
         except Exception as exc:  # noqa: BLE001
             self.report(exc, "לא ניתן לבנות את המודל")
             return
+        same_element = self._scene_for == build.opening.element_id
         self._scene_for = build.opening.element_id
         self.canvas_stack.setCurrentIndex(1)
+        if self.live is not None:
+            self.live.show_scene(self._scene, keep_camera=same_element)
 
         scene = self._scene
         size = scene.size
@@ -7763,7 +8100,7 @@ class ViewPage(Page):
         self._redraw()
 
     def _redraw(self) -> None:
-        if self._scene is None:
+        if self._scene is None or self.live is not None:
             return
         from ..viz3d import (
             BRONZE_MATERIALS,
@@ -7984,7 +8321,10 @@ class AccountsPage(Page):
             from ..erp.currency import default_rates
 
             self._ratebook = default_rates()
-        return self._ratebook
+        book = self.checked_book(self._ratebook, "שערי המטבע")
+        if book.damaged is not None:
+            self._ratebook = None
+        return book
 
     def record_rate(self) -> None:
         from datetime import date as _date
@@ -8024,7 +8364,7 @@ class AccountsPage(Page):
                     state, tone = "תקף", self.colours.success
                 rows.append([
                     f"{CURRENCIES.get(code, code)} ({code})",
-                    f"⁦{rate.per_unit:.4f}⁩ ₪",
+                    f"⁦{rate.per_unit:.4f} ₪⁩",
                     rate.on.strftime("%d/%m/%Y"),
                     f"⁦{rate.age()}⁩ ימים",
                     rate.source or "—",
@@ -8170,7 +8510,10 @@ class AccountsPage(Page):
             from ..erp.stocktake import default_stocktakes
 
             self._stocktake_book = default_stocktakes()
-        return self._stocktake_book
+        book = self.checked_book(self._stocktake_book, "ספירות המלאי")
+        if book.damaged is not None:
+            self._stocktake_book = None
+        return book
 
     def open_stocktake_sheet(self) -> None:
         from ..erp.stocktake import open_stocktake
@@ -8269,7 +8612,7 @@ class AccountsPage(Page):
         warnings = sheet.warnings()
         text = (
             f"לרשום {len(sheet.counted)} שורות שנספרו, "
-            f"שינוי שווי של ⁦{sheet.net_value:,.0f}⁩ ₪?"
+            f"שינוי שווי של ⁦{sheet.net_value:,.0f} ₪⁩?"
         )
         if warnings:
             text += "\n\n" + "\n".join(warnings)
@@ -8293,7 +8636,7 @@ class AccountsPage(Page):
             return
         self._refresh_sheet_list(select=sheet.sheet_id)
         self._refresh_stock()
-        self.status(f"נרשמו {len(movements)} תנועות, שינוי שווי ⁦{sheet.net_value:,.0f}⁩ ₪")
+        self.status(f"נרשמו {len(movements)} תנועות, שינוי שווי ⁦{sheet.net_value:,.0f} ₪⁩")
 
     # -- purchasing ------------------------------------------------------------ #
     def _purchasing_tab(self) -> QWidget:

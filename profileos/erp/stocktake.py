@@ -180,7 +180,7 @@ class Stocktake:
     def shrinkage(self) -> float:
         """Value of what the racks were short. Reported apart from surplus.
 
-        A sheet that is ⁦3,000⁩ ₪ short in one place and ⁦3,000⁩ ₪ over in
+        A sheet that is ⁦3,000 ₪⁩ short in one place and ⁦3,000 ₪⁩ over in
         another nets to nothing and is not nothing: it is two mistakes.
         """
         return round(
@@ -223,7 +223,7 @@ class Stocktake:
             f"{self.sheet_id} · {self.scope or 'כל המלאי'} · "
             f"נספרו ⁦{len(self.counted)}⁩ מתוך ⁦{len(self.lines)}⁩ · "
             f"הפרשים ⁦{len(self.differences)}⁩ · "
-            f"שווי ⁦{self.net_value:,.0f}⁩ ₪"
+            f"שווי ⁦{self.net_value:,.0f} ₪⁩"
         )
 
     def warnings(self) -> list[str]:
@@ -244,11 +244,11 @@ class Stocktake:
             found.append("לא נספרה אף שורה — אין מה לרשום")
         if self.shrinkage:
             found.append(
-                f"חוסר של ⁦{abs(self.shrinkage):,.0f}⁩ ₪ ברצפה מול הספר"
+                f"חוסר של ⁦{abs(self.shrinkage):,.0f} ₪⁩ ברצפה מול הספר"
             )
         if self.surplus:
             found.append(
-                f"עודף של ⁦{self.surplus:,.0f}⁩ ₪ ברצפה מול הספר — "
+                f"עודף של ⁦{self.surplus:,.0f} ₪⁩ ברצפה מול הספר — "
                 "בדקו קליטות שלא נרשמו"
             )
         for line in self.counted:

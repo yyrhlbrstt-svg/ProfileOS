@@ -75,7 +75,7 @@ class Figure:
         if self.unit == "%":
             body = f"⁦{self.value:.0f}%⁩"
         elif self.unit == "₪":
-            body = f"⁦{self.value:,.0f}⁩ ₪"
+            body = f"⁦{self.value:,.0f} ₪⁩"
         elif self.unit == "ימים":
             body = f"⁦{self.value:.0f}⁩ ימים"
         else:
@@ -163,10 +163,10 @@ class SalesReport:
 
     def rows(self) -> list[tuple[str, str, str]]:
         return [
-            ("הצעות שנשלחו", f"⁦{self.quoted_count}⁩", f"⁦{self.quoted_value:,.0f}⁩ ₪"),
-            ("הוזמנו", f"⁦{self.won_count}⁩", f"⁦{self.won_value:,.0f}⁩ ₪"),
-            ("לא נסגרו", f"⁦{self.lost_count}⁩", f"⁦{self.lost_value:,.0f}⁩ ₪"),
-            ("ממתינות לתשובה", f"⁦{self.open_count}⁩", f"⁦{self.open_value:,.0f}⁩ ₪"),
+            ("הצעות שנשלחו", f"⁦{self.quoted_count}⁩", f"⁦{self.quoted_value:,.0f} ₪⁩"),
+            ("הוזמנו", f"⁦{self.won_count}⁩", f"⁦{self.won_value:,.0f} ₪⁩"),
+            ("לא נסגרו", f"⁦{self.lost_count}⁩", f"⁦{self.lost_value:,.0f} ₪⁩"),
+            ("ממתינות לתשובה", f"⁦{self.open_count}⁩", f"⁦{self.open_value:,.0f} ₪⁩"),
         ]
 
     def warnings(self) -> list[str]:
@@ -186,7 +186,7 @@ class SalesReport:
     def describe(self) -> str:
         return (
             f"{self.period.describe()}: הוזמנו ⁦{self.won_count}⁩ תיקים "
-            f"בשווי ⁦{self.won_value:,.0f}⁩ ₪ · {self.win_rate().format()}"
+            f"בשווי ⁦{self.won_value:,.0f} ₪⁩ · {self.win_rate().format()}"
         )
 
 
@@ -331,7 +331,7 @@ class Pipeline:
             (
                 JobStatus(key).hebrew,
                 f"⁦{self.counts[key]}⁩",
-                f"⁦{self.values.get(key, 0.0):,.0f}⁩ ₪",
+                f"⁦{self.values.get(key, 0.0):,.0f} ₪⁩",
             )
             for key in self.counts
         ]
@@ -340,7 +340,7 @@ class Pipeline:
         late = f" · ⁦{len(self.overdue)}⁩ באיחור" if self.overdue else ""
         return (
             f"⁦{sum(self.counts.values())}⁩ תיקים פתוחים בשווי "
-            f"⁦{self.open_value:,.0f}⁩ ₪{late}"
+            f"⁦{self.open_value:,.0f} ₪⁩{late}"
         )
 
 

@@ -142,6 +142,14 @@ class Readiness:
 # The checks themselves
 # --------------------------------------------------------------------------- #
 
+
+def _days_ago(days: int) -> str:
+    if days <= 0:
+        return "היום"
+    if days == 1:
+        return "אתמול"
+    return f"לפני ⁦{days}⁩ ימים"
+
 def _check_brand() -> Check:
     from .branding import active_brand
 
@@ -330,7 +338,7 @@ def _check_tax_rule() -> Check:
     if DEFAULT_ALLOCATION_RULE.is_confirmed:
         return Check(
             "allocation", "סף מספר הקצאה", State.READY,
-            f"⁦{DEFAULT_ALLOCATION_RULE.threshold:,.0f}⁩ ₪ · "
+            f"⁦{DEFAULT_ALLOCATION_RULE.threshold:,.0f} ₪⁩ · "
             f"{DEFAULT_ALLOCATION_RULE.source}",
         )
     return Check(
@@ -379,14 +387,14 @@ def _check_backup() -> Check:
     if days > 7:
         return Check(
             "backup", "גיבוי", State.ATTENTION,
-            f"הגיבוי האחרון לפני ⁦{days}⁩ ימים",
+            f"הגיבוי האחרון {_days_ago(days)}",
             blocks=f"עבודה של ⁦{days}⁩ ימים אינה מגובה",
             fix="מערכת ← גיבוי ושחזור ← ״גבה עכשיו״",
             critical=True,
         )
     return Check(
         "backup", "גיבוי", State.READY,
-        f"⁦{len(found)}⁩ גיבויים, האחרון לפני ⁦{days}⁩ ימים",
+        f"⁦{len(found)}⁩ גיבויים, האחרון {_days_ago(days)}",
         critical=True,
     )
 

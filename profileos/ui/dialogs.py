@@ -72,7 +72,7 @@ class NewJobDialog(_FormDialog):
     phone needs almost no typing.
     """
 
-    accept_text = "פתיחת פרויקט"
+    accept_text = "פתח פרויקט"
 
     def __init__(self, customers: list[Any], systems: list[tuple[str, str]],
                  parent: QWidget | None = None, *,
@@ -213,13 +213,13 @@ class NewCustomerDialog(_FormDialog):
     is pointed out before a second copy is made.
     """
 
-    accept_text = "הוספת לקוח"
+    accept_text = "הוסף לקוח"
 
     def __init__(self, parent: QWidget | None = None, *,
                  customers: list[Any] | None = None, customer: Any = None) -> None:
         super().__init__("עריכת לקוח" if customer is not None else "לקוח חדש", parent)
         if customer is not None:
-            self.ok_button.setText("שמירת שינויים")
+            self.ok_button.setText("שמור שינויים")
         self.setMinimumWidth(480)
         self._customers = list(customers or [])
         self._editing = customer

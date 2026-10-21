@@ -432,3 +432,18 @@ class TestTheDaysWork:
         assert len([n for n in names if today in n]) == 5
         assert names.count(f"profileos-2020-01-02-020000.zip") == 1
         assert not [n for n in names if "2020-01-01" in n]
+
+
+def test_restoring_twice_does_not_nest_the_settings_set_aside(tmp_path):
+    data, config = tmp_path / "data", tmp_path / "config"
+    data.mkdir()
+    config.mkdir()
+    (data / "customers.json").write_text('{"customers": []}', encoding="utf-8")
+    (config / "operator.sealed").write_bytes(b"one")
+    archive = write_backup(tmp_path / "b", root=data, config=config)
+    for _ in range(3):
+        restore(archive, root=data, config=config)
+        archive = write_backup(tmp_path / "b", root=data, config=config)
+    names = zipfile.ZipFile(archive).namelist()
+    assert not [n for n in names if "לפני-שחזור" in n]
+    assert max(len(p.name) for p in config.rglob("*")) < 60

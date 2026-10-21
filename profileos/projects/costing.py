@@ -118,7 +118,7 @@ class JobCosting:
         if not self.invoiced and not self.actual_cost:
             return "עדיין אין תנועה בעבודה הזאת"
         if self.is_losing:
-            return f"העבודה בהפסד של ⁦{abs(self.margin):,.0f}⁩ ₪"
+            return f"העבודה בהפסד של ⁦{abs(self.margin):,.0f} ₪⁩"
         if self.drift < -5:
             return (
                 f"הרווח ירד ב-⁦{abs(self.drift):.1f}⁩ נקודות מהמתוכנן "
@@ -128,16 +128,16 @@ class JobCosting:
 
     def summary_rows(self) -> list[tuple[str, str]]:
         rows = [
-            ("הוצע ללקוח", f"⁦{self.quoted:,.0f}⁩ ₪"),
-            ("חויב עד כה", f"⁦{self.invoiced:,.0f}⁩ ₪"),
-            ("התקבל", f"⁦{self.received:,.0f}⁩ ₪"),
-            ("טרם חויב", f"⁦{self.unbilled:,.0f}⁩ ₪"),
-            ("פתוח לגבייה", f"⁦{self.outstanding:,.0f}⁩ ₪"),
-            ("עלות מתוכננת", f"⁦{self.estimated_cost:,.0f}⁩ ₪"),
-            ("עלות בפועל", f"⁦{self.actual_cost:,.0f}⁩ ₪"),
-            ("התחייבויות פתוחות", f"⁦{self.committed:,.0f}⁩ ₪"),
-            ("רווח מתוכנן", f"⁦{self.quoted_margin:,.0f}⁩ ₪ · ⁦{self.quoted_margin_pct:.1f}%⁩"),
-            ("רווח בפועל", f"⁦{self.margin:,.0f}⁩ ₪ · ⁦{self.margin_pct:.1f}%⁩"),
+            ("הוצע ללקוח", f"⁦{self.quoted:,.0f} ₪⁩"),
+            ("חויב עד כה", f"⁦{self.invoiced:,.0f} ₪⁩"),
+            ("התקבל", f"⁦{self.received:,.0f} ₪⁩"),
+            ("טרם חויב", f"⁦{self.unbilled:,.0f} ₪⁩"),
+            ("פתוח לגבייה", f"⁦{self.outstanding:,.0f} ₪⁩"),
+            ("עלות מתוכננת", f"⁦{self.estimated_cost:,.0f} ₪⁩"),
+            ("עלות בפועל", f"⁦{self.actual_cost:,.0f} ₪⁩"),
+            ("התחייבויות פתוחות", f"⁦{self.committed:,.0f} ₪⁩"),
+            ("רווח מתוכנן", f"⁦{self.quoted_margin:,.0f} ₪⁩ · ⁦{self.quoted_margin_pct:.1f}%⁩"),
+            ("רווח בפועל", f"⁦{self.margin:,.0f} ₪⁩ · ⁦{self.margin_pct:.1f}%⁩"),
         ]
         return rows
 
@@ -264,7 +264,7 @@ def cost_job(
         )
     if costing.committed:
         costing.warnings.append(
-            f"⁦{costing.committed:,.0f}⁩ ₪ בהזמנות רכש שטרם התקבלה עליהן חשבונית"
+            f"⁦{costing.committed:,.0f} ₪⁩ בהזמנות רכש שטרם התקבלה עליהן חשבונית"
         )
 
     # -- money that is not in shekels ----------------------------------------- #
@@ -279,7 +279,7 @@ def cost_job(
         if exposure["share_pct"] > 25:
             costing.warnings.append(
                 f"⁦{exposure['share_pct']:.0f}%⁩ מהעלות נקובה במטבע זר — "
-                f"תזוזה של ⁦5%⁩ בשער שווה ⁦{exposure['if_rate_moves_5pct']:,.0f}⁩ ₪"
+                f"תזוזה של ⁦5%⁩ בשער שווה ⁦{exposure['if_rate_moves_5pct']:,.0f} ₪⁩"
             )
     return costing
 

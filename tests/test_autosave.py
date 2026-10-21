@@ -142,10 +142,13 @@ class TestWindowAutosave:
         assert "גיבוי" in window.sidebar.safety.text()
 
 
-def test_the_window_opens_with_damaged_books_and_leaves_them_alone(shop):
+def test_the_window_opens_with_damaged_books_and_leaves_them_alone(shop, monkeypatch):
     pytest.importorskip("PySide6")
     from PySide6.QtCore import QCoreApplication
-    from PySide6.QtWidgets import QApplication
+    from PySide6.QtWidgets import QApplication, QMessageBox
+
+    told: list[str] = []
+    monkeypatch.setattr(QMessageBox, "exec", lambda box: told.append(box.windowTitle()) or 0)
 
     from profileos.ui.main_window import MainWindow
     from profileos.ui.theme import LIGHT
@@ -165,6 +168,8 @@ def test_the_window_opens_with_damaged_books_and_leaves_them_alone(shop):
     QCoreApplication.processEvents()
     for name in names:
         assert (shop / name).read_text(encoding="utf-8") == "{ cut off"
+    # And the person is told, not only the log.
+    assert any("לא נקרא" in title for title in told)
 
 
 def test_a_damaged_book_refuses_to_save(shop):
@@ -250,3 +255,23 @@ def test_switching_jobs_writes_what_was_pending_for_the_first(shop):
     window.close()
     window.deleteLater()
     QCoreApplication.processEvents()
+
+
+def test_a_cleared_draft_does_not_come_back_from_its_previous_version(shop):
+    from profileos.projects.draft import clear_draft, read_draft, write_draft
+
+    write_draft(_schedule(Opening(name="W-01", width=1200, height=1400)))
+    write_draft(_schedule(Opening(name="W-02", width=1200, height=1400)))  # leaves a .bak
+    clear_draft()
+    assert read_draft() is None
+
+
+def test_a_draft_set_aside_is_not_offered_again_and_never_overwritten(shop):
+    from profileos.projects.draft import drafts_set_aside, read_draft, set_draft_aside, write_draft
+
+    for name in ("W-01", "W-02"):
+        write_draft(_schedule(Opening(name=name, width=1200, height=1400)))
+        write_draft(_schedule(Opening(name=name, width=1200, height=1300)))
+        set_draft_aside()
+    assert read_draft() is None
+    assert len(drafts_set_aside()) == 2

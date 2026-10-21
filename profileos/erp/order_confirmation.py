@@ -212,7 +212,7 @@ class OrderConfirmation:
         ):
             blockers.append(Prerequisite(
                 need=Need.DEPOSIT,
-                detail=f"מקדמה ⁦{self.deposit_outstanding:,.0f}⁩ ₪",
+                detail=f"מקדמה ⁦{self.deposit_outstanding:,.0f} ₪⁩",
             ))
         return blockers
 
@@ -314,11 +314,11 @@ class OrderConfirmation:
         if not self.deposit_pct:
             return "—"
         state = (
-            f"טרם התקבלו ⁦{self.deposit_outstanding:,.2f}⁩ ₪"
+            f"טרם התקבלו ⁦{self.deposit_outstanding:,.2f} ₪⁩"
             if self.deposit_outstanding
             else "התקבלה"
         )
-        return f"⁦{self.deposit_due:,.2f}⁩ ₪ · {state}"
+        return f"⁦{self.deposit_due:,.2f} ₪⁩ · {state}"
 
     def summary_rows(self) -> list[tuple[str, str]]:
         return [
@@ -327,9 +327,9 @@ class OrderConfirmation:
             ("לקוח", self.customer_name),
             ("הזמנת הלקוח", self.customer_reference or "—"),
             ("על בסיס", f"הצעת מחיר גרסה ⁦{self.quote_revision}⁩"),
-            ("לפני מע״מ", f"⁦{self.net:,.2f}⁩ ₪"),
-            ("מע״מ ⁦{:.0%}⁩".format(self.vat_rate), f"⁦{self.vat:,.2f}⁩ ₪"),
-            ("סה״כ", f"⁦{self.gross:,.2f}⁩ ₪"),
+            ("לפני מע״מ", f"⁦{self.net:,.2f} ₪⁩"),
+            ("מע״מ ⁦{:.0%}⁩".format(self.vat_rate), f"⁦{self.vat:,.2f} ₪⁩"),
+            ("סה״כ", f"⁦{self.gross:,.2f} ₪⁩"),
             ("מקדמה", self._deposit_line()),
             ("זמן ייצור", f"⁦{self.lead_working_days}⁩ ימי עבודה"),
         ]
@@ -337,7 +337,7 @@ class OrderConfirmation:
     def describe(self) -> str:
         return (
             f"{self.confirmation_id} · {self.customer_name} · "
-            f"⁦{self.gross:,.0f}⁩ ₪ · "
+            f"⁦{self.gross:,.0f} ₪⁩ · "
             + (
                 "מוכן לייצור"
                 if self.is_clear_to_start

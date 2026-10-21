@@ -219,7 +219,7 @@ class TaxDocument:
             found.append("אין שורות במסמך")
         if self.needs_allocation_number(rule) and not self.allocation_number:
             found.append(
-                f"חשבונית מעל ⁦{rule.threshold:,.0f}⁩ ₪ ללא מספר הקצאה — "
+                f"חשבונית מעל ⁦{rule.threshold:,.0f} ₪⁩ ללא מספר הקצאה — "
                 "הלקוח לא יוכל לקזז את המע״מ"
             )
         if self.needs_allocation_number(rule) and not rule.is_confirmed:
@@ -241,9 +241,9 @@ class TaxDocument:
             ("סוג המסמך", self.kind.hebrew),
             ("מספר", self.number),
             ("תאריך", f"⁦{self.issued.strftime('%d/%m/%Y')}⁩"),
-            ("לפני מע״מ", f"⁦{self.net:,.2f}⁩ ₪"),
-            ("מע״מ ⁦{:.0%}⁩".format(self.vat_rate), f"⁦{self.vat:,.2f}⁩ ₪"),
-            ("סה״כ לתשלום", f"⁦{self.gross:,.2f}⁩ ₪"),
+            ("לפני מע״מ", f"⁦{self.net:,.2f} ₪⁩"),
+            ("מע״מ ⁦{:.0%}⁩".format(self.vat_rate), f"⁦{self.vat:,.2f} ₪⁩"),
+            ("סה״כ לתשלום", f"⁦{self.gross:,.2f} ₪⁩"),
             ("תנאי תשלום", f"{self.terms.hebrew} · לתשלום עד ⁦{self.due.strftime('%d/%m/%Y')}⁩"),
             ("מספר הקצאה", self.allocation_number or "—"),
         ]
@@ -346,9 +346,9 @@ def render_document(document: TaxDocument) -> str:
   <th class="n">מחיר</th><th class="n">סה״כ</th>
 </tr></thead><tbody>{''.join(rows)}</tbody></table>
 <table class="totals"><tbody>
-  <tr><td>לפני מע״מ</td><td class="n">⁦{document.net:,.2f}⁩ ₪</td></tr>
-  <tr><td>מע״מ ⁦{document.vat_rate:.0%}⁩</td><td class="n">⁦{document.vat:,.2f}⁩ ₪</td></tr>
-  <tr class="grand"><td>סה״כ לתשלום</td><td class="n">⁦{document.gross:,.2f}⁩ ₪</td></tr>
+  <tr><td>לפני מע״מ</td><td class="n">⁦{document.net:,.2f} ₪⁩</td></tr>
+  <tr><td>מע״מ ⁦{document.vat_rate:.0%}⁩</td><td class="n">⁦{document.vat:,.2f} ₪⁩</td></tr>
+  <tr class="grand"><td>סה״כ לתשלום</td><td class="n">⁦{document.gross:,.2f} ₪⁩</td></tr>
 </tbody></table>
 <section class="terms">
   <div>תנאי תשלום: {document.terms.hebrew} · לתשלום עד ⁦{document.due.strftime('%d/%m/%Y')}⁩</div>

@@ -29,7 +29,6 @@ whole batch applies, or none of it does.
 from __future__ import annotations
 
 import json
-import os
 import shutil
 import tempfile
 from dataclasses import dataclass, field
@@ -91,14 +90,19 @@ class InstalledState:
         self.load()
 
     def load(self) -> None:
+        from ..core.storage import StorageError, read_json
         from ..core.storage import stored as _stored
 
+        self.damaged: Exception | None = None
         if not _stored(self.path):
             return
         try:
-            raw = json.loads(self.path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
-            _log.error("Installed-state file is unreadable, starting empty: %s", exc)
+            raw = read_json(self.path, default={}) or {}
+        except StorageError as exc:
+            # Starting empty would forget what is installed, and with it the
+            # way back from a bad update. Read-only until it is restored.
+            _log.error("Installed-state file is unreadable: %s", exc)
+            self.damaged = exc
             return
         for entry in raw.get("packages", []):
             try:
@@ -108,21 +112,19 @@ class InstalledState:
             self.packages[package.package_id] = package
 
     def save(self) -> None:
+        if getattr(self, "damaged", None) is not None:
+            raise self.damaged
         self.path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
             "updated_at": datetime.now(timezone.utc).isoformat(),
             "packages": [p.as_dict() for p in self.packages.values()],
         }
-        # Write-then-replace: a crash mid-write must not lose the record of
-        # what is installed, or the next update has no idea what it is replacing.
-        handle, temp_name = tempfile.mkstemp(dir=str(self.path.parent), suffix=".tmp")
-        try:
-            with os.fdopen(handle, "w", encoding="utf-8") as fh:
-                json.dump(payload, fh, indent=2)
-            os.replace(temp_name, self.path)
-        except BaseException:
-            Path(temp_name).unlink(missing_ok=True)
-            raise
+        # Durable, with the previous version kept: a crash mid-write must not
+        # lose the record of what is installed, or the next update has no
+        # idea what it is replacing.
+        from ..core.storage import write_json
+
+        write_json(self.path, payload)
 
     def versions(self) -> dict[str, str]:
         return {pid: p.version for pid, p in self.packages.items()}

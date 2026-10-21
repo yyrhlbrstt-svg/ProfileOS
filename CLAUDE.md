@@ -41,7 +41,15 @@ QT_QPA_PLATFORM=offscreen python3 -m pytest tests/test_storage.py -q   # one fil
 
 # look at every page, both themes, with throw-away data
 QT_QPA_PLATFORM=offscreen python3 tools/screenshots.py OUT_DIR both
+
+# the live 3D view needs real graphics: run under a virtual display
+apt-get install -y xvfb libxkbcommon-x11-0 libxcb-cursor0 libxcb-icccm4 libxcb-image0 \
+    libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 libxcb-xkb1
+xvfb-run -a -s "-screen 0 1920x1080x24" env QT_QPA_PLATFORM=xcb python3 tools/screenshots.py OUT_DIR light
 ```
+
+Under `offscreen` the 3D pages fall back to the SVG render by design
+(`profileos/ui/viewer3d.py: supported()`); test the live view under Xvfb.
 
 Do not `pkill -f pytest` — it kills the shell that runs it.
 
@@ -54,6 +62,9 @@ Do not `pkill -f pytest` — it kills the shell that runs it.
 - `profileos/ui/` — `main_window.py`, `pages.py` (every page), `dialogs.py`,
   `theme.py`, `widgets.py`, `session.py`
 - `profileos/sharing.py` — WhatsApp links and messages
+- `profileos/ui/viewer3d.py` + `ui/qml/Viewer3D.qml` — the live 3D engine (Qt
+  Quick 3D): PBR finishes, shadows, orbit camera, leaves that open on their
+  hinges; geometry comes from `profileos/viz3d/scene.py`
 - `tests/` — one file per area; UI tests drive real widgets offscreen
 
 ## The team

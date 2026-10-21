@@ -63,6 +63,8 @@ class HardwareLibrary:
     def __init__(self, path: Path | None = None) -> None:
         self.path = Path(path) if path is not None else None
         self._parts: dict[str, Part] = {}
+        #: Rows this version could not read, written back exactly as found.
+        self._unparsed: list = []
         #: Set when the file is damaged beyond recovery: the library opens
         #: empty so the program starts, and refuses to save over the file.
         self.damaged: Exception | None = None
@@ -90,6 +92,7 @@ class HardwareLibrary:
                 self.add(_part_from(entry), save=False)
             except Exception:  # noqa: BLE001 - one bad row, not the library
                 _log.warning("Skipping unreadable part: %s", entry.get("code"))
+                self._unparsed.append(entry)
         return self
 
     def save(self) -> None:
@@ -104,7 +107,7 @@ class HardwareLibrary:
                  "confidence": part.confidence.value,
                  "opening_types": list(part.opening_types)}
                 for part in self._parts.values()
-            ]
+            ] + self._unparsed
         }
         from ..core.storage import atomic_write_text
 

@@ -19,6 +19,8 @@ ordinary files that a person can open, mail, or hand to a lawyer.
 
 from __future__ import annotations
 
+import os
+
 import hashlib
 import json
 import shutil
@@ -142,6 +144,8 @@ class AttachmentStore:
     def __init__(self, folder: Path) -> None:
         self.folder = Path(folder)
         self._items: list[Attachment] = []
+        #: Rows this version could not read, written back exactly as found.
+        self._unparsed: list = []
         self.load()
 
     @property
@@ -171,6 +175,7 @@ class AttachmentStore:
                 ))
             except Exception:  # noqa: BLE001 - one bad row, not the folder
                 _log.warning("Skipping unreadable attachment entry: %s", entry)
+                self._unparsed.append(entry)
         return self
 
     def save(self) -> None:
@@ -178,7 +183,7 @@ class AttachmentStore:
         payload = {
             "attachments": [
                 {**asdict(item), "kind": item.kind.value} for item in self._items
-            ]
+            ] + self._unparsed
         }
         from ..core.storage import atomic_write_text
 
@@ -295,7 +300,13 @@ class AttachmentStore:
             )
         path = self.path_of(found)
         if path.is_file():
-            path.unlink()
+            # Into the job's recycle bin, not gone: the photo deleted by
+            # mistake is the one the dispute turns on.
+            from datetime import datetime
+
+            trash = self.folder / ".trash"
+            trash.mkdir(parents=True, exist_ok=True)
+            os.replace(path, trash / f"{datetime.now():%Y%m%d-%H%M%S}-{path.name}")
         self._items.remove(found)
         self.save()
 

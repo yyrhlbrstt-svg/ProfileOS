@@ -41,7 +41,11 @@ CONFIG_PREFIX = "_config/"
 #: Settings that describe one computer — where its folders are — and would
 #: point a restored machine at paths it does not have. Kept in the archive,
 #: never written back over the new machine's own.
-CONFIG_KEEP_LOCAL = ("settings.json",)
+CONFIG_KEEP_LOCAL = ("settings.json", "settings.json.bak")
+
+#: The folder a restore puts the settings it replaced in. Never itself
+#: backed up, so copies cannot nest inside copies restore after restore.
+CONFIG_ASIDE = ".לפני-שחזור"
 
 #: Never copied into a backup: caches, locks, and the half-written files a
 #: crash leaves behind. Restoring a stale lock would greet somebody with a
@@ -68,7 +72,7 @@ class Manifest:
         when = self.created[:16].replace("T", " ")
         return (
             f"גיבוי מ-⁦{when}⁩ · גרסה ⁦{self.version}⁩ · "
-            f"⁦{self.files}⁩ קבצים · ⁦{self.bytes / 1_048_576:.1f}⁩ MB"
+            f"⁦{self.files}⁩ קבצים · ⁦{self.bytes / 1_048_576:.1f} מ״ב⁩"
         )
 
     def summary_rows(self) -> list[tuple[str, str]]:
@@ -87,6 +91,31 @@ class Manifest:
             for key, count in sorted(self.contents.items())
         )
         return rows
+
+
+#: How the shop calls each kind of record, for anything said about a backup.
+_CONTENT_LABELS = {
+    "jobs": "פרויקטים", "customers": "לקוחות",
+    "system_confirmations": "סדרות מאושרות", "service_calls": "קריאות שירות",
+    "hardware": "פריטי פרזול", "price_list": "שורות מחירון",
+    "files": "מסמכים וצילומים",
+}
+
+
+def _in_words(exc: BaseException) -> str:
+    """Why a backup failed, said so somebody knows what to do about it."""
+    import errno
+
+    if isinstance(exc, ProfileOSError):
+        return exc.message
+    if isinstance(exc, OSError):
+        if exc.errno == errno.ENOSPC:
+            return "אין מספיק מקום בדיסק. פנו מקום או בחרו תיקיית גיבוי אחרת."
+        if isinstance(exc, PermissionError):
+            return "אין הרשאה לכתוב לתיקיית הגיבוי. בחרו תיקייה אחרת."
+        if isinstance(exc, FileNotFoundError):
+            return "תיקיית הגיבוי לא נמצאה — אולי הכונן לא מחובר."
+    return "הגיבוי לא נכתב. בדקו שיש מקום בדיסק ושהתיקייה זמינה, ונסו שוב."
 
 
 def _should_skip(path: Path, root: Path) -> bool:
@@ -110,6 +139,10 @@ def _config_files(config: Path | None, root: Path) -> list[tuple[Path, str]]:
         # The data folder can sit inside the settings folder on some
         # machines; it has already been written once.
         if path.resolve() == resolved_root or resolved_root in path.resolve().parents:
+            continue
+        relative = path.relative_to(config)
+        if relative.parts[0] in (CONFIG_ASIDE, ".trash") or "לפני-שחזור" in path.name \
+                or ".damaged-" in path.name:
             continue
         found.append((path, path.relative_to(config).as_posix()))
     return found
@@ -285,7 +318,7 @@ def read_manifest(archive_path: Path) -> Manifest:
             raw = json.loads(archive.read(MANIFEST_NAME).decode("utf-8"))
     except KeyError as exc:
         raise ProfileOSError(
-            f"{archive_path.name} אינו גיבוי של ProfileOS — אין בו מניפסט"
+            f"⁦{archive_path.name}⁩ אינו קובץ גיבוי של התוכנה"
         ) from exc
     except zipfile.BadZipFile as exc:
         raise ProfileOSError(f"{archive_path.name} פגום ואי אפשר לקרוא אותו") from exc
@@ -358,7 +391,7 @@ def plan_restore(archive_path: Path, *, root: Path | None = None) -> RestorePlan
         inside = manifest.contents.get(key, 0)
         if current > inside:
             plan.warnings.append(
-                f"בתיקייה יש כרגע ⁦{current}⁩ {key} ובגיבוי ⁦{inside}⁩ — "
+                f"{_CONTENT_LABELS.get(key, key)}: יש כרגע ⁦{current}⁩ ובגיבוי ⁦{inside}⁩ — "
                 "שחזור יחזיר אתכם אחורה"
             )
     return plan
@@ -386,6 +419,10 @@ def restore(
         if keep_current:
             stamp = datetime.now().strftime("%Y-%m-%d-%H%M%S")
             aside = root.with_name(f"{root.name}-לפני-שחזור-{stamp}")
+            serial = 2
+            while aside.exists():  # two restores in one second
+                aside = root.with_name(f"{root.name}-לפני-שחזור-{stamp}-{serial}")
+                serial += 1
             shutil.move(str(root), str(aside))
             _log.warning("Moved the current data folder aside to %s", aside)
         else:
@@ -409,7 +446,7 @@ def restore(
             target = (root / name).resolve()
             if not str(target).startswith(str(root.resolve())):
                 raise ProfileOSError(
-                    f"הגיבוי מכיל נתיב חורג ({name}) — הוא לא נפרס"
+                    f"בגיבוי יש קובץ שמחוץ לתיקיית הנתונים (⁦{name}⁩). הגיבוי לא שוחזר."
                 )
             target.parent.mkdir(parents=True, exist_ok=True)
             with archive.open(name) as source, target.open("wb") as sink:
@@ -434,11 +471,20 @@ def _restore_config_file(archive: zipfile.ZipFile, name: str, config: Path) -> N
         return
     target = (config / relative).resolve()
     if not str(target).startswith(str(config.resolve())):
-        raise ProfileOSError(f"הגיבוי מכיל נתיב חורג ({name}) — הוא לא נפרס")
+        raise ProfileOSError(
+            f"בגיבוי יש קובץ שמחוץ לתיקיית ההגדרות (⁦{name}⁩). הוא לא שוחזר."
+        )
     target.parent.mkdir(parents=True, exist_ok=True)
     if target.is_file():
+        # Kept in one folder per restore, beside — not inside — the settings.
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        shutil.copy2(target, target.with_name(f"{target.name}.לפני-שחזור-{stamp}"))
+        aside = config / CONFIG_ASIDE / stamp / relative
+        serial = 2
+        while aside.exists():
+            aside = config / CONFIG_ASIDE / f"{stamp}-{serial}" / relative
+            serial += 1
+        aside.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(target, aside)
     with archive.open(name) as source, target.open("wb") as sink:
         shutil.copyfileobj(source, sink)
 
@@ -572,7 +618,7 @@ def backup_if_due(
         return written
     except Exception as exc:  # noqa: BLE001 - closing the window comes first
         _log.warning("Automatic backup skipped: %s", exc)
-        _STATUS.update(error=str(exc))
+        _STATUS.update(error=_in_words(exc))
         return None
 
 
@@ -612,7 +658,7 @@ def copy_to_mirror(archive: Path, mirror: Path, *, keep: int = 30) -> Path | Non
         partial.replace(target)
         prune_by_day(mirror, days=keep)
     except Exception as exc:  # noqa: BLE001 - the first copy already exists
-        _STATUS["mirror_error"] = f"העתקה לעותק השני נכשלה: {exc}"
+        _STATUS["mirror_error"] = f"העתקה לעותק השני נכשלה: {_in_words(exc)}"
         _log.warning("Backup mirror failed: %s", exc)
         return None
     _STATUS["mirror_error"] = ""

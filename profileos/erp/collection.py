@@ -146,7 +146,7 @@ class Cheque:
 
     def describe(self) -> str:
         return (
-            f"⁦{self.amount:,.0f}⁩ ₪ · {self.customer} · "
+            f"⁦{self.amount:,.0f} ₪⁩ · {self.customer} · "
             f"⁦{self.due.strftime('%d/%m/%Y')}⁩ · {self.state.hebrew}"
         )
 

@@ -106,7 +106,7 @@ class DocumentLine:
     def describe(self) -> str:
         body = f"{self.code} · ⁦{self.quantity:g}⁩ {self.unit}"
         if self.is_priced:
-            body += f" · ⁦{self.unit_price:,.2f}⁩ ₪/{self.unit}"
+            body += f" · ⁦{self.unit_price:,.2f} ₪⁩/{self.unit}"
         else:
             body += " · ללא מחיר"
         return body
@@ -208,14 +208,14 @@ class PurchaseDocument:
             ("עבור תיק", self.for_job or "—"),
             ("אספקה אל", self.deliver_to or "—"),
             ("שורות", f"⁦{len(self.lines)}⁩"),
-            ("לפני מע״מ", f"⁦{self.net:,.2f}⁩ ₪"),
-            ("סה״כ", f"⁦{self.gross:,.2f}⁩ ₪"),
+            ("לפני מע״מ", f"⁦{self.net:,.2f} ₪⁩"),
+            ("סה״כ", f"⁦{self.gross:,.2f} ₪⁩"),
         ]
 
     def describe(self) -> str:
         return (
             f"⁦{self.order_id}⁩ · {self.supplier_name or 'ללא ספק'} · "
-            f"⁦{len(self.lines)}⁩ שורות · ⁦{self.gross:,.0f}⁩ ₪"
+            f"⁦{len(self.lines)}⁩ שורות · ⁦{self.gross:,.0f} ₪⁩"
             + ("" if self.may_be_sent else " · לא לשליחה")
         )
 
