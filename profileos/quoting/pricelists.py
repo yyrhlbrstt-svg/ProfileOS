@@ -94,6 +94,14 @@ class PriceRow:
     price: float
     unit: str = ""
     description: str = ""
+    #: The finish group the price is for (טבעי, לבן, RAL, דמוי עץ) when the
+    #: list prices one code once per finish.
+    finish: str = ""
+
+    @property
+    def key(self) -> str:
+        finish = code_key(self.finish)
+        return code_key(self.code) + (f"|{finish}" if finish else "")
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -105,6 +113,7 @@ class PriceRow:
         return cls(
             code=str(raw["code"]), price=float(raw.get("price", 0.0) or 0.0),
             unit=str(raw.get("unit", "") or ""), description=str(raw.get("description", "") or ""),
+            finish=str(raw.get("finish", "") or ""),
         )
 
 
@@ -120,6 +129,11 @@ class PriceListEdition:
     #: When the supplier says the prices take effect; empty means on receipt.
     valid_from: str = ""
     currency: str = "ILS"
+    #: The shop's own terms with this supplier: its discount off the list and
+    #: any surcharge (metal, energy). The list is what the supplier prints;
+    #: these make it what the shop actually pays.
+    discount_pct: float = 0.0
+    surcharge_pct: float = 0.0
     recorded_by: str = ""
     state: str = ListState.PENDING
     decided_at: str = ""
@@ -136,6 +150,27 @@ class PriceListEdition:
     @property
     def effective(self) -> str:
         return self.valid_from or self.received_on
+
+    @property
+    def net_factor(self) -> float:
+        return (1.0 - self.discount_pct / 100.0) * (1.0 + self.surcharge_pct / 100.0)
+
+    def terms(self) -> str:
+        parts = []
+        if self.discount_pct:
+            parts.append(f"הנחה ⁦{self.discount_pct:g}%⁩")
+        if self.surcharge_pct:
+            parts.append(f"תוספת ⁦{self.surcharge_pct:g}%⁩")
+        return " · ".join(parts) or "מחיר מחירון, בלי הנחה"
+
+    def for_code(self, code: str) -> PriceRow | None:
+        """The one price for a code, or None — also when the list has a
+        price per finish and nothing says which finish the job is in."""
+        key = code_key(code)
+        if key in self.prices:
+            return self.prices[key]
+        matches = [row for k, row in self.prices.items() if k.split("|", 1)[0] == key]
+        return matches[0] if len(matches) == 1 else None
 
     def in_force(self, on: date | None = None) -> bool:
         on = on or date.today()
@@ -158,11 +193,13 @@ class PriceListEdition:
         prices: dict[str, PriceRow] = {}
         for entry in values.pop("prices", []) or []:
             row = PriceRow.from_dict(entry)
-            prices[code_key(row.code)] = row
+            prices[row.key] = row
         if values.get("state") not in ListState.HEBREW:
             values["state"] = ListState.PENDING
         values["decision_no"] = int(values.get("decision_no", 0) or 0)
         values["warnings"] = [str(w) for w in values.get("warnings") or []]
+        values["discount_pct"] = float(values.get("discount_pct", 0.0) or 0.0)
+        values["surcharge_pct"] = float(values.get("surcharge_pct", 0.0) or 0.0)
         return cls(prices=prices, **values)
 
 
@@ -202,6 +239,8 @@ class PriceDiff:
     unchanged: int = 0
     #: Codes whose unit changed: their prices cannot be compared.
     unit_changed: list[str] = field(default_factory=list)
+    #: The shop's discount or surcharge changed between the two lists.
+    terms_changed: str = ""
 
     @property
     def changed(self) -> list[PriceChange]:
@@ -227,6 +266,8 @@ class PriceDiff:
             parts.append(f"⁦{len(self.added)}⁩ חדשים")
         if self.missing:
             parts.append(f"⁦{len(self.missing)}⁩ לא במחירון החדש")
+        if self.terms_changed:
+            parts.append(self.terms_changed)
         if not parts:
             return f"אין שינוי מחירים (⁦{self.unchanged}⁩ פריטים)"
         if self.changed:
@@ -260,6 +301,8 @@ def compare(old: PriceListEdition | None, new: PriceListEdition) -> PriceDiff:
     if old is None:
         return PriceDiff(first=True, added=sorted(new.prices.values(), key=lambda r: r.code))
     diff = PriceDiff(first=False)
+    if abs(old.net_factor - new.net_factor) > 1e-9:
+        diff.terms_changed = f"התנאים היו {old.terms()}, עכשיו {new.terms()}"
     for key, row in sorted(new.prices.items()):
         before = old.prices.get(key)
         if before is None:
@@ -390,7 +433,8 @@ class PriceListBook(MergingBook):
     # -- changes -------------------------------------------------------------- #
     def record(self, rows: Iterable[PriceRow], *, supplier: str, source: str,
                valid_from: str = "", currency: str = "ILS", recorded_by: str = "",
-               warnings: Iterable[str] = ()) -> PriceListEdition:
+               warnings: Iterable[str] = (), discount_pct: float | None = None,
+               surcharge_pct: float | None = None) -> PriceListEdition:
         if not supplier.strip():
             raise ProfileOSError("כתבו מאיזה ספק המחירון")
         if not source.strip():
@@ -403,28 +447,77 @@ class PriceListBook(MergingBook):
                 date.fromisoformat(valid_from[:10])
             except ValueError as exc:
                 raise ProfileOSError(f"תאריך התחולה ⁦{valid_from}⁩ לא תקין") from exc
+        # The shop's terms carry over from its last list from this supplier
+        # unless it says otherwise: a discount is agreed once, not per file.
+        before = self.accepted(supplier_key(supplier))
+        if discount_pct is None:
+            discount_pct = before[-1].discount_pct if before else 0.0
+        if surcharge_pct is None:
+            surcharge_pct = before[-1].surcharge_pct if before else 0.0
+        if not 0.0 <= discount_pct < 100.0 or not 0.0 <= surcharge_pct <= 100.0:
+            raise ProfileOSError("הנחה בין ⁦0⁩ ל־⁦100%⁩, תוספת בין ⁦0⁩ ל־⁦100%⁩")
         prices: dict[str, PriceRow] = {}
         notes = list(warnings)
         for row in rows:
-            key = code_key(row.code)
-            if not key:
+            key = row.key
+            if not code_key(row.code):
                 continue
             if key in prices:
-                notes.append(f"⁦{row.code}⁩ מופיע יותר מפעם אחת — נשמרה השורה הראשונה")
+                if abs(prices[key].price - row.price) > 1e-9:
+                    notes.append(
+                        f"⁦{row.code}⁩ מופיע פעמיים במחירים שונים (⁦{prices[key].price:g}⁩ "
+                        f"ו־⁦{row.price:g}⁩) — נשמר הראשון. אם המחיר תלוי בגוון, "
+                        "צריך בקובץ עמודת גוון."
+                    )
                 continue
             prices[key] = row
         if not prices:
             raise ProfileOSError("לא נמצאה אף שורת מחיר בקובץ")
+        by_finish = [k for k in prices if "|" in k]
+        if by_finish:
+            codes = {k.split("|", 1)[0] for k in by_finish}
+            notes.append(
+                f"⁦{len(codes)}⁩ מק״טים מתומחרים לפי גוון. בהצעת מחיר הם מתומחרים רק "
+                "כשיש להם מחיר אחד; אחרת הם נשארים בלי מחיר עד שבוחרים גוון."
+            )
         edition = PriceListEdition(
             edition_id=f"PL-{date.today():%Y%m%d}-{uuid4().hex[:6].upper()}",
             supplier=supplier.strip(), source=source.strip(),
             valid_from=valid_from[:10] if valid_from else "",
             currency=currency or "ILS", recorded_by=recorded_by.strip(),
+            discount_pct=float(discount_pct), surcharge_pct=float(surcharge_pct),
             warnings=notes, prices=prices,
         )
         self._editions[edition.edition_id] = edition
         self.save()
         return edition
+
+    def record_uplift(self, supplier: str, pct: float, *, source: str, valid_from: str = "",
+                      recorded_by: str = "") -> PriceListEdition:
+        """A supplier's "+4% on everything from 1/12" letter, as an edition.
+
+        That letter is the commonest price change a shop gets, and it comes
+        without a new file. The new edition is the latest accepted list with
+        every price moved by the percentage, and the letter as its source.
+        """
+        accepted = self.accepted(supplier_key(supplier))
+        if not accepted:
+            raise ProfileOSError(
+                f"אין עדיין מחירון מאושר מ{supplier} — קלטו קודם את המחירון המלא"
+            )
+        if not -50.0 <= pct <= 100.0 or pct == 0:
+            raise ProfileOSError("שינוי באחוזים בין ⁦-50%⁩ ל־⁦100%⁩, ולא אפס")
+        base = accepted[-1]
+        factor = 1.0 + pct / 100.0
+        rows = [
+            PriceRow(row.code, round(row.price * factor, 2), row.unit, row.description, row.finish)
+            for row in base.prices.values()
+        ]
+        return self.record(
+            rows, supplier=base.supplier, source=source, valid_from=valid_from,
+            currency=base.currency, recorded_by=recorded_by,
+            warnings=[f"נוצר ממחירון {base.source} בשינוי של ⁦{pct:+g}%⁩"],
+        )
 
     def _decide(self, edition_id: str, state: str, by: str, note: str) -> PriceListEdition:
         edition = self._editions.get(edition_id)
@@ -492,7 +585,11 @@ def rows_from_file(path: Path) -> tuple[list[PriceRow], list[str], dict[str, str
         values = row.values
         rows.append(PriceRow(
             code=str(values["code"]), price=float(values["price"]),
-            unit=str(values.get("unit") or ""), description=str(values.get("description") or ""),
+            # The importer fills in "pc" when there is no unit column; here the
+            # unit stays unknown, and the person is asked for it instead.
+            unit=str(values.get("unit") or "") if "unit" in plan.columns else "",
+            description=str(values.get("description") or ""),
+            finish=str(values.get("finish") or ""),
         ))
     matched = {name: plan.columns[name] for name in PRICE_ALIASES if name in plan.columns}
     return rows, skipped, matched
@@ -515,7 +612,14 @@ def _as_supplier(edition: PriceListEdition,
     from .suppliers import PriceEntry, Supplier
 
     entries = []
-    for row in edition.prices.values():
+    seen: set[str] = set()
+    for key, row in edition.prices.items():
+        code = code_key(row.code)
+        if "|" in key:
+            # Priced per finish: only usable when it is the one price there is.
+            if edition.for_code(row.code) is None or code in seen:
+                continue
+        seen.add(code)
         unit = unit_key(row.unit)
         price = row.price
         metadata: dict[str, Any] = {"unit_known": bool(unit), "list": edition.edition_id}
@@ -529,6 +633,7 @@ def _as_supplier(edition: PriceListEdition,
     return Supplier(
         id=f"shop:{edition.supplier_id}", name=edition.supplier, version=edition.edition_id,
         currency=edition.currency, entries=entries,
+        discount_pct=edition.discount_pct, surcharge_pct=edition.surcharge_pct,
         notes=f"{edition.source} · בתוקף מ־{edition.effective}",
     )
 
@@ -641,10 +746,16 @@ class JobCostChange:
         total = float(getattr(self.job, "quote_total", 0.0) or 0.0)
         return self.delta / total if total else 0.0
 
+    @property
+    def worth_saying(self) -> bool:
+        """Big enough to act on: ⁦300 ₪⁩, or a percent of the quotation."""
+        total = float(getattr(self.job, "quote_total", 0.0) or 0.0)
+        return abs(self.delta) >= max(300.0, 0.01 * total)
+
     def describe(self) -> str:
         sign = "יותר" if self.delta > 0 else "פחות"
         text = (
-            f"⁦{self.job.job_id}⁩ {self.job.name}: החומר עולה "
+            f"⁦{self.job.job_id}⁩ {self.job.name}: החומר עולה כ־"
             f"⁦{abs(self.delta):,.0f} ₪⁩ {sign}"
         )
         if getattr(self.job, "quote_total", 0):
@@ -676,9 +787,14 @@ def cost_change(job: Any, old: PriceListEdition, new: PriceListEdition, *,
     delta = 0.0
     lines = unmatched = 0
     for line in materials:
-        key = code_key(line.code)
-        before, after = old.prices.get(key), new.prices.get(key)
-        if before is None or after is None or abs(after.price - before.price) < 1e-9:
+        before, after = old.for_code(line.code), new.for_code(line.code)
+        if before is None or after is None:
+            continue
+        # What the shop pays, not what the list prints: its discount and any
+        # surcharge on each side.
+        paid_before = before.price * old.net_factor
+        paid_after = after.price * new.net_factor
+        if abs(paid_after - paid_before) < 1e-9:
             continue
         if unit_key(before.unit) != unit_key(after.unit) and before.unit and after.unit:
             unmatched += 1
@@ -687,7 +803,7 @@ def cost_change(job: Any, old: PriceListEdition, new: PriceListEdition, *,
         if quantity is None:
             unmatched += 1
             continue
-        delta += quantity * (after.price - before.price)
+        delta += quantity * (paid_after - paid_before)
         lines += 1
     if not lines and not unmatched:
         return None
@@ -729,27 +845,53 @@ class ListImpact:
         return "" if self.edition.in_force() else self.edition.effective
 
 
+def _day(text: str) -> date | None:
+    try:
+        return date.fromisoformat(text[:10])
+    except (TypeError, ValueError):
+        return None
+
+
 def impact(book: PriceListBook, edition: PriceListEdition, jobs: Iterable[Any], *,
            mass_per_metre: Callable[[str], float | None] | None = None) -> ListImpact:
-    """What this list does to quotations out and jobs not yet ordered."""
+    """What this list does to quotations out and jobs not yet ordered.
+
+    A quotation is set against the list that was in force the day it was
+    made — not the one before this, which may be two lists back. A won job
+    not yet ordered is set against the list in force today, and only when
+    this list is still to come: that is the material that can still be
+    bought at the old price.
+
+    The figures are estimates: net cut length without offcut, at the shop's
+    own discount. They say "at least", never "exactly".
+    """
     result = ListImpact(edition)
-    old = book.previous(edition)
-    if old is None:
-        return result
     weights = mass_per_metre or catalogue_weights()
+    supplier = edition.supplier_id
     for job in jobs:
         status = getattr(getattr(job, "status", ""), "value", str(getattr(job, "status", "")))
-        if status not in QUOTED_STATES + NOT_ORDERED_STATES:
+        if status in QUOTED_STATES:
+            quoted = _day(str(getattr(job, "quoted_on", "") or ""))
+            # The list in force that day; for a quotation older than any list
+            # on record, the earliest prices known before this one.
+            base = (book.current(supplier, quoted) if quoted else None) or book.previous(edition)
+            if quoted is not None and edition.state == ListState.ACCEPTED \
+                    and edition.in_force(quoted):
+                continue  # priced on this list, or a later one
+            bucket = result.quoted
+        elif status in NOT_ORDERED_STATES:
+            if edition.in_force() and edition.state == ListState.ACCEPTED:
+                continue  # already paying the new price
+            base = book.current(supplier)
+            bucket = result.to_order
+        else:
             continue
-        # A quotation made after this list was accepted was priced on it.
-        quoted_on = str(getattr(job, "quoted_on", "") or "")
-        if status in QUOTED_STATES and quoted_on and edition.decided_at \
-                and quoted_on > edition.decided_at[:10]:
+        if base is None or base.edition_id == edition.edition_id:
             continue
-        change = cost_change(job, old, edition, mass_per_metre=weights)
+        change = cost_change(job, base, edition, mass_per_metre=weights)
         if change is None or abs(change.delta) < 1:
             continue
-        (result.quoted if status in QUOTED_STATES else result.to_order).append(change)
+        bucket.append(change)
     result.quoted.sort(key=lambda c: -c.delta)
     result.to_order.sort(key=lambda c: -c.delta)
     return result

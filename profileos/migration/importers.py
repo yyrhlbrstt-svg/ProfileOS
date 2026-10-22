@@ -57,6 +57,7 @@ PRICE_ALIASES: dict[str, tuple[str, ...]] = {
     "unit": ("יחידה", "יח", "unit", "uom"),
     "supplier": ("ספק", "יצרן", "supplier", "vendor"),
     "currency": ("מטבע", "currency"),
+    "finish": ("גוון", "צבע", "גימור", "קבוצת גוון", "finish", "colour", "color"),
 }
 
 
@@ -316,12 +317,16 @@ def plan_prices(path: Path) -> ImportPlan:
         if price < 0:
             plan.rows.append(Row(number, "skip", code, "מחיר שלילי"))
             continue
-        if code in seen:
+        finish = _value(row, plan.columns, "finish")
+        # One code is one price per finish: white and mill are different rows.
+        identity = f"{code}|{finish}" if finish else code
+        if identity in seen:
             plan.rows.append(Row(number, "skip", code, "כפול בתוך הקובץ"))
             continue
-        seen.add(code)
+        seen.add(identity)
         plan.rows.append(Row(number, "create", code, "", {
             "code": code,
+            "finish": finish,
             "price": price,
             "description": _value(row, plan.columns, "description"),
             "unit": _value(row, plan.columns, "unit") or "pc",
@@ -353,7 +358,7 @@ def import_prices(plan: ImportPlan, path: Path | None = None) -> dict[str, int]:
         # restored from its previous version or the import stops, rather
         # than silently dropping every price the shop entered before.
         entries = {
-            item["code"]: item
+            item["code"] + (f"|{item['finish']}" if item.get("finish") else ""): item
             for item in read_json(destination, default={}).get("prices", [])
         }
 
@@ -361,11 +366,12 @@ def import_prices(plan: ImportPlan, path: Path | None = None) -> dict[str, int]:
     for row in plan.rows:
         if row.action != "create":
             continue
-        if row.label in entries:
+        identity = row.label + (f"|{row.values['finish']}" if row.values.get("finish") else "")
+        if identity in entries:
             updated += 1
         else:
             created += 1
-        entries[row.label] = dict(row.values)
+        entries[identity] = dict(row.values)
 
     from ..core.storage import write_json
 
@@ -393,6 +399,7 @@ def _record_editions(plan: ImportPlan) -> None:
         groups.setdefault(values.get("supplier") or "מחירון מיובא", []).append(PriceRow(
             code=str(values["code"]), price=float(values["price"]),
             unit=str(values.get("unit") or ""), description=str(values.get("description") or ""),
+            finish=str(values.get("finish") or ""),
         ))
     book = default_price_lists()
     for supplier, rows in groups.items():

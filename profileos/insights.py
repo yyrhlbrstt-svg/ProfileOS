@@ -704,7 +704,9 @@ def _price_lists(context: dict[str, Any], today: date) -> list[Insight]:
         except Exception as exc:  # noqa: BLE001 - one supplier, not the scan
             _log.warning("Price impact for %s failed: %s", supplier_id, exc)
             continue
-        dearer = [c for c in effect.quoted if c.delta > 0]
+        # Worth a line only when it is worth acting on: a quotation is not
+        # re-sent over a hundred shekels, and a list that cries wolf is ignored.
+        dearer = [c for c in effect.quoted if c.delta > 0 and c.worth_saying]
         if dearer:
             total = sum(c.delta for c in dearer)
             found.append(Insight(
@@ -712,12 +714,13 @@ def _price_lists(context: dict[str, Any], today: date) -> list[Insight]:
                 _count(len(dearer), "הצעה פתוחה תומחרה לפני ההתייקרות",
                        "הצעות פתוחות תומחרו לפני ההתייקרות")
                 + f" של {latest.supplier}",
-                f"החומר בהן עולה עכשיו ⁦{total:,.0f} ₪⁩ יותר — כדאי לעדכן לפני שהלקוח "
-                "חותם: " + _names(dearer, lambda c: c.describe()),
+                f"החומר בהן עולה לפחות ⁦{total:,.0f} ₪⁩ יותר (הערכה: אורך נטו בלי פחת, "
+                "אחרי ההנחה שלכם) — כדאי לעדכן לפני שהלקוח חותם: "
+                + _names(dearer, lambda c: c.describe()),
                 "Projects", f"price-quoted:{latest.edition_id}:"
                 + ",".join(sorted(c.job.job_id for c in dearer)),
             ))
-        dearer_orders = [c for c in effect.to_order if c.delta > 0]
+        dearer_orders = [c for c in effect.to_order if c.delta > 0 and c.worth_saying]
         if dearer_orders and effect.buy_before:
             saving = sum(c.delta for c in dearer_orders)
             when = date.fromisoformat(effect.buy_before[:10])
@@ -725,8 +728,10 @@ def _price_lists(context: dict[str, Any], today: date) -> list[Insight]:
                 "warning",
                 f"להזמין מ{latest.supplier} לפני ⁦{when:%d/%m/%Y}⁩",
                 f"המחירון החדש נכנס לתוקף בעוד ⁦{(when - today).days}⁩ ימים. הזמנת החומר "
-                f"לפרויקטים שנסגרו עכשיו חוסכת כ־⁦{saving:,.0f} ₪⁩: "
-                + _names(dearer_orders, lambda c: f"⁦{c.job.job_id}⁩"),
+                f"לפרויקטים שנסגרו חוסכת לפחות ⁦{saving:,.0f} ₪⁩: "
+                + _names(dearer_orders, lambda c: f"⁦{c.job.job_id}⁩")
+                + ". בדרך כלל המחיר הישן תקף להזמנה שבוצעה (ולפעמים שולמה) לפני "
+                "התאריך — ושווה לשקול מול המזומנים שיתפסו עד שהלקוח משלם.",
                 "Projects", f"price-order:{latest.edition_id}",
             ))
     return found

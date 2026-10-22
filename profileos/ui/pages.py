@@ -6742,11 +6742,14 @@ class CataloguePage(Page):
         take.setObjectName("Primary")
         take.setToolTip("קובץ Excel או CSV מהספק: מק״ט, תיאור, מחיר, יחידה")
         take.clicked.connect(lambda: self.import_price_list())
+        letter = QPushButton("שינוי באחוזים…")
+        letter.setToolTip("הספק הודיע ״+4% על הכול מ־1/12״ בלי קובץ חדש")
+        letter.clicked.connect(self.record_price_letter)
         accept = QPushButton("אישור המחירון")
         accept.clicked.connect(lambda: self._decide_price_list(True))
         reject = QPushButton("דחייה")
         reject.clicked.connect(lambda: self._decide_price_list(False))
-        for button in (take, accept, reject):
+        for button in (take, letter, accept, reject):
             buttons.addWidget(button)
         buttons.addStretch(1)
         layout.addLayout(buttons)
@@ -6817,6 +6820,7 @@ class CataloguePage(Page):
             f"{edition.supplier} — {edition.source}",
             f"בתוקף מ־⁦{_short_date(edition.effective)}⁩ · ⁦{len(edition.prices)}⁩ פריטים"
             + (f" · נקלט על ידי {edition.recorded_by}" if edition.recorded_by else ""),
+            f"התנאים שלכם: {edition.terms()}",
         ]
         if edition.state != ListState.PENDING:
             lines.append(
@@ -6848,6 +6852,11 @@ class CataloguePage(Page):
                 lines.append(header)
                 lines += [f"  • {change.describe()}" for change in effect.to_order]
                 lines.append("")
+            if effect.quoted or effect.to_order:
+                lines.append(
+                    "הערכה: אורך חיתוך נטו בלי פחת, במחיר אחרי ההנחה שלכם — "
+                    "בפועל השינוי גדול יותר."
+                )
             unmatched = sum(c.unmatched_units for c in effect.quoted + effect.to_order)
             if unmatched:
                 lines.append(
@@ -6875,15 +6884,24 @@ class CataloguePage(Page):
             return
         book = self.checked_book(default_price_lists(), "מחירוני הספקים")
         known = sorted({e.supplier for e in book})
-        dialog = PriceListDialog(path.name, len(rows), skipped, matched, known, parent=self)
+        terms = {}
+        for supplier_id in book.suppliers():
+            latest = book.accepted(supplier_id)[-1]
+            terms[supplier_id] = (latest.discount_pct, latest.surcharge_pct)
+        dialog = PriceListDialog(path.name, len(rows), skipped, matched, known,
+                                 terms=terms, parent=self)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         values = dialog.values()
+        if values["unit"]:
+            for row in rows:
+                row.unit = row.unit or values["unit"]
         try:
             edition = book.record(
                 rows, supplier=values["supplier"], source=values["source"],
                 valid_from=values["valid_from"], currency=values["currency"],
                 recorded_by=values["recorded_by"],
+                discount_pct=values["discount_pct"], surcharge_pct=values["surcharge_pct"],
                 warnings=[f"לא נקרא: {line}" for line in skipped[:50]],
             )
         except Exception as exc:  # noqa: BLE001
@@ -6898,6 +6916,34 @@ class CataloguePage(Page):
                 _log.warning("Could not mark the finding handled: %s", exc)
             self._refresh_findings()
         self.tabs.setCurrentWidget(self.prices_page)
+        self._refresh_price_lists()
+        if edition.edition_id in self._price_list_ids:
+            self.price_lists_table.selectRow(self._price_list_ids.index(edition.edition_id))
+        self.status(f"נשמר מחירון ממתין מ{edition.supplier}: {book.diff(edition).summary()}")
+
+    def record_price_letter(self) -> None:
+        """A supplier's percentage letter, as a waiting edition of its list."""
+        from ..quoting.pricelists import default_price_lists
+        from .dialogs import PriceLetterDialog
+
+        book = self.checked_book(default_price_lists(), "מחירוני הספקים")
+        suppliers = sorted({book.accepted(s)[-1].supplier for s in book.suppliers()})
+        if not suppliers:
+            self.report(ProfileOSError("אין עדיין מחירון מאושר — קלטו קודם את המחירון המלא"),
+                        "אין מחירון לשנות")
+            return
+        dialog = PriceLetterDialog(suppliers, parent=self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        values = dialog.values()
+        try:
+            edition = book.record_uplift(
+                values["supplier"], values["pct"], source=values["source"],
+                valid_from=values["valid_from"], recorded_by=values["recorded_by"],
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "השינוי לא נשמר")
+            return
         self._refresh_price_lists()
         if edition.edition_id in self._price_list_ids:
             self.price_lists_table.selectRow(self._price_list_ids.index(edition.edition_id))

@@ -232,11 +232,80 @@ class TestWhatItDoesToTheJobs:
         assert [c.job.job_id for c in effect.quoted] == ["J-1"]
         assert [c.job.job_id for c in effect.to_order] == ["J-2"]
         assert effect.buy_before == later
-        # A quotation made after the list was accepted was priced on it.
+        # Accepted today but in force in two weeks: a quotation made tomorrow
+        # is still priced on the old list, and loses margin like the rest.
         tomorrow = (date.today() + timedelta(days=1)).isoformat()
         effect = impact(book, book.get(new.edition_id), [job("J-5", "quoted", tomorrow)],
                         mass_per_metre=lambda c: None)
+        assert [c.job.job_id for c in effect.quoted] == ["J-5"]
+        # Made once the new list is in force: priced on it.
+        after = (date.today() + timedelta(days=15)).isoformat()
+        effect = impact(book, book.get(new.edition_id), [job("J-6", "quoted", after)],
+                        mass_per_metre=lambda c: None)
         assert effect.quoted == []
+
+    def test_a_quotation_two_lists_back_counts_both_increases(self, book, monkeypatch):
+        from profileos.quoting import pricelists
+
+        monkeypatch.setattr(pricelists, "job_materials", lambda job: [self.line("4301", 100)])
+        accepted(book, {"4301": 40.0}, valid_from="2025-01-01")
+        accepted(book, {"4301": 42.0}, valid_from="2025-06-01")
+        latest = accepted(book, {"4301": 45.0}, valid_from="2025-12-01")
+        old_quote = SimpleNamespace(job_id="J-1", name="x", quote_total=0.0,
+                                    status=SimpleNamespace(value="quoted"), quoted_on="2025-03-01")
+        [change] = impact(book, book.get(latest.edition_id), [old_quote],
+                          mass_per_metre=lambda c: None).quoted
+        assert change.delta == pytest.approx(500.0)   # 40 → 45, not 42 → 45
+
+    def test_the_shops_discount_is_what_it_pays(self, book):
+        old = book.record(rows({"4301": 40.0}), supplier="קליל", source="א", discount_pct=40)
+        book.accept(old.edition_id)
+        new = book.record(rows({"4301": 44.0}), supplier="קליל", source="ב")
+        assert new.discount_pct == 40          # agreed once, carried over
+        job = SimpleNamespace(job_id="J-1", name="x", quote_total=0.0)
+        change = cost_change(job, old, new, materials=[self.line("4301", 100)])
+        assert change.delta == pytest.approx(100 * 4.0 * 0.6)
+        better = book.record(rows({"4301": 44.0}), supplier="קליל", source="ג", discount_pct=45)
+        assert "התנאים היו" in book.diff(better).summary()
+
+    def test_a_percentage_letter_is_an_edition(self, book):
+        accepted(book, {"4301": 40.0, "4302": 10.0})
+        letter = book.record_uplift("קליל", 4.0, source="מכתב מקליל 20/11",
+                                    valid_from=(date.today() + timedelta(days=30)).isoformat())
+        assert letter.prices["4301"].price == pytest.approx(41.6)
+        assert letter.state == ListState.PENDING and letter.source == "מכתב מקליל 20/11"
+        with pytest.raises(ProfileOSError):
+            book.record_uplift("ספק אחר", 4.0, source="x")
+        with pytest.raises(ProfileOSError):
+            book.record_uplift("קליל", 0, source="x")
+
+    def test_prices_per_finish(self, book, tmp_path):
+        from profileos.quoting.suppliers import find_price
+
+        path = tmp_path / "f.csv"
+        path.write_text('מק"ט;גוון;מחיר;יחידה\n4301;טבעי;40;מטר\n4301;לבן;46;מטר\n4302;טבעי;9;מטר\n',
+                        encoding="utf-8")
+        found, skipped, matched = rows_from_file(path)
+        assert len(found) == 3 and not skipped and "finish" in matched
+        edition = book.record(found, supplier="קליל", source="f.csv")
+        assert len(edition.prices) == 3
+        assert any("לפי גוון" in w for w in edition.warnings)
+        book.accept(edition.edition_id)
+        # Two finishes and nothing says which: unpriced, never the wrong one.
+        assert find_price("4301", 1.0, unit="m") is None
+        assert find_price("4302", 1.0, unit="m")[1] == pytest.approx(9.0)
+
+    def test_the_same_code_twice_at_two_prices_is_named(self, book):
+        edition = book.record([PriceRow("4301", 40.0, "מטר"), PriceRow("4301", 46.0, "מטר")],
+                              supplier="קליל", source="x")
+        assert any("במחירים שונים" in w for w in edition.warnings)
+
+    def test_small_changes_are_not_worth_a_warning(self):
+        from profileos.quoting.pricelists import JobCostChange
+
+        job = SimpleNamespace(job_id="J", name="x", quote_total=50000.0)
+        assert not JobCostChange(job, 120.0, 1).worth_saying
+        assert JobCostChange(job, 600.0, 1).worth_saying
 
 
 # --------------------------------------------------------------------------- #
@@ -328,6 +397,32 @@ def test_the_price_lists_tab(shop, tmp_path, monkeypatch):
     page._decide_price_list(True)
     [edition] = list(default_price_lists())
     assert edition.state == ListState.ACCEPTED and edition.decided_by == "דאדי"
+
+    # The supplier's "+4%" letter, without a new file.
+    monkeypatch.setattr(dialogs.PriceLetterDialog, "exec", lambda self: (
+        self.pct.setValue(4.0), self.source.setText("מכתב מקליל"),
+        QDialog.DialogCode.Accepted)[-1])
+    page.record_price_letter()
+    letter = default_price_lists().pending()[0]
+    assert letter.prices["4301"].price == pytest.approx(44.2)
+    assert "התייקרו" in page.price_list_detail.toPlainText()
+
+    # A file with no unit column: the unit is asked for, never assumed.
+    bare = tmp_path / "bare.csv"
+    bare.write_text('מק"ט;מחיר\n4301;30\n', encoding="utf-8")
+
+    def answer(self):
+        assert self.unit is not None and not self.ok_button.isEnabled()
+        self.supplier.setCurrentText("אקסטל")
+        self.unit.setCurrentIndex(self.unit.findData("kg"))
+        assert self.ok_button.isEnabled()
+        self.discount.setValue(35.0)
+        return QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(dialogs.PriceListDialog, "exec", answer)
+    page.import_price_list(bare)
+    extal = next(e for e in default_price_lists() if e.supplier == "אקסטל")
+    assert extal.prices["4301"].unit == "kg" and extal.discount_pct == 35.0
     window.close()
     window.deleteLater()
     QCoreApplication.processEvents()

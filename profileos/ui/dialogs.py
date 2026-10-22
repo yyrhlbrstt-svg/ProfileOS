@@ -706,9 +706,11 @@ class PriceListDialog(_FormDialog):
 
     def __init__(self, file_name: str, count: int, skipped: list[str],
                  matched: dict[str, str], suppliers: list[str] = (),
+                 terms: dict[str, tuple[float, float]] | None = None,
                  parent: QWidget | None = None) -> None:
         super().__init__("קליטת מחירון ספק", parent)
         self.setMinimumWidth(540)
+        self._terms = terms or {}
 
         self.supplier = QComboBox()
         self.supplier.setEditable(True)
@@ -736,11 +738,34 @@ class PriceListDialog(_FormDialog):
             self.currency.addItem(label, code)
         self.recorded_by = QLineEdit()
         self.recorded_by.setPlaceholderText("מי קלט")
+        # What the shop actually pays: its own discount off this supplier's
+        # list, and any surcharge. Filled in from the last list from them.
+        self.discount = QDoubleSpinBox()
+        self.discount.setRange(0.0, 99.0)
+        self.discount.setDecimals(1)
+        self.discount.setSuffix(" %")
+        self.surcharge = QDoubleSpinBox()
+        self.surcharge.setRange(0.0, 100.0)
+        self.surcharge.setDecimals(1)
+        self.surcharge.setSuffix(" %")
+        self.unit: QComboBox | None = None
+        if "unit" not in matched:
+            # No unit column: every price is in one unit, and the person says
+            # which — a per-kilogram list read as per-metre would be wrong.
+            self.unit = QComboBox()
+            self.unit.addItem("בחרו יחידה…", "")
+            for code, label in (("m", "למטר"), ("kg", "לק״ג"), ("bar", "למוט"),
+                                ("pc", "ליחידה"), ("m2", "למ״ר")):
+                self.unit.addItem(label, code)
 
         self.grid.add("ספק", self.supplier)
         self.grid.add("מקור", self.source)
         self.grid.add("תחולה", date_holder)
         self.grid.add("מטבע", self.currency)
+        if self.unit is not None:
+            self.grid.add("המחירים הם", self.unit)
+        self.grid.add("ההנחה שלכם", self.discount)
+        self.grid.add("תוספת (מתכת, אנרגיה)", self.surcharge)
         self.grid.add("נקלט על ידי", self.recorded_by)
 
         names = {"code": "מק״ט", "description": "תיאור", "price": "מחיר", "unit": "יחידה",
@@ -758,13 +783,23 @@ class PriceListDialog(_FormDialog):
         self.layout().insertWidget(1, hint)
 
         self.supplier.currentTextChanged.connect(self._update_ok)
+        self.supplier.currentTextChanged.connect(self._fill_terms)
         self.source.textChanged.connect(self._update_ok)
+        if self.unit is not None:
+            self.unit.currentIndexChanged.connect(self._update_ok)
         self._update_ok()
         self.supplier.setFocus()
+
+    def _fill_terms(self, supplier: str) -> None:
+        terms = self._terms.get(" ".join(supplier.split()).casefold())
+        if terms is not None:
+            self.discount.setValue(terms[0])
+            self.surcharge.setValue(terms[1])
 
     def _update_ok(self, *_: Any) -> None:
         self.ok_button.setEnabled(
             bool(self.supplier.currentText().strip()) and bool(self.source.text().strip())
+            and (self.unit is None or bool(self.unit.currentData()))
         )
 
     def values(self) -> dict[str, Any]:
@@ -775,6 +810,65 @@ class PriceListDialog(_FormDialog):
                 self.valid_from.date().toString("yyyy-MM-dd") if self.has_date.isChecked() else ""
             ),
             "currency": self.currency.currentData() or "ILS",
+            "recorded_by": self.recorded_by.text().strip(),
+            "discount_pct": self.discount.value(),
+            "surcharge_pct": self.surcharge.value(),
+            "unit": self.unit.currentData() if self.unit is not None else "",
+        }
+
+
+class PriceLetterDialog(_FormDialog):
+    """"+4% on everything from 1/12": the supplier's letter, as a new list."""
+
+    accept_text = "שמירה כמחירון ממתין"
+
+    def __init__(self, suppliers: list[str], parent: QWidget | None = None) -> None:
+        super().__init__("שינוי מחירים באחוזים", parent)
+        self.setMinimumWidth(480)
+        from PySide6.QtCore import QDate
+
+        self.supplier = QComboBox()
+        self.supplier.addItems(list(suppliers))
+        self.pct = QDoubleSpinBox()
+        self.pct.setRange(-50.0, 100.0)
+        self.pct.setDecimals(1)
+        self.pct.setSuffix(" %")
+        self.pct.setValue(0.0)
+        self.source = QLineEdit()
+        self.source.setPlaceholderText("מכתב מהספק מ־20/11, הודעת וואטסאפ מהסוכן…")
+        self.valid_from = QDateEdit()
+        self.valid_from.setCalendarPopup(True)
+        self.valid_from.setDisplayFormat("dd/MM/yyyy")
+        self.valid_from.setDate(QDate.currentDate())
+        self.recorded_by = QLineEdit()
+        self.recorded_by.setPlaceholderText("מי קלט")
+
+        self.grid.add("ספק", self.supplier)
+        self.grid.add("שינוי", self.pct)
+        self.grid.add("בתוקף מ־", self.valid_from)
+        self.grid.add("מקור", self.source)
+        self.grid.add("נקלט על ידי", self.recorded_by)
+        hint = QLabel(
+            "כל המחירים במחירון האחרון שאושר מהספק יוזזו באחוז הזה. המחירון החדש "
+            "ימתין לאישור, ותאריך עתידי ייתן זמן להזמין חומר במחיר הישן."
+        )
+        hint.setObjectName("Hint")
+        hint.setWordWrap(True)
+        self.layout().insertWidget(1, hint)
+
+        self.pct.valueChanged.connect(self._update_ok)
+        self.source.textChanged.connect(self._update_ok)
+        self._update_ok()
+
+    def _update_ok(self, *_: Any) -> None:
+        self.ok_button.setEnabled(abs(self.pct.value()) > 1e-9 and bool(self.source.text().strip()))
+
+    def values(self) -> dict[str, Any]:
+        return {
+            "supplier": self.supplier.currentText(),
+            "pct": self.pct.value(),
+            "source": self.source.text().strip(),
+            "valid_from": self.valid_from.date().toString("yyyy-MM-dd"),
             "recorded_by": self.recorded_by.text().strip(),
         }
 
@@ -943,6 +1037,7 @@ __all__ = [
     "NewCustomerDialog",
     "NewJobDialog",
     "NewServiceCallDialog",
+    "PriceLetterDialog",
     "PriceListDialog",
     "RecordEditionDialog",
     "WatchSourceDialog",
