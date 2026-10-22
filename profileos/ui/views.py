@@ -46,6 +46,26 @@ def ltr(text: str) -> str:
     """
     return f"\u2066{text}\u2069"
 
+def _paint_ground(widget: QWidget, painter: QPainter, palette: Palette) -> None:
+    """A drawing's ground, drawn as a card: rounded and bordered like every
+    other card (the #Canvas rule), then everything after it kept inside.
+
+    Filling the whole rectangle painted over that rule, so drawings and
+    charts were the only square, frameless blocks on their pages.
+    """
+    radius = 14.0
+    outer = QRectF(widget.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+    path = QPainterPath()
+    path.addRoundedRect(outer, radius, radius)
+    painter.fillPath(path, _colour(palette.surface_sunken))
+    painter.setPen(QPen(_colour(palette.border), 1.0))
+    painter.drawPath(path)
+    inner = QPainterPath()
+    inner.addRoundedRect(outer.adjusted(1, 1, -1, -1), radius - 1, radius - 1)
+    painter.setClipPath(inner)
+    painter.setPen(Qt.PenStyle.NoPen)
+
+
 def _colour(value: str, alpha: int | None = None) -> QColor:
     colour = QColor(value)
     if alpha is not None:
@@ -197,7 +217,7 @@ class CanvasView(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         painter.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
-        painter.fillRect(self.rect(), _colour(self.palette_colours.surface_sunken))
+        _paint_ground(self, painter, self.palette_colours)
 
         if self.show_grid:
             self._paint_grid(painter)
@@ -292,15 +312,23 @@ class CanvasView(QWidget):
     def draw_label(
         self, painter: QPainter, x: float, y: float, text: str,
         *, colour: str | None = None, size: int = 10, centre: bool = True,
+        max_width: float | None = None, font: str | None = None,
     ) -> None:
-        """Draw a text label at a world position."""
-        painter.setFont(QFont(MONO_FONTS[0], size))
+        """Draw a text label at a world position.
+
+        ``max_width`` (screen pixels): a label that would not fit there is
+        left out rather than drawn over its neighbours — on a laptop screen
+        the pane sizes piled into one another and into the dimensions.
+        """
+        painter.setFont(QFont(font or MONO_FONTS[0], size))
+        metrics = QFontMetricsF(painter.font())
+        if max_width is not None and metrics.horizontalAdvance(text) > max_width:
+            return
         painter.setPen(QPen(_colour(colour or self.palette_colours.text_muted)))
         point = self.to_screen(x, y)
         if centre:
-            metrics = QFontMetricsF(painter.font())
             point -= QPointF(metrics.horizontalAdvance(text) / 2.0, -metrics.height() / 4.0)
-        painter.drawText(point, ltr(text))
+        painter.drawText(point, ltr(text) if font is None else text)
 
 
 # --------------------------------------------------------------------------- #
@@ -540,15 +568,20 @@ class ElevationView(CanvasView):
         panel = next((p for p in build.glass if p.cell_key == cell.key), None)
         if panel is not None:
             centre_x = rect.x + rect.width / 2
+            room = glass_rect.width() - 8
             self.draw_label(
                 painter, centre_x, rect.y + rect.height / 2,
-                f"{panel.width:.0f} x {panel.height:.0f}", size=9,
+                f"{panel.width:.0f} × {panel.height:.0f}", size=9,
                 colour=palette.text if panel.compliant else palette.danger,
+                max_width=room,
             )
             if not panel.compliant:
+                from .theme import UI_FONTS
+
                 self.draw_label(
                     painter, centre_x, rect.y + rect.height / 2 - rect.height * 0.1,
-                    "SAFETY GLASS REQUIRED", size=8, colour=palette.danger,
+                    "נדרשת זכוכית בטיחותית", size=8, colour=palette.danger,
+                    max_width=room, font=UI_FONTS[0],
                 )
 
     def _paint_opening_symbol(self, painter: QPainter, rect: QRectF, sash: Any) -> None:
@@ -679,7 +712,7 @@ class NestingView(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         palette = self.palette_colours
-        painter.fillRect(self.rect(), _colour(palette.surface_sunken))
+        _paint_ground(self, painter, palette)
 
         if self._result is None or not self._result.layouts:
             painter.setPen(QPen(_colour(palette.text_faint)))
@@ -849,7 +882,7 @@ class BarChart(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         palette = self.palette_colours
-        painter.fillRect(self.rect(), _colour(palette.surface_sunken))
+        _paint_ground(self, painter, palette)
 
         peak = max(self._background + self._foreground + [0.0])
         if not self._labels or peak <= 0:
@@ -942,7 +975,7 @@ class ClampView(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         palette = self.palette_colours
-        painter.fillRect(self.rect(), _colour(palette.surface_sunken))
+        _paint_ground(self, painter, palette)
 
         if self._piece is None:
             painter.setPen(QPen(_colour(palette.text_faint)))
@@ -1130,7 +1163,7 @@ class SheetView(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         palette = self.palette_colours
-        painter.fillRect(self.rect(), _colour(palette.surface_sunken))
+        _paint_ground(self, painter, palette)
 
         if self._result is None or not self._result.layouts:
             painter.setPen(QPen(_colour(palette.text_faint)))

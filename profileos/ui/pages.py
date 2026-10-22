@@ -50,8 +50,8 @@ from .views import (
     SheetView,
 )
 from .widgets import (
-    Badge, Card, DataTable, FieldGrid, PageHeader, StatRow, documents_dir, page_layout,
-    suggested_path,
+    Badge, Card, DataTable, FieldGrid, MillimetreBox, PageHeader, StatRow, documents_dir,
+    page_layout, suggested_path,
 )
 
 _log = get_logger("ui.pages")
@@ -90,6 +90,41 @@ def _audit_value(value: Any) -> str:
         return f"⁦{value}⁩"
     text = str(value)
     return text if len(text) <= 48 else text[:45] + "…"
+
+
+def known_people() -> list[str]:
+    """The names this shop has already written itself — in its timesheets and
+    its site surveys — most recent first. A list of people is never made up:
+    a new install starts empty and learns them as they are typed."""
+    names: list[str] = []
+    try:
+        from ..erp.timesheets import default_timebook
+
+        names += [entry.person for entry in sorted(
+            default_timebook()._entries.values(),
+            key=lambda e: str(getattr(e, "on", "")), reverse=True)]
+    except Exception:  # noqa: BLE001 - a suggestion list is not worth a failure
+        pass
+    try:
+        from ..delivery.survey import default_surveys
+
+        names += [survey.measured_by for survey in default_surveys()._surveys.values()]
+    except Exception:  # noqa: BLE001
+        pass
+    seen: list[str] = []
+    for name in names:
+        name = (name or "").strip()
+        if name and name not in seen:
+            seen.append(name)
+    return seen[:20]
+
+
+def _people_combo(combo: QComboBox) -> None:
+    """An editable name field offering the shop's own people, empty to start."""
+    combo.setEditable(True)
+    combo.addItems(known_people())
+    combo.setCurrentIndex(-1)
+    combo.lineEdit().setPlaceholderText("שם העובד")
 
 
 class Page(QWidget):
@@ -143,6 +178,22 @@ class Page(QWidget):
 
     def refresh(self) -> None:
         """Called when the page becomes visible."""
+
+    def needs_design(self, *buttons: QPushButton) -> None:
+        """Buttons that work on a designed opening: off, and saying why,
+        until there is one — not a blue button that answers with an error."""
+        self.__dict__.setdefault("_design_actions", []).extend(buttons)
+        self.sync_design_actions()
+
+    def sync_design_actions(self) -> None:
+        ready = bool(getattr(self.session, "builds", None))
+        for button in self.__dict__.get("_design_actions", []):
+            button.setEnabled(ready)
+            button.setToolTip("" if ready else "תכננו פתח קודם — בעמוד ״פתח״ ← ״בנה פתח״")
+
+    def showEvent(self, event: Any) -> None:  # noqa: N802 - Qt override
+        super().showEvent(event)
+        self.sync_design_actions()
 
     # -- error handling ------------------------------------------------------ #
     def report(self, exc: Exception, context: str = "") -> None:
@@ -278,8 +329,11 @@ class HomePage(Page):
         brief.clicked.connect(self.send_morning_brief)
         self.header.add_action(brief)
 
+        # The greeting is the page's title (in the header): one title, and the
+        # day's work starts higher on a laptop screen.
         self.greeting = QLabel()
         self.greeting.setObjectName("HomeGreeting")
+        self.greeting.setVisible(False)
         self.body.addWidget(self.greeting)
 
         self.next_label = QLabel()
@@ -333,33 +387,34 @@ class HomePage(Page):
             self._step_buttons.append(button)
             row.addWidget(button, 1)
         pipeline.add_layout(row)
-        self.body.addWidget(pipeline)
 
-        # -- the numbers -------------------------------------------------- #
+        # -- the numbers of the current window: the pipeline above already
+        # says where it stands, so they are kept for code, not shown. -------- #
         self.stats = StatRow([
             ("elements", "פתחים"), ("area", "שטח"),
             ("quote", "הצעת מחיר"), ("floor", "בייצור"),
         ])
+        self.stats.setVisible(False)
         self.body.addWidget(self.stats)
 
         # -- quick actions ------------------------------------------------ #
         actions = Card("פעולות מהירות")
         buttons = QHBoxLayout()
         buttons.setSpacing(METRICS.space(2))
-        for label, handler in (
+        # Three, the first of them the one most worth a click; finding an
+        # opening or a profile is Ctrl+K, and the line above walks the steps.
+        for position, (label, handler) in enumerate((
             ("הערכת מחיר מהירה  \u2066Ctrl+E\u2069", self._quick_estimate),
             ("פרויקט חדש", lambda: self._go("Projects")),
-            ("חפש פתח", self._find_opening),
-            ("חפש פרופיל", self._find_profile),
             ("הצעת מחיר", lambda: self._go("Quotation")),
-            ("רצפת הייצור", lambda: self._go("Shop floor")),
-        ):
+        )):
             button = QPushButton(label)
+            if position == 0:
+                button.setObjectName("Primary")
             button.clicked.connect(lambda _checked=False, h=handler: h())
             buttons.addWidget(button)
         buttons.addStretch(1)
         actions.add_layout(buttons)
-        self.body.addWidget(actions)
 
         # What somebody has to do today. It sits above the order book because
         # a follow-up nobody sees on the morning it is due is a follow-up that
@@ -381,7 +436,6 @@ class HomePage(Page):
         open_tasks.setObjectName("Ghost")
         open_tasks.clicked.connect(lambda: self._go("Projects"))
         today.add(open_tasks)
-        self.body.addWidget(today)
 
         # -- the field: who goes where on the next working day -------------- #
         field_card = Card("בשטח")
@@ -413,7 +467,6 @@ class HomePage(Page):
         field_bar.addWidget(crew)
         field_bar.addStretch(1)
         field_card.add_layout(field_bar)
-        self.body.addWidget(field_card)
         self._field: list[Any] = []
 
         recent = Card("פרויקטים אחרונים")
@@ -427,7 +480,13 @@ class HomePage(Page):
         hint = QLabel("לחיצה כפולה על שורה פותחת את הפרויקט לעבודה.")
         hint.setObjectName("Hint")
         recent.add(hint)
-        self.body.addWidget(recent)
+
+        # The order an owner reads in the morning: what is owed and on the
+        # floor (above), today's calls, what needs a look, who goes where,
+        # then the jobs, the working line and the shortcuts.
+        self.body.removeWidget(self.insights_card)
+        for part in (today, self.insights_card, field_card, recent, pipeline, actions):
+            self.body.addWidget(part)
 
         # What this installation can actually do. One line and a bar by
         # default; the list itself opens on request. Kept on the page because
@@ -979,6 +1038,7 @@ class HomePage(Page):
             "צהריים טובים" if 12 <= now.hour < 17 else "ערב טוב"
         )
         self.greeting.setText(f"{part}, {self._brand_name}")
+        self.header.title.setText(self.greeting.text())
         self.show_business()
         self.scan_insights()
         self.show_readiness()
@@ -1431,8 +1491,10 @@ class ProjectsPage(Page):
         self.status_combo.clear()
         for widget in getattr(self, "_job_actions", []):
             widget.setEnabled(job is not None)
+            # Six controls with nothing to act on are noise, not a hint.
+            widget.setVisible(job is not None)
         if job is None:
-            self.job_summary.setText("לא נבחר פרויקט")
+            self.job_summary.setText("בחרו פרויקט מהרשימה כדי לראות אותו ולפעול עליו")
             return
 
         lines = [f"{job.job_id} · {job.name}"]
@@ -2637,7 +2699,7 @@ class ProfilePage(Page):
 
         properties_card = Card("חתך")
         tabs = QTabWidget()
-        self.properties = DataTable(["סימן", "ערך", "יחידה"])
+        self.properties = DataTable(["סימן", "ערך", "יחידה"], empty_text="פתחו שרטוט פרופיל (DXF) כדי לראות את תכונות החתך")
         tabs.addTab(self.properties, "תכונות")
 
         features_panel = QWidget()
@@ -2648,7 +2710,7 @@ class ProfilePage(Page):
         self.feature_summary.horizontalHeader().setVisible(False)
         self.feature_summary.setMaximumHeight(METRICS.row_height * 6 + 4)
         features_layout.addWidget(self.feature_summary)
-        self.features = DataTable(["מאפיין", "פתח", "עומק", "חתירה"])
+        self.features = DataTable(["מאפיין", "פתח", "עומק", "חתירה"], empty_text="המאפיינים יופיעו כאן אחרי פתיחת שרטוט")
         features_layout.addWidget(self.features, 1)
         self.feature_notes = QLabel("")
         self.feature_notes.setWordWrap(True)
@@ -2661,9 +2723,9 @@ class ProfilePage(Page):
 
         check_card = Card("בדיקת עומס רוח")
         fields = FieldGrid()
-        self.span = QDoubleSpinBox(); self.span.setRange(100, 20000); self.span.setValue(3000); self.span.setSuffix(" mm")
+        self.span = MillimetreBox(); self.span.setRange(100, 20000); self.span.setValue(3000); self.span.setSuffix(" מ״מ")
         self.pressure = QDoubleSpinBox(); self.pressure.setRange(0.1, 10.0); self.pressure.setValue(1.2); self.pressure.setSingleStep(0.1); self.pressure.setSuffix(" kN/m²")
-        self.tributary = QDoubleSpinBox(); self.tributary.setRange(100, 10000); self.tributary.setValue(1500); self.tributary.setSuffix(" mm")
+        self.tributary = MillimetreBox(); self.tributary.setRange(100, 10000); self.tributary.setValue(1500); self.tributary.setSuffix(" מ״מ")
         fields.add("מפתח", self.span)
         fields.add("לחץ רוח", self.pressure)
         fields.add("רוחב תורם", self.tributary)
@@ -2672,7 +2734,7 @@ class ProfilePage(Page):
         run = QPushButton("בדוק")
         run.clicked.connect(self.run_check)
         check_card.add(run)
-        self.checks = DataTable(["בדיקה", "דרישה", "כושר", "ניצולת"])
+        self.checks = DataTable(["בדיקה", "דרישה", "כושר", "ניצולת"], empty_text="הבדיקות יופיעו כאן אחרי פתיחת שרטוט פרופיל")
         check_card.add(self.checks, 1)
         self.max_span = QLabel("")
         self.max_span.setObjectName("StatLabel")
@@ -2859,11 +2921,12 @@ class ElementPage(Page):
         # made four hundred times. The form stays exactly where it was for the
         # one that is genuinely new.
         find_button = QPushButton("חפש פתח")
-        find_button.setObjectName("Primary")
         find_button.clicked.connect(self.find_opening)
         self.header.add_action(find_button)
 
+        # The one thing this page is for — and what its subtitle tells you to press.
         build_button = QPushButton("בנה פתח")
+        build_button.setObjectName("Primary")
         build_button.clicked.connect(self.build_element)
         self.header.add_action(build_button)
 
@@ -2880,8 +2943,8 @@ class ElementPage(Page):
         form_card = Card("פתח")
         fields = FieldGrid()
         self.name = QComboBox(); self.name.setEditable(True); self.name.addItems(["W-04", "D-01", "CW-01"])
-        self.width = QDoubleSpinBox(); self.width.setRange(200, 12000); self.width.setValue(2400); self.width.setSuffix(" mm")
-        self.height = QDoubleSpinBox(); self.height.setRange(200, 6000); self.height.setValue(1800); self.height.setSuffix(" mm")
+        self.width = MillimetreBox(); self.width.setRange(200, 12000); self.width.setValue(2400); self.width.setSuffix(" מ״מ")
+        self.height = MillimetreBox(); self.height.setRange(200, 6000); self.height.setValue(1800); self.height.setSuffix(" מ״מ")
         self.quantity = QSpinBox(); self.quantity.setRange(1, 999); self.quantity.setValue(4)
         self.kind = QComboBox()
         for kind_id, kind_he in [("window", "חלון"), ("door", "דלת"), ("curtain_wall", "קיר מסך"),
@@ -2897,8 +2960,8 @@ class ElementPage(Page):
         for sash_kind in ("fixed", "casement", "tilt_turn", "top_hung", "sliding", "door"):
             self.sash_type.addItem(_OT(sash_kind).label("he"), sash_kind)
         self.sash_type.setCurrentIndex(2)
-        self.sill_height = QDoubleSpinBox(); self.sill_height.setRange(0, 100000)
-        self.sill_height.setValue(900); self.sill_height.setSuffix(" mm")
+        self.sill_height = MillimetreBox(); self.sill_height.setRange(0, 100000)
+        self.sill_height.setValue(900); self.sill_height.setSuffix(" מ״מ")
 
         # Most openings are rectangles. The ones that are not are the ones a
         # customer remembers and a competitor wins, and pricing them on the
@@ -2910,17 +2973,17 @@ class ElementPage(Page):
             self.shape.addItem(entry.hebrew, entry.value)
         self.shape.currentIndexChanged.connect(self._shape_changed)
 
-        self.height_right = QDoubleSpinBox()
+        self.height_right = MillimetreBox()
         self.height_right.setRange(0, 6000)
-        self.height_right.setSuffix(" mm")
+        self.height_right.setSuffix(" מ״מ")
         self.height_right.setSpecialValueText("—")
         self.height_right.setToolTip(
             "גובה הצד הימני בפתח משופע. הגובה הרגיל הוא הצד השמאלי."
         )
 
-        self.rise = QDoubleSpinBox()
+        self.rise = MillimetreBox()
         self.rise.setRange(0, 4000)
-        self.rise.setSuffix(" mm")
+        self.rise.setSuffix(" מ״מ")
         self.rise.setSpecialValueText("—")
         self.rise.setToolTip(
             "גובה הקשת מעל קו הזינוק — לא הגובה הכולל, שהוא הזינוק ועוד "
@@ -3004,8 +3067,19 @@ class ElementPage(Page):
             fields.add(label, widget)
         form_card.add(fields)
         form_card.body.addStretch(1)
-        form_card.setMaximumWidth(METRICS.panel_width)
-        splitter.addWidget(form_card)
+        # On a laptop the form is taller than the screen: it scrolls, rather
+        # than cutting its last fields off at the card's edge.
+        form_scroll = QScrollArea()
+        form_scroll.setWidget(form_card)
+        form_scroll.setWidgetResizable(True)
+        form_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        form_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        # As wide as the card needs, plus room for the scroll bar: the card
+        # is never squeezed under its own fields.
+        extent = form_scroll.verticalScrollBar().sizeHint().width()
+        form_scroll.setMinimumWidth(form_card.minimumSizeHint().width() + extent + 2)
+        form_scroll.setMaximumWidth(max(METRICS.panel_width, form_card.minimumSizeHint().width()) + extent + 2)
+        splitter.addWidget(form_scroll)
 
         right = QWidget()
         right_layout = QVBoxLayout(right)
@@ -3053,13 +3127,13 @@ class ElementPage(Page):
         lower_layout.addWidget(self.verdict)
 
         tabs = QTabWidget()
-        self.cuts = DataTable(["תפקיד", "פרופיל", "אורך", "כמות", "זוויות"])
-        self.panes = DataTable(["סימון", "מידה", "מפרט", "שטח מ״ר", "משקל ק״ג", "U", "בטיחות"])
-        self.hardware = DataTable(["קוד", "פריט", "כמות", "יחידה"])
+        self.cuts = DataTable(["תפקיד", "פרופיל", "אורך", "כמות", "זוויות"], empty_text="״בנה פתח״ — ורשימת החיתוך תופיע כאן")
+        self.panes = DataTable(["סימון", "מידה", "מפרט", "שטח מ״ר", "משקל ק״ג", "U", "בטיחות"], empty_text="״בנה פתח״ — והזכוכיות שלו יופיעו כאן")
+        self.hardware = DataTable(["קוד", "פריט", "כמות", "יחידה"], empty_text="״בנה פתח״ — והפרזול שלו יופיע כאן")
         self.hardware_check = QLabel("")
         self.hardware_check.setObjectName("Hint")
         self.hardware_check.setWordWrap(True)
-        self.feasibility = DataTable(["", "היכן", "מה", "נמדד", "גבול"])
+        self.feasibility = DataTable(["", "היכן", "מה", "נמדד", "גבול"], empty_text="״בנה פתח״ — והבדיקה אם אפשר לייצר אותו תופיע כאן")
         self.warnings = QPlainTextEdit(); self.warnings.setReadOnly(True)
 
         # Accessories get a panel rather than a column, because the number the
@@ -3099,7 +3173,7 @@ class ElementPage(Page):
         )
         self.performance.horizontalHeader().setVisible(False)
         performance_split.addWidget(self.performance)
-        self.compliance = DataTable(["", "נושא", "תקן", "ממצא"])
+        self.compliance = DataTable(["", "נושא", "תקן", "ממצא"], empty_text="״בנה פתח״ — ובדיקת התקנים תופיע כאן")
         performance_split.addWidget(self.compliance)
         performance_split.setStretchFactor(0, 0)
         performance_split.setStretchFactor(1, 1)
@@ -3857,6 +3931,7 @@ class DrawingsPage(Page):
         produce = QPushButton("הפקת סט")
         produce.setObjectName("Primary")
         produce.clicked.connect(self.produce)
+        self.needs_design(produce)
         self.header.add_action(produce)
 
         export = QPushButton("ייצוא")
@@ -4080,6 +4155,7 @@ class NestingPage(Page):
         run = QPushButton("הרץ אופטימיזציה")
         run.setObjectName("Primary")
         run.clicked.connect(self.run)
+        self.needs_design(run)
         self.header.add_action(run)
 
         self.stats = StatRow([
@@ -4091,7 +4167,7 @@ class NestingPage(Page):
         controls = Card("פרמטרים")
         row = QHBoxLayout()
         row.setSpacing(METRICS.space(4))
-        self.kerf = QDoubleSpinBox(); self.kerf.setRange(0, 20); self.kerf.setValue(3.5); self.kerf.setSuffix(" mm")
+        self.kerf = QDoubleSpinBox(); self.kerf.setRange(0, 20); self.kerf.setValue(3.5); self.kerf.setSuffix(" מ״מ"); self.kerf.setDecimals(1)
         self.stock = QComboBox(); self.stock.setEditable(True); self.stock.addItems(["6000", "6500", "6000,6500", "7000"])
         self.strategy = QComboBox()
         for label, value in (
@@ -4116,7 +4192,7 @@ class NestingPage(Page):
         scroll.setWidget(self.view)
         splitter.addWidget(scroll)
 
-        self.summary = DataTable(["פרופיל", "מוטות", "חלקים", "ניצולת", "פחת", "אסטרטגיה", "אופטימלי"])
+        self.summary = DataTable(["פרופיל", "מוטות", "חלקים", "ניצולת", "פחת", "אסטרטגיה", "אופטימלי"], empty_text="״הרץ אופטימיזציה״ — והמוטות לכל פרופיל יופיעו כאן")
         splitter.addWidget(self.summary)
         splitter.setStretchFactor(0, 3)
         splitter.setStretchFactor(1, 1)
@@ -4235,6 +4311,7 @@ class MachiningPage(Page):
         post = QPushButton("הפק תוכנית")
         post.setObjectName("Primary")
         post.clicked.connect(self.post)
+        self.needs_design(post)
         self.header.add_action(post)
 
         save = QPushButton("שמור לקובץ...")
@@ -4255,10 +4332,10 @@ class MachiningPage(Page):
         default = self.driver.findData("elumatec.ncx")
         if default >= 0:
             self.driver.setCurrentIndex(default)
-        self.length = QDoubleSpinBox(); self.length.setRange(200, 8000); self.length.setValue(2450); self.length.setSuffix(" mm")
+        self.length = MillimetreBox(); self.length.setRange(200, 8000); self.length.setValue(2450); self.length.setSuffix(" מ״מ")
         self.angle_left = QDoubleSpinBox(); self.angle_left.setRange(15, 165); self.angle_left.setValue(45); self.angle_left.setSuffix("°")
         self.angle_right = QDoubleSpinBox(); self.angle_right.setRange(15, 165); self.angle_right.setValue(45); self.angle_right.setSuffix("°")
-        self.clearance = QDoubleSpinBox(); self.clearance.setRange(0, 100); self.clearance.setValue(15); self.clearance.setSuffix(" mm")
+        self.clearance = MillimetreBox(); self.clearance.setRange(0, 100); self.clearance.setValue(15); self.clearance.setSuffix(" מ״מ")
         for label, widget in [("דרייבר", self.driver), ("אורך מוט", self.length),
                               ("זווית שמאל", self.angle_left), ("זווית ימין", self.angle_right),
                               ("מרווח מלחציים", self.clearance)]:
@@ -4457,6 +4534,8 @@ class QuotePage(Page):
             ("net", "לפני מע״מ"), ("vat", "מע״מ"), ("gross", "סה״כ לתשלום"),
             ("margin", "רווח אחרי עריכות"), ("kg", "אלומיניום"),
         ])
+        # What the customer pays is the figure the page is about.
+        self.stats.tiles["gross"].setProperty("hero", True)
         self.body.addWidget(self.stats)
 
         controls = Card("מפרט ותנאים — כל שינוי מתמחר הכל מחדש")
@@ -4511,7 +4590,7 @@ class QuotePage(Page):
         splitter = QSplitter(Qt.Orientation.Horizontal)
 
         lines_card = Card("שורות ללקוח — לחיצה כפולה על מחיר ליחידה מקבעת אותו")
-        self.lines = DataTable(["פריט", "תיאור", "כמות", "מחיר ליחידה", "סה״כ", ""])
+        self.lines = DataTable(["פריט", "תיאור", "כמות", "מחיר ליחידה", "סה״כ", ""], empty_text="״תמחר את הפרויקט״ — והשורות של ההצעה יופיעו כאן")
         self.lines.setEditTriggers(
             self.lines.EditTrigger.DoubleClicked | self.lines.EditTrigger.EditKeyPressed
         )
@@ -4544,7 +4623,7 @@ class QuotePage(Page):
         side_layout.setSpacing(METRICS.space(3))
 
         options_card = Card("חלופות")
-        self.options = DataTable(["חלופה", "מפרט", "לפני מע״מ", "±"])
+        self.options = DataTable(["חלופה", "מפרט", "לפני מע״מ", "±"], empty_text="אחרי התמחור אפשר להוסיף חלופה (סדרה, זכוכית, גוון) ולהשוות")
         options_card.add(self.options, 1)
         add_option = QPushButton("הוסף חלופה תרמית")
         add_option.clicked.connect(self.add_option)
@@ -4552,7 +4631,7 @@ class QuotePage(Page):
         side_layout.addWidget(options_card, 1)
 
         internal_card = Card("פנימי — לעולם לא מודפס בעותק הלקוח")
-        self.waterfall = DataTable(["רכיב", "סכום"])
+        self.waterfall = DataTable(["רכיב", "סכום"], empty_text="יופיע אחרי התמחור")
         internal_card.add(self.waterfall, 1)
         self.notes = QPlainTextEdit(); self.notes.setReadOnly(True); self.notes.setMaximumHeight(100)
         internal_card.add(self.notes)
@@ -5127,6 +5206,8 @@ class ShopFloorPage(Page):
         self.body.addWidget(self.stats)
 
         scan_card = Card("רישום סריקה")
+        # Used standing, often in gloves: targets sized for a hand, not a mouse.
+        scan_card.setObjectName("FloorCard")
         row = QHBoxLayout(); row.setSpacing(METRICS.space(3))
         self.item = QComboBox()
         self.stage = QComboBox()
@@ -5136,9 +5217,10 @@ class ShopFloorPage(Page):
         for stage in Stage:
             if stage.value != "planned":
                 self.stage.addItem(stage.label("he"), stage.value)
-        self.operator = QComboBox(); self.operator.setEditable(True)
-        self.operator.addItems(["דנה", "יוסי", "מאיה"])
+        self.operator = QComboBox()
+        _people_combo(self.operator)
         scan = QPushButton("סרוק")
+        scan.setObjectName("Primary")
         scan.clicked.connect(self.scan)
         for label, widget in [("פריט", self.item), ("שלב", self.stage), ("מפעיל", self.operator)]:
             caption = QLabel(label); caption.setObjectName("FieldLabel")
@@ -5155,7 +5237,7 @@ class ShopFloorPage(Page):
         items_page = QWidget()
         items_layout = QVBoxLayout(items_page)
         items_layout.setContentsMargins(0, METRICS.space(3), 0, 0)
-        self.items = DataTable(["מזהה", "סוג", "תיאור", "שלב", "התקדמות"])
+        self.items = DataTable(["מזהה", "סוג", "תיאור", "שלב", "התקדמות"], empty_text="שחררו פקודת עבודה — והפריטים יופיעו כאן לסריקה")
         items_layout.addWidget(self.items, 1)
         tabs.addTab(items_page, "פריטי ייצור")
         tabs.addTab(self._hours_tab(), "שעות עבודה")
@@ -5181,8 +5263,7 @@ class ShopFloorPage(Page):
         row.setSpacing(METRICS.space(3))
 
         self.hours_person = QComboBox()
-        self.hours_person.setEditable(True)
-        self.hours_person.addItems(["דנה", "יוסי", "מאיה"])
+        _people_combo(self.hours_person)
 
         self.hours_job = QLineEdit()
         self.hours_job.setPlaceholderText("מספר תיק")
@@ -5436,6 +5517,7 @@ class GlassPage(Page):
         run = QPushButton("שבץ זכוכית")
         run.setObjectName("Primary")
         run.clicked.connect(self.run)
+        self.needs_design(run)
         self.header.add_action(run)
 
         export = QPushButton("ייצא מפות חיתוך")
@@ -5459,16 +5541,16 @@ class GlassPage(Page):
         self.kerf = QDoubleSpinBox()
         self.kerf.setRange(0, 20)
         self.kerf.setValue(0.0)
-        self.kerf.setSuffix(" mm")
+        self.kerf.setSuffix(" מ״מ"); self.kerf.setDecimals(1)
         self.kerf.setToolTip(
             "גלגלת חריטה לזכוכית לא מסירה חומר — חורטים ושוברים — לכן בזכוכית "
             "הערך אפס. מסור לפאנל מרוכב מסיר את עובי הלהב, בדרך כלל 4–5 מ״מ."
         )
 
-        self.trim = QDoubleSpinBox()
+        self.trim = MillimetreBox()
         self.trim.setRange(0, 200)
         self.trim.setValue(20.0)
-        self.trim.setSuffix(" mm")
+        self.trim.setSuffix(" מ״מ")
         self.trim.setToolTip(
             "מוסר מכל ארבע הצלעות לפני שיבוץ. לוח גלם מגיע עם שוליים פגומים, "
             "ובזכוכית עם ציפוי — עם רצועת ציפוי מוסרת בקצה."
@@ -5511,7 +5593,7 @@ class GlassPage(Page):
         splitter.addWidget(scroll)
 
         self.summary = DataTable(
-            ["מפרט", "שמשות", "לוחות", "ניצולת", "שאריות", "שלבים", "הוכחה"]
+            ["מפרט", "שמשות", "לוחות", "ניצולת", "שאריות", "שלבים", "הוכחה"], empty_text="״שבץ זכוכית״ — והלוחות לכל מפרט יופיעו כאן"
         )
         splitter.addWidget(self.summary)
         splitter.setStretchFactor(0, 3)
@@ -6471,7 +6553,7 @@ class ServicePage(Page):
         lower_layout.addWidget(patterns, 1)
 
         warranty = Card("אחריות")
-        self.warranty_table = DataTable(["רכיב", "חודשים"])
+        self.warranty_table = DataTable(["רכיב", "חודשים"], empty_text="לא הוזנה אחריות — הוסיפו רכיב ותקופה")
         warranty.add(self.warranty_table, 1)
         lower_layout.addWidget(warranty, 1)
 
@@ -8416,10 +8498,16 @@ class CataloguePage(Page):
             colours[(index, 4)] = (
                 self.colours.success if readiness.may_quote else self.colours.text_faint
             )
+            # "Not yet" is the usual state, not an alarm: said quietly.
             colours[(index, 5)] = (
-                self.colours.success if readiness.may_cut else self.colours.warning
+                self.colours.success if readiness.may_cut else self.colours.text_muted
             )
         self.systems_table.set_rows(rows, colours=colours)
+        # A long source is cut off in its column: the whole of it on hover.
+        for row_index, row in enumerate(rows):
+            item = self.systems_table.item(row_index, 6)
+            if item is not None:
+                item.setToolTip(str(row[6]))
         self.systems_status.setText(
             f"⁦{len(entries)}⁩ סדרות · ⁦{quotable}⁩ ניתנות לתמחור · "
             f"⁦{cuttable}⁩ ניתנות לחיתוך"
@@ -9766,8 +9854,7 @@ class SurveyPage(Page):
         second = QHBoxLayout()
         second.setSpacing(METRICS.space(3))
         self.survey_by = QComboBox()
-        self.survey_by.setEditable(True)
-        self.survey_by.addItems(["יוסי", "דנה", "מאיה"])
+        _people_combo(self.survey_by)
         second.addWidget(self._caption("מדד"))
         second.addWidget(self.survey_by)
 
@@ -10353,6 +10440,7 @@ class ViewPage(Page):
         render = QPushButton("הצג")
         render.setObjectName("Primary")
         render.clicked.connect(self.render_scene)
+        self.needs_design(render)
         self.header.add_action(render)
 
         export = QPushButton("ייצא")
@@ -11293,7 +11381,7 @@ class AccountsPage(Page):
         layout.setContentsMargins(0, METRICS.space(3), 0, 0)
         layout.setSpacing(METRICS.space(3))
 
-        self.trial_table = DataTable(["קוד", "חשבון", "סוג", "חובה", "זכות"])
+        self.trial_table = DataTable(["קוד", "חשבון", "סוג", "חובה", "זכות"], empty_text="אין עדיין תנועות בהנהלת החשבונות")
         layout.addWidget(self.trial_table, 1)
 
         self.position_grid = FieldGrid()

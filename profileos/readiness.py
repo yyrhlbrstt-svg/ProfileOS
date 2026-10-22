@@ -166,7 +166,7 @@ def _check_brand() -> Check:
             "brand", "פרטי העסק", State.PARTIAL,
             "חסר: " + ", ".join(missing),
             blocks="חשבונית מס אינה חוקית בלי מספר עוסק מורשה",
-            fix="עמוד ״מערכת״ → פרטי העסק",
+            fix="עמוד ״מערכת״ ← פרטי העסק",
             critical=True,
         )
     return Check(
@@ -198,7 +198,7 @@ def _check_systems() -> tuple[Check, Check]:
             "systems_classified", "סיווג סדרות", State.EMPTY,
             f"⁦{total}⁩ סדרות ברשימה, אף אחת לא סווגה",
             blocks="אי אפשר לתמחר סדרה שלא ידוע איזה סוג מערכת היא",
-            fix="עמוד ״קטלוג״ → לשונית ״מערכות״ → סווג את הסדרות שאתם עובדים איתן",
+            fix="עמוד ״קטלוג״ ← לשונית ״מערכות״ ← סווג את הסדרות שאתם עובדים איתן",
             critical=True,
         )
     elif unclassified:
@@ -206,7 +206,7 @@ def _check_systems() -> tuple[Check, Check]:
             "systems_classified", "סיווג סדרות", State.PARTIAL,
             f"⁦{classified}⁩ מתוך ⁦{total}⁩ סווגו",
             blocks=f"⁦{unclassified}⁩ סדרות עדיין לא ניתנות לתמחור",
-            fix="עמוד ״קטלוג״ → לשונית ״מערכות״",
+            fix="עמוד ״קטלוג״ ← לשונית ״מערכות״",
             critical=True,
         )
     else:
@@ -229,7 +229,7 @@ def _check_systems() -> tuple[Check, Check]:
                 "אפשר לתמחר על ערכים טיפוסיים, אבל אסור לחתוך מוט לפיהם — "
                 "כל דף חיתוך יישא ״לא לייצור״"
             ),
-            fix="עמוד ״קטלוג״ → ״קליטה״ עם קובצי ה-DXF והטבלה של הספק",
+            fix="עמוד ״קטלוג״ ← ״קליטה״ עם קובצי ה-DXF והטבלה של הספק",
             critical=True,
         )
     return classify, cut
@@ -248,7 +248,7 @@ def _check_customers() -> Check:
     return Check(
         "customers", "ספר לקוחות", State.EMPTY, "אין לקוחות",
         blocks="הצעת מחיר בלי לקוח היא טיוטה",
-        fix="עמוד ״פרויקטים״ → לשונית ״לקוחות״ → ״לקוח חדש״",
+        fix="עמוד ״פרויקטים״ ← לשונית ״לקוחות״ ← ״לקוח חדש״",
         critical=True,
     )
 
@@ -406,7 +406,7 @@ def _check_service() -> Check:
     if not len(register):
         return Check(
             "service", "ספר קריאות שירות", State.EMPTY, "אין קריאות רשומות",
-            fix="עמוד ״שירות״ → ״קריאה חדשה״ — רשמו גם קריאות שכבר טופלו",
+            fix="עמוד ״שירות״ ← ״קריאה חדשה״ — רשמו גם קריאות שכבר טופלו",
         )
     overdue = len(register.overdue())
     if overdue:

@@ -140,7 +140,8 @@ LIGHT = Palette(
     border_strong="#D1D1D6",
     text="#1D1D1F",
     text_muted="#6E6E73",
-    text_faint="#A1A1A6",
+    # Apple's own secondary grey: #A1A1A6 measured 2.2:1 on the sidebar.
+    text_faint="#8E8E93",
     text_inverse="#FFFFFF",
     accent="#0071E3",
     accent_hover="#0077ED",
@@ -334,6 +335,9 @@ def stylesheet(palette: Palette, metrics: Metrics = METRICS) -> str:
     light = p.mode is Mode.LIGHT
     # WhatsApp's own green, darkened on white so it reads as text.
     whatsapp = "#1A8D47" if light else "#25D366"
+    # White text on the dark theme's bright blue is 3.6:1; the pressed shade
+    # carries it at 4.7:1. Filled surfaces with white text use this one.
+    accent_fill = p.accent if light else p.accent_pressed
     # Derived shades, so each palette only has to state its base colours.
     sidebar_bg = "#ECECEF" if light else "#232325"
     nav_hover = "rgba(0,0,0,0.05)" if light else "rgba(255,255,255,0.07)"
@@ -378,7 +382,7 @@ QToolTip {{
 }}
 #SidebarLogo {{
     font-size: {m.font_size_large + 3}px; font-weight: 700;
-    color: {p.text}; padding: {m.space(6)}px {m.space(5)}px 2px;
+    color: {p.text}; padding: {m.space(4)}px {m.space(5)}px 2px;
 }}
 #SidebarVersion {{
     font-size: {m.font_size_small}px; color: {p.text_muted};
@@ -386,8 +390,8 @@ QToolTip {{
 }}
 #SidebarSection {{
     font-size: {m.font_size_small}px; font-weight: 600;
-    color: {p.text_faint};
-    padding: {m.space(2)}px {m.space(5)}px 2px;
+    color: {p.text_muted};
+    padding: {m.space(1)}px {m.space(5)}px 0;
 }}
 #SidebarScroll, #SidebarScroll > QWidget > QWidget, #SidebarNavBody {{
     background: transparent; border: none;
@@ -395,13 +399,13 @@ QToolTip {{
 QPushButton#NavButton {{
     background: transparent; border: none; border-radius: 8px;
     color: {p.text}; text-align: right;
-    padding: 0; margin: 0 {m.space(2)}px; min-height: 28px;
+    padding: 0; margin: 0 {m.space(2)}px; min-height: {m.row_height}px;
     font-size: {m.font_size}px; font-weight: 400;
 }}
 QLabel#NavLabel {{ font-size: {m.font_size}px; }}
 QPushButton#NavButton:hover {{ background: {nav_hover}; }}
 QPushButton#NavButton:checked {{
-    background: {p.accent}; color: #FFFFFF; font-weight: 600;
+    background: {accent_fill}; color: #FFFFFF; font-weight: 600;
 }}
 QPushButton#SidebarTheme {{
     background: transparent; border: none;
@@ -444,6 +448,20 @@ QPushButton#SidebarTheme:hover {{ color: {p.text}; background: {nav_hover}; }}
     font-size: 26px; font-weight: 600; color: {p.text};
 }}
 #StatLabel {{ font-size: {m.font_size_small + 1}px; color: {p.text_muted}; }}
+/* The one figure on a page that matters most (what the customer pays). */
+#Card[hero="true"] {{ border: {m.border_width}px solid {p.accent}; background: {p.accent_subtle}; }}
+#Card[hero="true"] #StatValue {{ color: {p.accent}; }}
+/* The shop-floor card is a card too, with controls sized for a hand. */
+#FloorCard {{
+    background: {p.surface};
+    border: {m.border_width}px solid {p.border};
+    border-radius: 14px;
+}}
+#FloorCard QComboBox, #FloorCard QPushButton, #FloorCard QLineEdit {{
+    min-height: 44px; font-size: {m.font_size + 3}px;
+}}
+/* A table inside a card: the card is the frame, not a second one. */
+#Card QTableWidget, #Card QTreeWidget, #Card QListWidget {{ border: none; border-radius: 0; }}
 #Canvas {{
     background: {p.surface_sunken};
     border: {m.border_width}px solid {p.border};
@@ -474,12 +492,13 @@ QPushButton:hover {{ background: {p.surface_raised}; }}
 QPushButton:pressed {{ background: {p.border}; }}
 QPushButton:disabled {{ color: {p.text_faint}; background: {p.surface}; border-color: {p.border}; }}
 QPushButton#Primary {{
-    background: {p.accent}; border: none; color: #FFFFFF; font-weight: 600;
+    background: {accent_fill}; border: none; color: #FFFFFF; font-weight: 600;
 }}
 QPushButton#Primary:hover {{ background: {p.accent_hover}; }}
 QPushButton#Primary:pressed {{ background: {p.accent_pressed}; }}
 QPushButton#Primary:disabled {{
-    background: {p.accent_subtle}; border: none; color: {p.text_muted};
+    /* Nothing to act on yet: plainly not a button to press. */
+    background: {p.surface_raised}; border: none; color: {p.text_faint};
 }}
 QPushButton#WhatsApp:disabled {{
     background: transparent; border-color: {p.border}; color: {p.text_faint};
@@ -489,8 +508,9 @@ QPushButton#Ghost {{
 }}
 QPushButton#Ghost:hover {{ background: {p.accent_subtle}; }}
 QPushButton#WhatsApp {{
-    background: transparent; color: {whatsapp};
-    border: {m.border_width}px solid {whatsapp}; font-weight: 600;
+    /* A quiet secondary with a green label — not a second primary. */
+    background: {p.surface}; color: {whatsapp};
+    border: {m.border_width}px solid {p.border_strong}; font-weight: 600;
 }}
 QPushButton#WhatsApp:hover {{ background: {whatsapp}; color: #FFFFFF; }}
 
@@ -519,6 +539,7 @@ QToolButton#MoreButton {{
 }}
 QToolButton#MoreButton:hover {{ background: {p.surface_raised}; }}
 QToolButton#MoreButton::menu-indicator {{ image: none; width: 0; }}
+QToolButton#MoreButton:disabled {{ color: {p.text_faint}; border-color: {p.border}; }}
 QFrame#SegmentBar {{
     background: {p.surface_raised}; border-radius: 9px;
 }}
@@ -670,7 +691,7 @@ QMenu {{
     border-radius: 10px; padding: 4px;
 }}
 QMenu::item {{ padding: 6px 16px; border-radius: 6px; }}
-QMenu::item:selected {{ background: {p.accent}; color: #FFFFFF; }}
+QMenu::item:selected {{ background: {accent_fill}; color: #FFFFFF; }}
 QMessageBox QLabel {{ font-size: {m.font_size + 1}px; }}
 
 /* ---------- home ---------- */
@@ -685,7 +706,7 @@ QPushButton#PipeStep {{
 QPushButton#PipeStep:hover {{ border-color: {p.border_strong}; color: {p.text}; }}
 QPushButton#PipeStep[state="done"] {{ color: {p.success}; font-weight: 600; }}
 QPushButton#PipeStep[state="active"] {{
-    background: {p.accent}; border: none; color: #FFFFFF; font-weight: 600;
+    background: {accent_fill}; border: none; color: #FFFFFF; font-weight: 600;
 }}
 #PipeArrow {{ color: {p.text_faint}; font-size: {m.font_size_large}px; }}
 #PipeCaption {{ color: {p.text_faint}; font-size: {m.font_size_small}px; font-weight: 600; }}

@@ -15,6 +15,7 @@ from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (
     QAbstractSpinBox,
     QApplication,
+    QDoubleSpinBox,
     QFrame,
     QGridLayout,
     QHBoxLayout,
@@ -350,17 +351,37 @@ class DataTable(QTableWidget):
             return
         from PySide6.QtGui import QPainter
 
+        from PySide6.QtGui import QPalette
+
         painter = QPainter(self.viewport())
-        painter.setPen(QColor(DARK.text_faint))
+        # The theme's own muted text — a fixed dark-theme grey was nearly
+        # invisible on white — at the body size, not larger than the rows.
+        ground = self.viewport().palette().color(QPalette.ColorRole.Base)
+        from .theme import LIGHT
+
+        painter.setPen(QColor(LIGHT.text_muted if ground.lightness() > 128 else DARK.text_muted))
         font = painter.font()
-        font.setPointSize(METRICS.font_size)
+        font.setPixelSize(METRICS.font_size)
         painter.setFont(font)
         painter.drawText(
-            self.viewport().rect(),
-            Qt.AlignmentFlag.AlignCenter,
+            self.viewport().rect().adjusted(16, 8, -16, -8),
+            Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap,
             self._empty_text,
         )
         painter.end()
+
+
+class MillimetreBox(QDoubleSpinBox):
+    """A dimension in millimetres: shown as "1800", not "1800.00", while a
+    half millimetre that was measured is kept and shown ("1199.5").
+    Rounding the value itself would quietly change a stored opening."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setDecimals(2)  # what a QDoubleSpinBox kept before: nothing lost
+
+    def textFromValue(self, value: float) -> str:  # noqa: N802 - Qt's name
+        return f"{value:.2f}".rstrip("0").rstrip(".")
 
 
 def documents_dir() -> Path:
@@ -576,8 +597,8 @@ class Toast(QLabel):
 def show_toast(window: QWidget, message: str, kind: str = "info") -> None:
     """Show a toast on ``window``, stacking below any that are already up."""
     toasts: list[Toast] = getattr(window, "_toasts", None) or []
-    # Three is the most anyone reads; older notices have had their moment.
-    while len(toasts) >= 3:
+    # Two is the most anyone reads; older notices have had their moment.
+    while len(toasts) >= 2:
         stale = toasts.pop(0)
         stale.hide()
         stale.deleteLater()
@@ -595,7 +616,10 @@ def reposition_toasts(window: QWidget) -> None:
     squarely on top of them for its whole lifetime. The bottom edge has
     nothing to say over.
     """
-    y = window.height() - METRICS.space(3)
+    # Above the status bar, not over it — and over nothing it would repeat.
+    bar = window.statusBar() if hasattr(window, "statusBar") else None
+    bottom = bar.sizeHint().height() if bar is not None and not bar.isHidden() else 0
+    y = window.height() - bottom - METRICS.space(4)
     for toast in getattr(window, "_toasts", []):
         toast.adjustSize()
         y -= toast.height()

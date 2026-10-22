@@ -115,6 +115,33 @@ def _no_price_lists_left_behind():
     SUPPLIERS.remove_by_source("shop")
 
 
+@pytest.fixture(autouse=True)
+def _windows_are_really_destroyed():
+    """Every window a test opened is destroyed when it ends.
+
+    ``deleteLater`` only queues the deletion, and ``processEvents`` does not
+    deliver it outside an event loop — so every test left its windows alive,
+    and every theme switch restyled all of them: the suite grew slower with
+    each window test added, until switching the theme took minutes.
+    """
+    yield
+    import sys
+
+    if "PySide6.QtWidgets" not in sys.modules:
+        return
+    from PySide6.QtCore import QCoreApplication, QEvent
+    from PySide6.QtWidgets import QApplication, QDialog, QMainWindow
+
+    app = QApplication.instance()
+    if app is None:
+        return
+    for widget in app.topLevelWidgets():
+        if isinstance(widget, (QMainWindow, QDialog)):
+            widget.close()
+            widget.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+
+
 # Qt can crash in its own tear-down at interpreter exit, after every test has
 # passed and the summary is printed — and the crash becomes the run's exit
 # code, failing CI for nothing. Once the results are in, the process leaves

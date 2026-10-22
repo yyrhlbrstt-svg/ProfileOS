@@ -172,6 +172,9 @@ class Sidebar(QWidget):
         self.safety = QLabel("")
         self.safety.setObjectName("SidebarSafety")
         self.safety.setWordWrap(True)
+        # One click to where it is dealt with: System → backup.
+        self.safety.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.safety.mousePressEvent = lambda _event: self._open_backup()  # type: ignore[method-assign]
         outer.addWidget(self.safety)
 
         footer = QLabel(f"ProfileOS · גרסה {__version__}")
@@ -179,6 +182,19 @@ class Sidebar(QWidget):
         footer.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.footer = footer
         outer.addWidget(footer)
+
+    def _open_backup(self) -> None:
+        window = self.window()
+        if not hasattr(window, "go_to_page"):
+            return
+        page = window.go_to_page("System")
+        from PySide6.QtWidgets import QTabWidget
+
+        for tabs in page.findChildren(QTabWidget):
+            for index in range(tabs.count()):
+                if "גיבוי" in tabs.tabText(index):
+                    tabs.setCurrentIndex(index)
+                    return
 
     def refresh_brand(self) -> None:
         """Re-read the operator, so the sidebar follows a change on the System page."""
@@ -351,6 +367,8 @@ class MainWindow(QMainWindow):
         self.stack.setCurrentIndex(index)
         self.sidebar.buttons[index].setChecked(True)
         self.pages[index].refresh()
+        if hasattr(self.pages[index], "sync_design_actions"):
+            self.pages[index].sync_design_actions()
         self._fade_in(self.pages[index])
         self._update_status()
 
@@ -600,11 +618,19 @@ class MainWindow(QMainWindow):
         # Painted views hold their own colours, so they need telling directly.
         for page in self.pages:
             page.colours = palette
-            for attribute in ("view", "clamp_view"):
-                widget = getattr(page, attribute, None)
-                if widget is not None and hasattr(widget, "palette_colours"):
-                    widget.palette_colours = palette
-                    widget.update()
+            # Every painted view on the page, whatever it is called — a chart
+            # named outside a fixed list stayed white in the dark theme. Found
+            # once per page: walking every widget at each switch is slow.
+            painted = page.__dict__.get("_painted_views")
+            if painted is None:
+                from PySide6.QtWidgets import QWidget as _QWidget
+
+                painted = [w for w in page.findChildren(_QWidget)
+                           if hasattr(w, "palette_colours")]
+                page.__dict__["_painted_views"] = painted
+            for widget in painted:
+                widget.palette_colours = palette
+                widget.update()
             # The live 3D views sit on the page's own ground colour.
             for attribute in ("live", "_model_view"):
                 model = getattr(page, attribute, None)
@@ -929,8 +955,11 @@ class MainWindow(QMainWindow):
             text = "● נשמר כטיוטה · פתחו פרויקט כדי לתייק"
         else:
             text = f"✓ כל השינויים נשמרו · {backup_text}"
-        label.setText(text)
-        label.setToolTip(detail or text)
+        # The line stays short (the sidebar is narrow, and a two-line warning
+        # covered the navigation on a laptop); the whole sentence and what to
+        # do are in the tooltip, and a click opens System → backup.
+        label.setText(text.split(" — ")[0])
+        label.setToolTip("\n".join(dict.fromkeys(filter(None, (text, detail)))))
         label.setProperty("state", "ok" if state in ("ok", "pending") else
                           ("warn" if state in ("draft", "warn") else "danger"))
         label.style().unpolish(label)

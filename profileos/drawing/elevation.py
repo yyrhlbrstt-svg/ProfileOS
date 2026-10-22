@@ -272,7 +272,7 @@ def elevation(
         elif cell.panel:
             drawing.add(
                 Text(
-                    layer="TEXT", position=centre, value="פאנל / panel",
+                    layer="TEXT", position=centre, value="פאנל",
                     height=style.text_height, anchor=Anchor.CENTRE,
                 )
             )

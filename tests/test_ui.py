@@ -755,11 +755,14 @@ class TestToasts:
         toasts = getattr(window, "_toasts", [])
         assert toasts and toasts[-1].text() == "נשמר"
 
-    def test_toasts_never_stack_beyond_three(self, window):
+    def test_toasts_never_stack_beyond_two(self, window):
         for index in range(5):
             window.toast(f"הודעה {index}")
         pump()
-        assert len(window._toasts) == 3
+        assert len(window._toasts) == 2
+        # Above the status bar, never over it.
+        lowest = max(toast.geometry().bottom() for toast in window._toasts)
+        assert lowest < window.height() - window.statusBar().height()
 
 
 @pytest.fixture
