@@ -246,3 +246,12 @@ def test_an_ordered_job_is_worth_its_approved_extras_in_the_reports():
     assert reports.pipeline([job]).open_value == pytest.approx(3_428.0)
     period = reports.month(TODAY.month, TODAY.year)
     assert reports.sales([job], period).won_value == pytest.approx(3_428.0)
+
+
+def test_a_family_asked_for_a_review_on_one_job_is_not_asked_on_the_other(shop):
+    first = _job("J-1", JobStatus.INSTALLED, since=TODAY - timedelta(days=3),
+                 customer_name="יוסי לוי", customer_id="C-1")
+    second = _job("J-2", JobStatus.INSTALLED, since=TODAY - timedelta(days=2),
+                  customer_name="יוסי לוי", customer_id="C-1")
+    first.review_requested = TODAY.isoformat()
+    assert not [i for i in _scan(jobs=[first, second]) if i.key.startswith("review:")]

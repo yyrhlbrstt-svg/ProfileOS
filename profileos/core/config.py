@@ -190,6 +190,10 @@ class Settings(BaseModel):
     #: The phones' way in, served by the office window while it is open
     #: (System ← Phones). Off until somebody turns it on.
     phone_access: bool = False
+    #: The bank balance as the shop last typed it, and the day — the starting
+    #: point of the two-sided cash flow (Collection page).
+    bank_balance: float | None = None
+    bank_balance_on: str = ""
     phone_port: int = 8765
     withholding_certificate_until: str = ""
     books_certificate_until: str = ""

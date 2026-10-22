@@ -116,7 +116,9 @@ def job_account(job: Any, cheques: Iterable[Any] = (), *, vat_rate: float | None
 
     cleared = in_cheques = bounced = 0.0
     for cheque in cheques:
-        if getattr(cheque, "job_id", "") != job.job_id:
+        # A cheque the shop wrote for this job's material is not the
+        # customer paying for it.
+        if getattr(cheque, "job_id", "") != job.job_id or getattr(cheque, "outgoing", False):
             continue
         state = getattr(cheque.state, "value", str(cheque.state))
         if state == "cleared":

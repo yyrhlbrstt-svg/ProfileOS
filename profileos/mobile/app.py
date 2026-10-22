@@ -473,7 +473,7 @@ def build_router(state: MobileState | None = None) -> Any:
         return job
 
     @router.post("/api/photos")
-    async def add_photo(
+    def add_photo(
         job_id: str = Form(...),
         kind: str = Form("progress_photo"),
         element: str = Form(""),
@@ -492,7 +492,9 @@ def build_router(state: MobileState | None = None) -> Any:
         if kind not in PHOTO_KINDS:
             raise HTTPException(status_code=422, detail="סוג צילום לא מוכר")
         job = _open_job(job_id)
-        data = await photo.read(MAX_BYTES + 1)
+        # Read in the server's worker thread, not its event loop: copying,
+        # checksumming and writing a photo must not stall the other phones.
+        data = photo.file.read(MAX_BYTES + 1)
         if not data:
             raise HTTPException(status_code=422, detail="הצילום ריק — צלמו שוב")
         if len(data) > MAX_BYTES:
@@ -540,25 +542,34 @@ def build_router(state: MobileState | None = None) -> Any:
             raise HTTPException(status_code=422, detail="החתימה לא נקראה — חתמו שוב")
         job = _open_job(request.job_id)
         snags = [line.strip() for line in request.snags if line.strip()][:40]
-        with tempfile.TemporaryDirectory() as scratch:
-            source = _Path(scratch) / "signature.png"
-            source.write_bytes(image)
-            caption = f"מסירה — נחתם ע״י {signed_by}"
-            if snags:
-                caption += f" · ⁦{len(snags)}⁩ תיקונים פתוחים"
-            attachments_for(job.job_id).add(
-                source, kind=AttachmentKind.SIGNED_DELIVERY, caption=caption,
-                added_by=device.name,
-            )
-        store = default_store()
-        fresh = store.load(job.job_id)
-        for line in snags:
-            fresh.snags.append(Snag(description=line[:300]))
-        moved = False
-        if fresh.status is JobStatus.IN_PRODUCTION:
-            fresh.advance(JobStatus.INSTALLED, f"נמסר — נחתם בטלפון ע״י {signed_by}")
-            moved = True
-        store.save(fresh)
+        try:
+            with tempfile.TemporaryDirectory() as scratch:
+                source = _Path(scratch) / "signature.png"
+                source.write_bytes(image)
+                caption = f"מסירה — נחתם ע״י {signed_by}"
+                if snags:
+                    caption += f" · ⁦{len(snags)}⁩ תיקונים פתוחים"
+                attachments_for(job.job_id).add(
+                    source, kind=AttachmentKind.SIGNED_DELIVERY, caption=caption,
+                    added_by=device.name,
+                )
+            store = default_store()
+            fresh = store.load(job.job_id)
+            for line in snags:
+                fresh.snags.append(Snag(description=line[:300]))
+            moved = False
+            note = f"נמסר — נחתם בטלפון ע״י {signed_by}"
+            if fresh.status is JobStatus.WON:
+                fresh.advance(JobStatus.IN_PRODUCTION, note)
+            if fresh.status is JobStatus.IN_PRODUCTION:
+                fresh.advance(JobStatus.INSTALLED, note)
+                moved = True
+            store.save(fresh)
+        except Exception as exc:  # noqa: BLE001 - said to the installer in words
+            _log.exception("Handover of %s not saved", job.job_id)
+            raise HTTPException(
+                status_code=500, detail=f"המסירה לא נשמרה במשרד — נסו שוב ({exc})"
+            ) from exc
         return {
             "job": fresh.name,
             "status": fresh.status.hebrew,

@@ -428,7 +428,9 @@ class MaterialOrder(RoundTrips):
     def invoice_gap(self) -> float | None:
         """How much more (or less) the invoice asks than the order came to —
         ``None`` while either is missing."""
-        if self.invoice_net <= 0 or self.total <= 0:
+        # A line the list did not price (per-kg aluminium, a special) is in
+        # the invoice and not in the total: no comparison can be honest then.
+        if self.invoice_net <= 0 or self.total <= 0 or self.unpriced:
             return None
         return round(self.invoice_net - self.total, 2)
 
@@ -443,7 +445,8 @@ class MaterialOrder(RoundTrips):
         text = f"⁦{self.invoice_net:,.0f} ₪⁩"
         gap = self.invoice_gap
         if gap is None:
-            return text + " (אין מחיר בהזמנה להשוואה)"
+            return text + (" (בהזמנה שורות בלי מחיר — אין השוואה)" if self.unpriced
+                           else " (אין מחיר בהזמנה להשוואה)")
         if abs(gap) < 1:
             return text + " · תואם"
         share = gap / self.total * 100

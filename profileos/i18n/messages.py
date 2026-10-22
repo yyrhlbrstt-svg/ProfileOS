@@ -535,6 +535,14 @@ MESSAGES: dict[str, dict[str, str]] = {
         "en": "The customer has not signed yet", "he": "הלקוח עוד לא חתם", "ar": "لم يوقّع العميل بعد",
         "ru": "Клиент ещё не подписал", "it": "Il cliente non ha ancora firmato", "es": "El cliente aún no ha firmado",
     },
+    "mobile.handover_offline": {
+        "en": "No signal — the handover was NOT sent. Try again while the customer is here.",
+        "he": "אין קליטה — המסירה לא נשלחה. נסו שוב כל עוד הלקוח כאן.",
+        "ar": "لا توجد إشارة — لم يُرسل التسليم. حاول مجدداً ما دام العميل هنا.",
+        "ru": "Нет связи — сдача НЕ отправлена. Повторите, пока клиент рядом.",
+        "it": "Nessun segnale — la consegna NON è stata inviata. Riprova finché il cliente è qui.",
+        "es": "Sin señal — la entrega NO se envió. Inténtalo de nuevo mientras el cliente esté aquí.",
+    },
     "mobile.handed_over": {
         "en": "Handed over and signed", "he": "נמסר ונחתם", "ar": "تم التسليم والتوقيع",
         "ru": "Сдано и подписано", "it": "Consegnato e firmato", "es": "Entregado y firmado",

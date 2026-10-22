@@ -99,9 +99,22 @@ def _split(text: str) -> list[str]:
 _PLURALS = {"חלונות": "חלון", "דלתות": "דלת", "ויטרינות": "ויטרינה", "תריסים": "תריס"}
 #: "4 חלונות ..." — a count in front of the type.
 _LEADING_COUNT = re.compile(r"^\s*(\d{1,3})\s+(?=[א-ת])")
-#: "120 140 2" — after a width and a height, a table's next column is a count.
+#: "120 140 2", "120x140 2", "240/210 2" — after a width and a height, a
+#: table's next column is a count (unless it says leaves).
 _TRAILING_COUNT = re.compile(
-    r"(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s+(\d{1,3})\s*$")
+    r"(\d+(?:\.\d+)?)(\s+|x|/)(\d+(?:\.\d+)?)\s+(\d{1,4})(?!\s*כנ)(?=\s|$)")
+#: "2 יח׳", "3 יחידות", "כמות 2" — a count said in words.
+_SAID_COUNT = re.compile(
+    r"(?:(\d{1,3})\s*יח(?:ידות|ידה)?[׳'\"]?|כמות\s*:?\s*(\d{1,3}))(?=\s|$)")
+#: More than this "of the same" in one schedule line is a sill height or a
+#: code in the next column, not a count — the line is shown, not guessed.
+MOST_ALIKE = 50
+#: What is fitted to an opening, never an opening by itself: "תריס 120x140"
+#: does not say whether the window under it slides or turns.
+_FITTED = {"תריס", "רשת", "סורג", "אדן", "ארגז"}
+#: Words that are about size or count, not about what kind of opening it is.
+_NOT_A_TYPE = {"מטר", "מטרים", "מ", "ס\"מ", "סמ", "ס״מ", "מ\"מ", "ממ", "מ״מ", "על", "x",
+               "כנפיים", "כנף", "כנפות", "cm", "mm", "m"}
 
 
 def _vocabulary() -> str:
@@ -125,11 +138,17 @@ def _known_words(text: str) -> str:
 
 
 def _room(text: str) -> tuple[str, str]:
+    """The room, as a whole word ("גגון" is a canopy, not the roof)."""
     for room in sorted(ROOMS, key=len, reverse=True):
-        index = text.find(room)
-        if index >= 0:
-            return room, (text[:index] + " " + text[index + len(room):]).strip()
+        found = re.search(rf"(?<![א-ת]){re.escape(room)}(?![א-ת])", text)
+        if found:
+            return room, (text[:found.start()] + " " + text[found.end():]).strip()
     return "", text
+
+
+def _quoted(text: str) -> str:
+    """The pasted line inside a Hebrew message, kept in its own direction."""
+    return f"״\u2068{text}\u2069״"
 
 
 def read_line(text: str, *, used: set[str] | None = None) -> IntakeLine:
@@ -148,42 +167,65 @@ def read_line(text: str, *, used: set[str] | None = None) -> IntakeLine:
     rest = _TIMES.sub("x", rest)
     line.room, rest = _room(rest)
     count = None
+    said = _SAID_COUNT.search(rest)
+    if said:
+        count = int(said.group(1) or said.group(2))
+        rest = rest[:said.start()] + " " + rest[said.end():]
     leading = _LEADING_COUNT.match(rest)
-    if leading:
+    if leading and count is None:
         count = int(leading.group(1))
         rest = rest[leading.end():]
     trailing = _TRAILING_COUNT.search(rest)
-    if trailing:
-        count = int(trailing.group(3))
-        rest = rest[:trailing.start()] + f"{trailing.group(1)} {trailing.group(2)}"
+    if trailing and count is None:
+        number = int(trailing.group(4))
+        if number > MOST_ALIKE:
+            line.problem = (f"{_quoted(text)} — לא ברור מה המספר ⁦{number}⁩ "
+                            "אחרי המידות (כמות? גובה סף?) — כתבו ״יח׳״ אחרי כמות")
+            return line
+        count = number
+        rest = (rest[:trailing.start()]
+                + f"{trailing.group(1)}{trailing.group(2)}{trailing.group(3)}"
+                + rest[trailing.end():])
     rest = _known_words(rest)
 
     query = parse_query(rest)
     if query.width is None or query.height is None:
-        line.problem = f"״{text}״ — חסרים רוחב וגובה"
+        line.problem = f"{_quoted(text)} — חסרים רוחב וגובה"
+        return line
+    named = [word for word in rest.split()
+             if not any(ch.isdigit() for ch in word) and word not in _NOT_A_TYPE
+             and word not in _FITTED]
+    fitted = [word for word in rest.split() if word in _FITTED]
+    rest = " ".join(word for word in rest.split() if word not in _FITTED and word != "עם")
+    if not named:
+        # A size alone is not an opening: which kind is for the person to say.
+        line.problem = f"{_quoted(text)} — לא כתוב איזה פתח (חלון, דלת, הזזה…)"
         return line
     presets = search_openings(rest, limit=1)
     if not presets:
         # The words named no type the shop makes: a plain window at the size
         # is not assumed — the line is shown to the person instead.
-        line.problem = f"״{text}״ — לא זוהה סוג הפתח"
+        line.problem = f"{_quoted(text)} — לא זוהה סוג הפתח"
         return line
     preset = presets[0]
     try:
         opening = opening_from_preset(preset, name=line.mark or preset.hebrew)
     except Exception as exc:  # noqa: BLE001 - shown on the line, not raised
-        line.problem = f"״{text}״ — {exc}"
+        line.problem = f"{_quoted(text)} — {exc}"
         return line
     opening.quantity = max(1, int(count or query.quantity or 1))
     if line.mark:
         if used is not None and line.mark in used:
-            line.problem = f"״{text}״ — הסימון ⁦{line.mark}⁩ כבר קיים בפרויקט"
+            line.problem = f"{_quoted(text)} — הסימון ⁦{line.mark}⁩ כבר קיים בפרויקט"
             return line
         opening.reference = line.mark
         if used is not None:
             used.add(line.mark)
-    if line.room:
-        opening.notes = line.room
+    notes = [line.room] if line.room else []
+    if fitted:
+        notes.append("עם " + ", ".join(fitted))
+    if notes:
+        opening.notes = " · ".join(notes)
     line.opening = opening
     line.title = preset.title
     return line

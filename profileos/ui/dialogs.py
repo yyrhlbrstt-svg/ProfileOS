@@ -610,10 +610,11 @@ class NewChequeDialog(_FormDialog):
     accept_text = "רישום"
 
     def __init__(self, parent: QWidget | None = None, *, jobs: list[Any] | None = None,
-                 job: Any = None) -> None:
+                 job: Any = None, outgoing: bool = False) -> None:
         from datetime import date
 
-        super().__init__("קבלת צ׳קים", parent)
+        self.outgoing = outgoing
+        super().__init__("צ׳קים לספק" if outgoing else "קבלת צ׳קים", parent)
         self.setMinimumWidth(480)
 
         self.job = QComboBox()
@@ -647,8 +648,11 @@ class NewChequeDialog(_FormDialog):
         self.preview.setObjectName("Hint")
         self.preview.setWordWrap(True)
 
+        if outgoing:
+            self.customer.setPlaceholderText("למי נכתב — ספק, קבלן משנה")
         for label, widget in (
-            ("פרויקט", self.job), ("לקוח", self.customer), ("כמה צ׳קים", self.count),
+            ("פרויקט", self.job), ("לספק" if outgoing else "לקוח", self.customer),
+            ("כמה צ׳קים", self.count),
             ("סכום לכל צ׳ק", self.amount), ("פירעון (הראשון)", self.due),
             ("בנק", self.bank), ("סניף", self.branch), ("מספר", self.number),
         ):
@@ -671,7 +675,7 @@ class NewChequeDialog(_FormDialog):
 
     def _job_chosen(self) -> None:
         customer = self.job.currentData(Qt.ItemDataRole.UserRole + 1)
-        if customer and not self.customer.text().strip():
+        if customer and not self.outgoing and not self.customer.text().strip():
             self.customer.setText(str(customer))
 
     def series(self) -> list[Any]:
@@ -683,6 +687,7 @@ class NewChequeDialog(_FormDialog):
             count=values["count"], amount=values["amount"], first_due=values["due"],
             first_number=values["number"], customer=values["customer"] or "—",
             job_id=values["job_id"], bank=values["bank"], branch=values["branch"],
+            outgoing=self.outgoing,
         )
 
     def _show_preview(self) -> None:

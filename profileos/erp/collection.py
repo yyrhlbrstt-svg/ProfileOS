@@ -105,6 +105,10 @@ class Cheque:
     #: Why it came back, in the bank's words.
     bounce_reason: str = ""
     note: str = ""
+    #: A cheque the shop wrote — to a supplier, a subcontractor — rather than
+    #: one it took. ``customer`` is then who it was written to. It is money
+    #: going out on its date, never money coming in.
+    outgoing: bool = False
 
     def __post_init__(self) -> None:
         if self.amount <= 0:
@@ -121,6 +125,8 @@ class Cheque:
 
     def deposit(self, on: date | None = None) -> "Cheque":
         on = on or date.today()
+        if self.outgoing:
+            raise ProfileOSError("צ׳ק שנתתם לספק מפקיד הספק — סמנו ״ירד מהחשבון״ כשהוא נפרע")
         if self.state is not ChequeState.HELD:
             raise ProfileOSError(
                 f"צ׳ק ב-{self.state.hebrew} — אי אפשר להפקיד אותו שוב"
@@ -136,6 +142,11 @@ class Cheque:
     def clear(self, on: date | None = None) -> "Cheque":
         """The money is in the account. Only a cheque that went to the bank
         can come back as money — one still in the drawer is not."""
+        if self.outgoing and self.state is ChequeState.HELD:
+            # The supplier banks it; the shop sees it only when it is debited.
+            self.state = ChequeState.CLEARED
+            self.cleared_on = on or date.today()
+            return self
         if self.state is not ChequeState.DEPOSITED:
             raise ProfileOSError(
                 f"הצ׳ק {self.state.hebrew} — רק צ׳ק שהופקד יכול להיפרע"
@@ -152,7 +163,8 @@ class Cheque:
 
     def describe(self) -> str:
         return (
-            f"⁦{self.amount:,.0f} ₪⁩ · {self.customer} · "
+            ("לספק: " if self.outgoing else "")
+            + f"⁦{self.amount:,.0f} ₪⁩ · {self.customer} · "
             f"⁦{self.due.strftime('%d/%m/%Y')}⁩ · {self.state.hebrew}"
         )
 
@@ -182,6 +194,7 @@ class Cheque:
                 values.pop(key, None)
         values["state"] = ChequeState(values.get("state", "held"))
         values["amount"] = float(values.get("amount", 0.0))
+        values["outgoing"] = bool(values.get("outgoing", False))
         return cls(**values)
 
 
@@ -257,11 +270,24 @@ class ChequeBook(MergingBook):
         return self._cheques.get(cheque_id)
 
     # -- what is in the drawer ----------------------------------------------- #
+    def incoming(self) -> list[Cheque]:
+        """The cheques customers gave — everything below is about these."""
+        return [cheque for cheque in self if not cheque.outgoing]
+
+    def outgoing(self) -> list[Cheque]:
+        """The cheques the shop wrote, by date."""
+        return [cheque for cheque in self if cheque.outgoing]
+
+    def to_pay(self) -> list[Cheque]:
+        """Written and not yet debited: money that will leave on its date."""
+        return [cheque for cheque in self.outgoing()
+                if cheque.state in (ChequeState.HELD, ChequeState.DEPOSITED)]
+
     def held(self) -> list[Cheque]:
-        return [cheque for cheque in self if cheque.state is ChequeState.HELD]
+        return [cheque for cheque in self.incoming() if cheque.state is ChequeState.HELD]
 
     def expected(self) -> list[Cheque]:
-        return [cheque for cheque in self if cheque.state.is_expected]
+        return [cheque for cheque in self.incoming() if cheque.state.is_expected]
 
     @property
     def in_hand(self) -> float:
@@ -273,7 +299,7 @@ class ChequeBook(MergingBook):
         return [cheque for cheque in self.held() if cheque.is_bankable(today)]
 
     def bounced(self) -> list[Cheque]:
-        return [cheque for cheque in self if cheque.state is ChequeState.BOUNCED]
+        return [cheque for cheque in self.incoming() if cheque.state is ChequeState.BOUNCED]
 
     # -- when the money arrives ----------------------------------------------- #
     def cash_flow(
@@ -297,8 +323,45 @@ class ChequeBook(MergingBook):
             if day <= horizon
         )
 
+    def two_sided(self, start: date | None = None, weeks: int = 12,
+                  *, opening: float = 0.0, balance_on: date | None = None) -> list[dict[str, Any]]:
+        """Week by week: customers' cheques coming in, the shop's own going out,
+        and where the account stands after each — the week that goes below
+        zero is the week to move a payment or chase a customer, found now."""
+        start = start or date.today()
+        horizon = start + timedelta(weeks=weeks)
+
+        def week_of(day: date) -> date:
+            if day < start:
+                day = start
+            return day - timedelta(days=(day.weekday() + 1) % 7)
+
+        coming: dict[date, float] = defaultdict(float)
+        going: dict[date, float] = defaultdict(float)
+        for cheque in self.expected():
+            coming[week_of(cheque.due)] += cheque.amount
+        for cheque in self.to_pay():
+            # Dated before the balance was read: the bank already took it,
+            # it is only waiting to be marked.
+            if balance_on is not None and cheque.due < balance_on:
+                continue
+            going[week_of(cheque.due)] += cheque.amount
+        rows: list[dict[str, Any]] = []
+        balance = opening
+        for week in sorted(set(coming) | set(going)):
+            if week > horizon:
+                continue
+            net = coming[week] - going[week]
+            balance += net
+            rows.append({
+                "week": week, "in": round(coming[week], 2), "out": round(going[week], 2),
+                "net": round(net, 2), "balance": round(balance, 2),
+            })
+        return rows
+
     def deposited(self) -> list[Cheque]:
-        return [c for c in self._cheques.values() if c.state is ChequeState.DEPOSITED]
+        return [c for c in self._cheques.values()
+                if c.state is ChequeState.DEPOSITED and not c.outgoing]
 
     def clear_deposited(self, *, up_to: date, on: date | None = None) -> list[Cheque]:
         """Every cheque deposited on or before ``up_to`` is money now — the
@@ -316,7 +379,7 @@ class ChequeBook(MergingBook):
     def bounce_rate(self, customer: str) -> float:
         """What share of this customer's cheques have come back."""
         theirs = [
-            cheque for cheque in self
+            cheque for cheque in self.incoming()
             if cheque.customer.strip().casefold() == customer.strip().casefold()
         ]
         if not theirs:
@@ -336,22 +399,23 @@ class ChequeBook(MergingBook):
 
     def average_days_out(self) -> float:
         """How long, on average, the shop is asked to wait for its money."""
-        cheques = list(self)
+        cheques = self.incoming()
         if not cheques:
             return 0.0
         return round(sum(cheque.days_out for cheque in cheques) / len(cheques), 1)
 
     def summary(self) -> dict[str, float]:
         return {
-            "count": len(self),
+            "count": len(self.incoming()),
             "in_hand": self.in_hand,
+            "to_pay": round(sum(cheque.amount for cheque in self.to_pay()), 2),
             "bankable_today": round(
                 sum(cheque.amount for cheque in self.bankable()), 2
             ),
             "bounced": round(sum(cheque.amount for cheque in self.bounced()), 2),
             "cleared": round(
                 sum(
-                    cheque.amount for cheque in self
+                    cheque.amount for cheque in self.incoming()
                     if cheque.state.is_money
                 ), 2,
             ),
@@ -381,7 +445,7 @@ def next_number(number: str, step: int) -> str:
 def cheque_series(
     *, count: int, amount: float, first_due: date, first_number: str = "",
     customer: str = "", job_id: str = "", bank: str = "", branch: str = "",
-    account: str = "", every_months: int = 1,
+    account: str = "", every_months: int = 1, outgoing: bool = False,
 ) -> list[Cheque]:
     """The cheques a customer hands over at once — usually one a month, with
     consecutive numbers from the same book."""
@@ -392,7 +456,7 @@ def cheque_series(
             customer=customer, amount=amount,
             due=add_months(first_due, index * every_months),
             number=first_number.strip() if index == 0 else next_number(first_number, index),
-            job_id=job_id, bank=bank, branch=branch, account=account,
+            job_id=job_id, bank=bank, branch=branch, account=account, outgoing=outgoing,
         )
         for index in range(count)
     ]

@@ -634,12 +634,19 @@ async function handOver(){
     signature: document.getElementById("hsign").toDataURL("image/png"),
     snags: document.getElementById("hsnags").value.split(/\\r?\\n/),
   };
+  // One tap, one signed delivery note: the button waits for the answer.
+  const button = document.querySelector("button[onclick='handOver()']");
+  button.disabled = true;
   try{
     const data = await api("/api/handover", {method:"POST", body:JSON.stringify(body)});
     clearSignature();
     document.getElementById("hsnags").value = "";
     say("h-msg", t("mobile.handed_over") + " · " + data.job + " · " + data.status, true);
-  }catch(err){ say("h-msg", err.message, false); }
+  }catch(err){
+    // Nothing is kept on the phone for a signature: said so, to try again
+    // while the customer is still there.
+    say("h-msg", err.offline ? t("mobile.handover_offline") : err.message, false);
+  }finally{ button.disabled = false; }
 }
 
 function measurementForm(){

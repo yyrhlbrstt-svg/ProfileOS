@@ -712,3 +712,14 @@ def test_the_suppliers_invoice_is_checked_against_the_order(shop, monkeypatch):
     order.invoice_net = 10_150.0
     assert not order.overcharged and "+150" in order.invoice_says()
     window.close(); window.deleteLater(); QCoreApplication.processEvents()
+
+
+def test_an_order_with_an_unpriced_line_is_not_compared_with_the_invoice():
+    from profileos.projects.model import MaterialOrderLine
+
+    order = MaterialOrder(supplier="קליל", lines=[
+        MaterialOrderLine(code="A", quantity=10, unit_price=1_000.0),
+        MaterialOrderLine(code="B", quantity=6, unit_price=0.0)])
+    order.invoice_net = 14_000
+    assert order.invoice_gap is None and not order.overcharged
+    assert "בלי מחיר" in order.invoice_says()

@@ -76,3 +76,23 @@ def test_pasted_into_the_job_from_the_projects_page(tmp_path, monkeypatch):
     window.close(); window.deleteLater(); QCoreApplication.processEvents()
     monkeypatch.delenv("PROFILEOS_DATA_DIR", raising=False)
     reload_settings()
+
+
+@pytest.mark.parametrize("line, quantity", [
+    ("W1 חלון ציר 120×140 2 יח׳ סלון", 2),          # the dialog's own example
+    ("חלון ציר 120x140 2", 2),
+    ("חלון ציר 120x140 3 יחידות", 3),
+    ("חלון ציר כמות 4 120x140", 4),
+    ("הזזה 240/210 2", 2),
+    ("הזזה 2 כנפיים 240/210", 1),                    # leaves, not a count
+])
+def test_the_count_is_read_however_it_is_written(line, quantity):
+    [read] = read_list(line).lines
+    assert read.ok and read.opening.quantity == quantity
+
+
+@pytest.mark.parametrize("line", ["100x100", "W1 120x140", "תריס 120x140", "גגון 100x100",
+                                  "W2 חלון ציר 120 140 90"])
+def test_a_line_that_does_not_say_what_it_is_is_not_guessed(line):
+    [read] = read_list(line).lines
+    assert not read.ok and read.problem

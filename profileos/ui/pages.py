@@ -7091,13 +7091,18 @@ class CollectionPage(Page):
         add.clicked.connect(self.new_cheque)
         self.header.add_action(add)
 
+        pay = QPushButton("צ׳ק לספק")
+        pay.setToolTip("צ׳ק שכתבתם לספק או לקבלן — יוצא מהחשבון בתאריך שלו")
+        pay.clicked.connect(lambda: self.new_cheque(outgoing=True))
+        self.header.add_action(pay)
+
         deposit = QPushButton("הפקדה")
         deposit.clicked.connect(self.deposit)
         self.header.add_action(deposit)
 
         # Money that landed is told apart from money that is only promised.
         cleared = QPushButton("נפרע")
-        cleared.setToolTip("הכסף נכנס לחשבון")
+        cleared.setToolTip("הכסף נכנס לחשבון — או, לצ׳ק שכתבתם, ירד ממנו")
         cleared.clicked.connect(self.mark_cleared)
         self.header.add_action(cleared)
 
@@ -7120,7 +7125,7 @@ class CollectionPage(Page):
 
         cheques = Card("צ׳קים")
         self.cheques_table = DataTable(
-            ["מספר", "לקוח", "סכום", "לפירעון", "בנק", "עבודה", "מצב"],
+            ["מספר", "לקוח / ספק", "סכום", "לפירעון", "בנק", "עבודה", "מצב"],
             empty_text="אין צ׳קים בספר — לחץ ״צ׳ק חדש״",
         )
         cheques.add(self.cheques_table, 1)
@@ -7131,10 +7136,29 @@ class CollectionPage(Page):
         side_layout.setContentsMargins(0, 0, 0, 0)
         side_layout.setSpacing(METRICS.space(3))
 
-        flow = Card("תזרים צפוי")
+        flow = Card("תזרים: נכנס ויוצא")
+        balance_row = QHBoxLayout()
+        caption = QLabel("יתרה בבנק")
+        caption.setObjectName("FieldLabel")
+        balance_row.addWidget(caption)
+        self.bank_balance = QDoubleSpinBox()
+        self.bank_balance.setRange(-10_000_000, 100_000_000)
+        self.bank_balance.setDecimals(0)
+        self.bank_balance.setSuffix(" ₪")
+        self.bank_balance.setGroupSeparatorShown(True)
+        balance_row.addWidget(self.bank_balance, 1)
+        keep = QPushButton("עדכון")
+        keep.setToolTip("היתרה כפי שהיא היום בחשבון — נקודת ההתחלה של התזרים")
+        keep.clicked.connect(self.save_bank_balance)
+        balance_row.addWidget(keep)
+        flow.add_layout(balance_row)
+        self.balance_note = QLabel("")
+        self.balance_note.setObjectName("Hint")
+        self.balance_note.setWordWrap(True)
+        flow.add(self.balance_note)
         self.flow_table = DataTable(
-            ["שבוע", "צפוי ₪"],
-            empty_text="אין צ׳קים דחויים",
+            ["שבוע", "נכנס", "יוצא", "יתרה"],
+            empty_text="אין צ׳קים דחויים — לא נכנסים ולא יוצאים",
         )
         flow.add(self.flow_table, 1)
         side_layout.addWidget(flow, 1)
@@ -7211,11 +7235,27 @@ class CollectionPage(Page):
             return []
         return sorted(jobs, key=lambda job: job.updated or "", reverse=True)
 
-    def new_cheque(self, *, job: Any = None) -> int:
-        """Take one cheque or a whole series. Returns how many were recorded."""
+    def save_bank_balance(self) -> None:
+        from datetime import date
+
+        from ..core.config import get_settings, save_settings
+
+        settings = get_settings()
+        settings.bank_balance = float(self.bank_balance.value())
+        settings.bank_balance_on = date.today().isoformat()
+        try:
+            save_settings(settings)
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "היתרה לא נשמרה")
+            return
+        self.refresh()
+
+    def new_cheque(self, *, job: Any = None, outgoing: bool = False) -> int:
+        """Take one cheque or a whole series — or, ``outgoing``, record the
+        cheques written to a supplier. Returns how many were recorded."""
         from .dialogs import NewChequeDialog
 
-        dialog = NewChequeDialog(self, jobs=self._jobs_for_cheques(), job=job)
+        dialog = NewChequeDialog(self, jobs=self._jobs_for_cheques(), job=job, outgoing=outgoing)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return 0
         try:
@@ -7230,9 +7270,10 @@ class CollectionPage(Page):
             return 0
         self.refresh()
         total = sum(c.amount for c in cheques)
+        whom = ("ל" if outgoing else "מ") + cheques[0].customer
         self.status(
-            f"נרשם צ׳ק ⁦{total:,.0f} ₪⁩ מ{cheques[0].customer}" if len(cheques) == 1
-            else f"נרשמו ⁦{len(cheques)}⁩ צ׳קים, סה״כ ⁦{total:,.0f} ₪⁩, מ{cheques[0].customer}"
+            f"נרשם צ׳ק ⁦{total:,.0f} ₪⁩ {whom}" if len(cheques) == 1
+            else f"נרשמו ⁦{len(cheques)}⁩ צ׳קים, סה״כ ⁦{total:,.0f} ₪⁩, {whom}"
         )
         return len(cheques)
 
@@ -7242,7 +7283,8 @@ class CollectionPage(Page):
         from datetime import date, timedelta
 
         cheque = self._selected()
-        if cheque is not None and cheque.state.value == "deposited":
+        if cheque is not None and (cheque.state.value == "deposited"
+                                   or (cheque.outgoing and cheque.state.value == "held")):
             try:
                 cheque.clear()
             except Exception as exc:  # noqa: BLE001
@@ -7250,7 +7292,9 @@ class CollectionPage(Page):
                 return
             self._save()
             self.refresh()
-            self.status(f"נפרע: ⁦{cheque.amount:,.0f} ₪⁩ מ{cheque.customer}")
+            self.status(
+                f"ירד מהחשבון: ⁦{cheque.amount:,.0f} ₪⁩ ל{cheque.customer}" if cheque.outgoing
+                else f"נפרע: ⁦{cheque.amount:,.0f} ₪⁩ מ{cheque.customer}")
             return
         up_to = date.today() - timedelta(days=1)
         waiting = [c for c in self.book().deposited()
@@ -7307,6 +7351,10 @@ class CollectionPage(Page):
         if cheque is None:
             self.report(ProfileOSError("בחר צ׳ק מהרשימה"), "לא נבחר צ׳ק")
             return
+        if cheque.outgoing:
+            self.report(ProfileOSError("תזכורת נשלחת ללקוח על צ׳ק שלו — זה צ׳ק שנתתם לספק"),
+                        "אין למי להזכיר")
+            return
         brand = active_brand()
         phone = phone_for(job_id=cheque.job_id, customer_name=cheque.customer)
         message = cheque_message(
@@ -7328,6 +7376,11 @@ class CollectionPage(Page):
         if cheque is None:
             self.report(ProfileOSError("בחר צ׳ק מהרשימה"), "לא נבחר צ׳ק")
             return
+        if cheque.outgoing:
+            self.report(ProfileOSError(
+                "זה צ׳ק שנתתם לספק — אם הוא חזר, הספק יפנה אליכם; רשמו צ׳ק חדש במקומו"),
+                "לא סומן")
+            return
         cheque.bounce(reason="חזר")
         self._save()
         self.refresh()
@@ -7340,14 +7393,22 @@ class CollectionPage(Page):
         rows: list[list[Any]] = []
         colours: dict[tuple[int, int], str] = {}
         bankable = {cheque.cheque_id for cheque in book.bankable()}
+        from ..erp.collection import ChequeState
+
+        out_words = {ChequeState.HELD: "נמסר לספק", ChequeState.CLEARED: "ירד מהחשבון"}
         for index, cheque in enumerate(self._cheques):
             rows.append([
-                cheque.number or cheque.cheque_id, cheque.customer,
-                f"{cheque.amount:,.0f}", cheque.due.strftime("%d/%m/%Y"),
-                cheque.bank or "—", cheque.job_id or "—", cheque.state.hebrew,
+                cheque.number or cheque.cheque_id,
+                ("לספק: " if cheque.outgoing else "") + cheque.customer,
+                f"⁦−{cheque.amount:,.0f}⁩" if cheque.outgoing else f"{cheque.amount:,.0f}",
+                cheque.due.strftime("%d/%m/%Y"),
+                cheque.bank or "—", f"⁦{cheque.job_id}⁩" if cheque.job_id else "—",
+                out_words.get(cheque.state, cheque.state.hebrew) if cheque.outgoing
+                else cheque.state.hebrew,
             ])
-            from ..erp.collection import ChequeState
-
+            if cheque.outgoing:
+                colours[(index, 2)] = self.colours.warning
+                continue
             if cheque.state is ChequeState.BOUNCED:
                 colours[(index, 6)] = self.colours.danger
             elif cheque.cheque_id in bankable:
@@ -7356,10 +7417,38 @@ class CollectionPage(Page):
                 colours[(index, 6)] = self.colours.success
         self.cheques_table.set_rows(rows, numeric_columns=(2,), colours=colours)
 
+        from datetime import date
+
+        from ..core.config import get_settings
+
+        settings = get_settings()
+        opening = settings.bank_balance
+        if opening is not None:
+            self.bank_balance.blockSignals(True)
+            self.bank_balance.setValue(opening)
+            self.bank_balance.blockSignals(False)
+            try:
+                since = (date.today() - date.fromisoformat(settings.bank_balance_on)).days
+            except ValueError:
+                since = 0
+            self.balance_note.setText(
+                f"היתרה עודכנה לפני ⁦{since}⁩ ימים — עדכנו אותה כדי שהתזרים יהיה נכון"
+                if since > 7 else "")
+        else:
+            self.balance_note.setText(
+                "בלי יתרת הבנק, ״יתרה״ היא רק מה שנכנס פחות מה שיוצא בצ׳קים")
+        try:
+            balance_on = date.fromisoformat(settings.bank_balance_on) if opening is not None else None
+        except ValueError:
+            balance_on = None
+        flow = book.two_sided(opening=opening or 0.0, balance_on=balance_on)
+        flow_colours = {(index, 3): self.colours.danger
+                        for index, row in enumerate(flow) if row["balance"] < 0}
         self.flow_table.set_rows(
-            [[week.strftime("%d/%m/%Y"), f"{amount:,.0f}"]
-             for week, amount in book.cash_flow()],
-            numeric_columns=(1,),
+            [[f"⁦{row['week']:%d/%m}⁩", f"{row['in']:,.0f}" if row["in"] else "—",
+              f"{row['out']:,.0f}" if row["out"] else "—", f"⁦{row['balance']:,.0f}⁩"]
+             for row in flow],
+            numeric_columns=(1, 2, 3), colours=flow_colours,
         )
         self.risk_table.set_rows(
             [[customer, count, f"{rate:.0f}%"]

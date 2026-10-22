@@ -190,9 +190,15 @@ def _jobs(context: dict[str, Any], today: date) -> list[Insight]:
     ]
     # One line per customer: two jobs handed over to the same family are one
     # request for a review, not two names that read like a mistake.
+    # A family already asked — for this job or the one before — is not asked again.
+    def who(job: Any) -> str:
+        return job.customer_id or job.customer_name or job.job_id
+
+    asked = {who(job) for job in jobs if job.review_requested}
     by_customer: dict[str, Any] = {}
     for job in review:
-        by_customer.setdefault(job.customer_id or job.customer_name or job.job_id, job)
+        if who(job) not in asked:
+            by_customer.setdefault(who(job), job)
     review = list(by_customer.values())
     if review:
         found.append(Insight(
@@ -435,6 +441,55 @@ def _money(context: dict[str, Any], today: date) -> list[Insight]:
             f"בסך ⁦{total:,.0f} ₪⁩: " + _names(bounced, lambda c: c.customer or c.number),
             "Collection", "bounced:" + ",".join(sorted(c.cheque_id for c in bounced)),
         ))
+
+    # The other side: cheques the shop wrote. The week the account goes
+    # below zero is found while there is still time to move a payment.
+    to_pay = getattr(cheques, "to_pay", lambda: [])()
+    soon = [c for c in to_pay if today <= c.due <= today + timedelta(days=7)]
+    # Past its date and never marked: the supplier probably banked it.
+    past = [c for c in to_pay if c.due < today - timedelta(days=3)]
+    if past:
+        total = sum(c.amount for c in past)
+        found.append(Insight(
+            "info",
+            _count(len(past), "צ׳ק לספק שעבר תאריכו ולא סומן", "צ׳קים לספקים שעבר תאריכם ולא סומנו"),
+            f"בסך ⁦{total:,.0f} ₪⁩ — אם ירדו מהחשבון, סמנו ״נפרע״ בגבייה כדי שהתזרים יהיה נכון: "
+            + _names(past, lambda c: f"{c.customer} ⁦{c.due:%d/%m}⁩"),
+            "Collection", "paid-out:" + ",".join(sorted(c.cheque_id for c in past)),
+        ))
+    if soon:
+        total = sum(c.amount for c in soon)
+        found.append(Insight(
+            "info",
+            _count(len(soon), "צ׳ק לספק יורד השבוע", "צ׳קים לספקים יורדים השבוע"),
+            f"בסך ⁦{total:,.0f} ₪⁩ — לוודא שיש כיסוי: "
+            + _names(soon, lambda c: f"{c.customer} ⁦{c.due:%d/%m}⁩"),
+            "Collection", "paying:" + ",".join(sorted(c.cheque_id for c in soon)),
+        ))
+    if to_pay:
+        settings = context.get("settings")
+        opening = getattr(settings, "bank_balance", None)
+        try:
+            balance_on = date.fromisoformat(getattr(settings, "bank_balance_on", "") or "")
+        except ValueError:
+            balance_on = None
+        if opening is None:
+            balance_on = None
+        flow = cheques.two_sided(today, weeks=8, opening=opening or 0.0,
+                                 balance_on=balance_on)
+        short = next((row for row in flow if row["balance"] < 0), None)
+        if short is not None:
+            week = row_week = short["week"]
+            found.append(Insight(
+                "danger" if opening is not None else "warning",
+                f"בשבוע של ⁦{row_week:%d/%m}⁩ החשבון צפוי לרדת מתחת לאפס",
+                (f"לפי היתרה בבנק והצ׳קים, החשבון צפוי לרדת ל־⁦{short['balance']:,.0f} ₪⁩. "
+                 if opening is not None else
+                 f"הצ׳קים לספקים עד אז עולים ב־⁦{-short['balance']:,.0f} ₪⁩ על הצ׳קים "
+                 "מלקוחות (בלי יתרת הבנק — אפשר להזין אותה בגבייה). ")
+                + "כדאי לגבות יתרות, להפקיד מה שאפשר, או לתאם דחייה עם הספק.",
+                "Collection", f"short:{week.isoformat()}:{short['balance']:.0f}",
+            ))
     return found
 
 
