@@ -662,3 +662,53 @@ def test_a_spare_bar_is_the_shops_choice(shop):
     assert [line.quantity for line in dialog.chosen()] == [5, 3, 30]
     dialog.spare.setChecked(False)
     assert [line.quantity for line in dialog.chosen()] == [4, 2, 30]
+
+
+def test_the_suppliers_invoice_is_checked_against_the_order(shop, monkeypatch):
+    """₪10,000 ordered at the list price, ₪10,450 invoiced: asked before paying."""
+    pytest.importorskip("PySide6")
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from datetime import date
+
+    from PySide6.QtCore import QCoreApplication
+    from PySide6.QtWidgets import QApplication, QInputDialog
+
+    from profileos.insights import scan
+    from profileos.projects import default_store
+    from profileos.projects.model import MaterialOrderLine
+    from profileos.ui import money_dialogs
+    from profileos.ui.main_window import MainWindow
+    from profileos.ui.theme import LIGHT
+
+    QApplication.instance() or QApplication([])
+    job = a_job()
+    job.material_orders.append(MaterialOrder(supplier="קליל", lines=[
+        MaterialOrderLine(code="7300-01", quantity=10, unit_price=1_000.0)]))
+    default_store().save(job)
+
+    warned: list[str] = []
+    monkeypatch.setattr(money_dialogs, "_warn", lambda parent, title, exc: warned.append(str(exc)))
+    monkeypatch.setattr(QInputDialog, "getText", lambda *a, **k: ("INV-5521", True))
+    monkeypatch.setattr(QInputDialog, "getDouble", lambda *a, **k: (10_450.0, True))
+
+    def invoiced(self):
+        self.table.selectRow(0)
+        self.record_invoice()
+        return 1
+
+    monkeypatch.setattr(money_dialogs.MaterialOrdersDialog, "exec", invoiced)
+    window = MainWindow(LIGHT)
+    page = window.go_to_page("Projects")
+    monkeypatch.setattr(page, "_selected_job", lambda: default_store().load("J-2026-0001"))
+    page.manage_material_orders()
+    order = default_store().load("J-2026-0001").material_orders[0]
+    assert order.invoice_number == "INV-5521" and order.invoice_gap == 450
+    assert order.overcharged and warned and "4.5%" in warned[0]
+
+    found = [i for i in scan(date.today()) if i.key.startswith("invoice-gap:")]
+    assert found and "⁦+450 ₪⁩" in found[0].detail and "קליל" in found[0].detail
+
+    # Within two percent is the supplier's rounding, not a question.
+    order.invoice_net = 10_150.0
+    assert not order.overcharged and "+150" in order.invoice_says()
+    window.close(); window.deleteLater(); QCoreApplication.processEvents()

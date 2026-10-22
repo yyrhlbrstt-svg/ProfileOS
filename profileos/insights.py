@@ -922,6 +922,21 @@ def _material(context: dict[str, Any], today: date) -> list[Insight]:
                 continue
             if needed < today:
                 late.append((job, order))
+    # The supplier's invoice asks for more than the order came to at its
+    # own price list: a price that changed, a line nobody ordered.
+    dearer = [(job, order) for job in jobs for order in job.material_orders
+              if order.overcharged and order.state.value != "cancelled"]
+    if dearer:
+        extra = sum(order.invoice_gap or 0 for _job, order in dearer)
+        found.append(Insight(
+            "warning",
+            _count(len(dearer), "חשבונית ספק גבוהה מההזמנה", "חשבוניות ספק גבוהות מההזמנות"),
+            f"בסך ⁦{extra:,.0f} ₪⁩ מעל המחירון שלפיו הוזמן — כדאי לבדוק לפני התשלום: "
+            + _names(dearer, lambda pair: f"{pair[1].supplier} ל⁦{pair[0].job_id}⁩ "
+                     f"(⁦+{pair[1].invoice_gap:,.0f} ₪⁩)"),
+            "Projects", "invoice-gap:" + ",".join(
+                sorted(f"{o.order_id}={o.invoice_net:.0f}" for _j, o in dearer)),
+        ))
     if waiting:
         found.append(Insight(
             "warning",

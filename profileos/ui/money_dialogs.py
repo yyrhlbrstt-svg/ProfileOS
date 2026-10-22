@@ -1005,7 +1005,7 @@ class MaterialOrdersDialog(QDialog):
         layout.setContentsMargins(*(METRICS.space(5),) * 4)
         layout.setSpacing(METRICS.space(3))
         self.table = DataTable(
-            ["הזמנה", "ספק", "נשלחה", "נדרש עד", "סכום", "מצב"],
+            ["הזמנה", "ספק", "נשלחה", "נדרש עד", "סכום", "מצב", "חשבונית הספק"],
             empty_text="עוד לא הוזמן חומר לפרויקט",
         )
         layout.addWidget(self.table, 1)
@@ -1018,6 +1018,10 @@ class MaterialOrdersDialog(QDialog):
             button.clicked.connect(lambda _c=False, s=state: self._set(s))
             buttons.addWidget(button)
             self.actions[state] = button
+        invoice = QPushButton("חשבונית הספק…")
+        invoice.setToolTip("מספר וסכום לפני מע״מ — נבדק מול ההזמנה")
+        invoice.clicked.connect(self.record_invoice)
+        buttons.addWidget(invoice)
         buttons.addStretch(1)
         close = QPushButton("סגירה")
         close.clicked.connect(self.accept)
@@ -1025,6 +1029,8 @@ class MaterialOrdersDialog(QDialog):
         layout.addLayout(buttons)
         #: (order_id, new state) chosen here, applied by the page to the job on disk.
         self.changes: list[tuple[str, str]] = []
+        #: (order_id, invoice number, amount before VAT), applied the same way.
+        self.invoices: list[tuple[str, str, float]] = []
 
     def _fill(self) -> None:
         from datetime import date
@@ -1037,9 +1043,43 @@ class MaterialOrdersDialog(QDialog):
 
         self.table.set_rows([
             [order.order_id, order.supplier, day(order.ordered_on), day(order.needed_by),
-             _money(order.total), order.state.hebrew]
+             _money(order.total), order.state.hebrew, order.invoice_says()]
             for order in self._orders
-        ])
+        ], colours={
+            (index, 6): _warning_colour(self)
+            for index, order in enumerate(self._orders) if order.overcharged
+        })
+
+    def record_invoice(self) -> None:
+        """The supplier's invoice, against the order it is for."""
+        from datetime import date
+
+        from PySide6.QtWidgets import QInputDialog
+
+        rows = self.table.selectionModel()
+        if rows is None or not rows.selectedRows():
+            _warn(self, "לא נבחרה הזמנה", ValueError("בחרו הזמנה מהרשימה"))
+            return
+        order = self._orders[rows.selectedRows()[0].row()]
+        number, ok = QInputDialog.getText(
+            self, "חשבונית הספק", f"מספר החשבונית של {order.supplier}:",
+            text=order.invoice_number)
+        if not ok:
+            return
+        amount, ok = QInputDialog.getDouble(
+            self, "חשבונית הספק", "סכום לפני מע״מ:", order.invoice_net or order.total,
+            0, 10_000_000, 2)
+        if not ok or amount <= 0:
+            return
+        order.invoice_number = number.strip()
+        order.invoice_net = round(amount, 2)
+        order.invoice_on = date.today().isoformat()
+        self.invoices.append((order.order_id, order.invoice_number, order.invoice_net))
+        self._fill()
+        if order.overcharged:
+            _warn(self, "החשבונית גבוהה מההזמנה", ValueError(
+                f"{order.supplier} מבקש {order.invoice_says()} מול ההזמנה "
+                f"(⁦{order.total:,.0f} ₪⁩ לפי המחירון). כדאי לבדוק מול הספק לפני התשלום."))
 
     def _set(self, state: str) -> None:
         from ..projects import MaterialOrderState

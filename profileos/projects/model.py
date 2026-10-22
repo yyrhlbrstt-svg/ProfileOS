@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timezone
 from enum import StrEnum
-from typing import Any
+from typing import Any, ClassVar
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -411,10 +411,43 @@ class MaterialOrder(RoundTrips):
     lines: list[MaterialOrderLine] = Field(default_factory=list)
     received_on: str = ""
     note: str = ""
+    #: The supplier's invoice for it, as received: number and amount before
+    #: VAT — checked against what was ordered, at the prices ordered.
+    invoice_number: str = ""
+    invoice_net: float = 0.0
+    invoice_on: str = ""
 
     @property
     def total(self) -> float:
         return round(sum(line.total for line in self.lines), 2)
+
+    #: An invoice this far above the order is a question for the supplier [share].
+    INVOICE_TOLERANCE: ClassVar[float] = 0.02
+
+    @property
+    def invoice_gap(self) -> float | None:
+        """How much more (or less) the invoice asks than the order came to —
+        ``None`` while either is missing."""
+        if self.invoice_net <= 0 or self.total <= 0:
+            return None
+        return round(self.invoice_net - self.total, 2)
+
+    @property
+    def overcharged(self) -> bool:
+        gap = self.invoice_gap
+        return gap is not None and gap > self.total * self.INVOICE_TOLERANCE
+
+    def invoice_says(self) -> str:
+        if self.invoice_net <= 0:
+            return "—"
+        text = f"⁦{self.invoice_net:,.0f} ₪⁩"
+        gap = self.invoice_gap
+        if gap is None:
+            return text + " (אין מחיר בהזמנה להשוואה)"
+        if abs(gap) < 1:
+            return text + " · תואם"
+        share = gap / self.total * 100
+        return text + f" · ⁦{'+' if gap > 0 else '−'}{abs(gap):,.0f} ₪ ({abs(share):.1f}%)⁩"
 
     @property
     def unpriced(self) -> list[MaterialOrderLine]:

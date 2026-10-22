@@ -534,6 +534,69 @@ class CloseServiceCallDialog(_FormDialog):
         }
 
 
+class PasteOpeningsDialog(QDialog):
+    """A list of openings pasted from a table, a message or a schedule, read
+    line by line, with what each became — before anything is added."""
+
+    def __init__(self, parent: QWidget | None = None, *, existing: list[Any] | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("הדבקת רשימת פתחים")
+        self.setModal(True)
+        self.setMinimumSize(720, 520)
+        self._existing = list(existing or [])
+        self.intake = None
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(*(METRICS.space(5),) * 4)
+        layout.setSpacing(METRICS.space(3))
+        hint = QLabel(
+            "הדביקו מטבלה של אדריכל, מוואטסאפ או מכל מקום — שורה לכל פתח. "
+            "למשל: ״W1 חלון ציר 120×140 2 יח׳ סלון״ או ״הזזה 2 כנפיים 240/210״. "
+            "מידות במ״מ, בס״מ או במטרים."
+        )
+        hint.setObjectName("Hint")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+        self.text = QPlainTextEdit()
+        self.text.setPlaceholderText("W1\tחלון ציר\t120\t140\t2\nW2 סלון הזזה 240/210")
+        layout.addWidget(self.text, 1)
+        self.preview = QLabel("")
+        self.preview.setWordWrap(True)
+        self.preview.setObjectName("FieldValue")
+        self.preview.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        layout.addWidget(self.preview, 1)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        self.ok_button = buttons.button(QDialogButtonBox.StandardButton.Ok)
+        self.ok_button.setText("הוספה לפרויקט")
+        self.ok_button.setObjectName("Primary")
+        self.ok_button.setEnabled(False)
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("ביטול")
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+        from PySide6.QtCore import QTimer
+
+        self._timer = QTimer(self)
+        self._timer.setSingleShot(True)
+        self._timer.setInterval(300)
+        self._timer.timeout.connect(self.read)
+        self.text.textChanged.connect(self._timer.start)
+
+    def read(self) -> Any:
+        from ..projects.intake import read_list
+
+        self.intake = read_list(self.text.toPlainText(), existing=self._existing)
+        # Each line opens with a right-to-left mark: a line that starts "W1"
+        # would otherwise be laid out left to right.
+        lines = ["\u200f" + ("✓ " if line.ok else "✗ ") + line.describe()
+                 for line in self.intake.lines]
+        self.preview.setText(
+            (self.intake.describe() + "\n\n" + "\n".join(lines[:40])) if lines else "")
+        self.ok_button.setEnabled(bool(self.intake.read))
+        return self.intake
+
+
 class NewChequeDialog(_FormDialog):
     """Take cheques into the drawer — one, or the whole series a customer
     hands over at once (one a month, consecutive numbers from one book).

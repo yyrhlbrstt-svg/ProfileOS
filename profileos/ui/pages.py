@@ -1443,6 +1443,7 @@ class ProjectsPage(Page):
         menu = QMenu(more)
         menu.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
         for label, handler in (
+            ("הדבקת רשימת פתחים…", self.paste_openings),
             ("שליחת היתרה ללקוח בוואטסאפ", self.send_balance),
             ("ממתינים מהלקוח…", self.manage_needs),
             ("רשימת תיקונים…", self.manage_snags),
@@ -1763,7 +1764,7 @@ class ProjectsPage(Page):
             return
         dialog = MaterialOrdersDialog(job, self)
         dialog.exec()
-        if not dialog.changes:
+        if not dialog.changes and not dialog.invoices:
             return
         from datetime import date
 
@@ -1780,6 +1781,12 @@ class ProjectsPage(Page):
                 order.state = MaterialOrderState(state)
                 if order.state is MaterialOrderState.RECEIVED and not order.received_on:
                     order.received_on = date.today().isoformat()
+            for order_id, number, net in dialog.invoices:
+                order = by_id.get(order_id)
+                if order is None:
+                    continue
+                order.invoice_number, order.invoice_net = number, net
+                order.invoice_on = date.today().isoformat()
             fresh.touch()
             store.save(fresh)
         except Exception as exc:  # noqa: BLE001
@@ -1964,6 +1971,54 @@ class ProjectsPage(Page):
         self.session.set_job(job)
         self.refresh()
         self.status(f"נפתח פרויקט {job.job_id} — {job.name}")
+
+    def paste_openings(self) -> int:
+        """Openings from a pasted list, added to the chosen job's openings."""
+        from ..elements.model import ElementSchedule
+        from .dialogs import PasteOpeningsDialog
+
+        job = self._selected_job()
+        if job is None:
+            self.report(ProfileOSError("בחרו פרויקט מהרשימה"), "לא נבחר פרויקט")
+            return 0
+        working_here = self.session.job is not None and self.session.job.job_id == job.job_id
+        store = self._store()
+        try:
+            if working_here:
+                # What is on screen for this job is written first, so the
+                # new openings join it rather than replace it.
+                self.session.save_design_to_job(store)
+            job = store.load(job.job_id)
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "הפרויקט לא נקרא")
+            return 0
+        existing = list(job.schedule.openings) if job.schedule else []
+        dialog = PasteOpeningsDialog(self, existing=existing)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return 0
+        intake = dialog.read()
+        openings = intake.openings()
+        if not openings:
+            return 0
+        for opening in openings:
+            if opening.system_id == "generic":
+                opening.system_id = job.system_id
+        try:
+            job = store.load(job.job_id)
+            if job.schedule is None:
+                job.schedule = ElementSchedule(name=job.name, system_id=job.system_id)
+            job.schedule.openings.extend(openings)
+            store.save(job)
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "הפתחים לא נוספו — שום דבר לא נשמר")
+            return 0
+        if working_here:
+            self.session.set_job(job)
+            for problem in self.session.load_schedule(job.schedule)[:3]:
+                self.status(problem)
+        self.refresh()
+        self.status(intake.describe() + f" · נוספו ל־⁦{job.job_id}⁩")
+        return len(openings)
 
     def open_job(self) -> None:
         job = self._selected_job()
