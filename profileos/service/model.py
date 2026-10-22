@@ -38,7 +38,7 @@ class Severity(StrEnum):
     @property
     def hebrew(self) -> str:
         return {
-            "blocking": "הדירה לא סגורה",
+            "blocking": "חוסם — הדירה פתוחה או מוצפת",
             "urgent": "דחוף",
             "normal": "רגיל",
             "cosmetic": "אסתטי",
@@ -48,6 +48,12 @@ class Severity(StrEnum):
     def response_days(self) -> int:
         """Working days to be there, which is what the shop is judged on."""
         return {"blocking": 1, "urgent": 2, "normal": 7, "cosmetic": 21}[self.value]
+
+
+_PLUMBING_SYMPTOMS = frozenset({
+    "leak", "burst", "blockage", "no_hot_water", "low_pressure", "drip", "toilet",
+    "sewer_smell",
+})
 
 
 class Symptom(StrEnum):
@@ -65,7 +71,23 @@ class Symptom(StrEnum):
     SCREEN = "screen"
     FINISH = "finish"
     CONDENSATION = "condensation"
+    # -- plumbing ------------------------------------------------------------
+    LEAK = "leak"
+    BURST = "burst"
+    BLOCKAGE = "blockage"
+    NO_HOT_WATER = "no_hot_water"
+    LOW_PRESSURE = "low_pressure"
+    DRIP = "drip"
+    TOILET = "toilet"
+    SEWER_SMELL = "sewer_smell"
     OTHER = "other"
+
+    @property
+    def trade(self) -> str:
+        """Which trade gets the call: a blocked drain is not a window fault."""
+        return "plumbing" if self.value in _PLUMBING_SYMPTOMS else (
+            "both" if self.value == "other" else "aluminium"
+        )
 
     @property
     def hebrew(self) -> str:
@@ -82,6 +104,14 @@ class Symptom(StrEnum):
             "screen": "רשת",
             "finish": "גימור, צבע או שריטה",
             "condensation": "עיבוי על הזכוכית",
+            "leak": "נזילה",
+            "burst": "פיצוץ צינור / הצפה",
+            "blockage": "סתימה",
+            "no_hot_water": "אין מים חמים",
+            "low_pressure": "לחץ מים נמוך",
+            "drip": "ברז מטפטף",
+            "toilet": "אסלה / מיכל הדחה",
+            "sewer_smell": "ריח ביוב",
             "other": "אחר",
         }[self.value]
 
@@ -100,6 +130,14 @@ class Symptom(StrEnum):
             "screen": Severity.COSMETIC,
             "finish": Severity.COSMETIC,
             "condensation": Severity.COSMETIC,
+            "leak": Severity.URGENT,
+            "burst": Severity.BLOCKING,
+            "blockage": Severity.URGENT,
+            "no_hot_water": Severity.URGENT,
+            "low_pressure": Severity.NORMAL,
+            "drip": Severity.NORMAL,
+            "toilet": Severity.NORMAL,
+            "sewer_smell": Severity.URGENT,
             "other": Severity.NORMAL,
         }[self.value]
 

@@ -207,3 +207,41 @@ def test_the_account_window_shows_what_is_owed_and_records_payments(shop):
     dialog._change(lambda j: j.payments.append(Payment(amount=11_800)), "התשלום")
     assert "שולם במלואו" in dialog.headline.text()
     assert store.load(job.job_id).payments[0].amount == 11_800
+
+
+class TestField:
+    def test_the_next_working_day_skips_the_weekend(self):
+        from profileos.projects.agenda import next_working_day
+
+        assert next_working_day(date(2026, 10, 22)) == date(2026, 10, 25)  # Thu → Sun
+        assert next_working_day(date(2026, 10, 25)) == date(2026, 10, 26)
+
+    def test_a_reminder_names_the_day_and_the_visit(self):
+        from profileos.projects.agenda import Appointment, VisitKind, reminder_text
+
+        visit = Appointment(on=date(2026, 10, 25), kind=VisitKind.SURVEY, time="09:00",
+                            customer_name="משה")
+        text = reminder_text(visit, brand_name="דאדי", today=date(2026, 10, 22))
+        assert "שלום משה" in text and "ביום ראשון" in text and "מדידה" in text
+        assert "⁦09:00⁩" in text
+
+    def test_the_diary_keeps_visits_and_who_was_told(self, tmp_path):
+        from profileos.projects.agenda import Agenda, Appointment
+
+        path = tmp_path / "agenda.json"
+        diary = Agenda(path).load()
+        visit = diary.add(Appointment(on=date(2026, 10, 25), customer_name="דוד"))
+        assert [a.customer_name for a in diary.unreminded(date(2026, 10, 25))] == ["דוד"]
+        diary.mark_reminded(visit.appointment_id)
+        again = Agenda(path).load()
+        assert again.unreminded(date(2026, 10, 25)) == []
+        again.move(visit.appointment_id, date(2026, 10, 26))
+        assert Agenda(path).load().unreminded(date(2026, 10, 26))  # a new day, a new reminder
+
+    def test_plumbing_faults_go_to_the_plumber(self):
+        from profileos.service import Symptom
+        from profileos.service.model import Severity
+
+        assert Symptom.BLOCKAGE.trade == "plumbing"
+        assert Symptom.DROPPED.trade == "aluminium"
+        assert Symptom.BURST.likely_severity is Severity.BLOCKING

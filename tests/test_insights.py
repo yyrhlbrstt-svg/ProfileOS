@@ -48,6 +48,7 @@ def _scan(**given):
     given.setdefault("cheques", None)
     given.setdefault("service", None)
     given.setdefault("store", None)
+    given.setdefault("agenda", None)
     return scan(TODAY, **given)
 
 
@@ -159,3 +160,12 @@ def test_an_extra_nobody_agreed_is_found(shop):
     job = _job("J-10", JobStatus.IN_PRODUCTION, since=TODAY)
     job.lines = [JobLine(kind=LineKind.EXTRA, description="חלון נוסף", unit_price=900)]
     assert "לא אושרה" in _titles(_scan(jobs=[job]))
+
+
+def test_tomorrows_customers_who_were_not_told(shop):
+    from profileos.projects.agenda import Agenda, Appointment, next_working_day
+
+    diary = Agenda(shop / "agenda.json").load()
+    diary.add(Appointment(on=next_working_day(TODAY), customer_name="רחל"))
+    found = [i for i in _scan(jobs=[], agenda=diary) if i.key.startswith("remind:")]
+    assert found and "רחל" in found[0].detail

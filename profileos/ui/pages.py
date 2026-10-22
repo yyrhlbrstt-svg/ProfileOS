@@ -365,6 +365,35 @@ class HomePage(Page):
         today.add(open_tasks)
         self.body.addWidget(today)
 
+        # -- the field: who goes where on the next working day -------------- #
+        field_card = Card("בשטח")
+        self.field_headline = QLabel("")
+        self.field_headline.setObjectName("StatLabel")
+        self.field_headline.setWordWrap(True)
+        field_card.add(self.field_headline)
+        self.field_table = DataTable(
+            ["מתי", "סוג", "לקוח", "כתובת", "מי יוצא", "תזכורת"],
+            empty_text="אין ביקורים ביומן — ״קבע ביקור״ מוסיף",
+        )
+        self.field_table.stretch(3)
+        self.field_table.setFixedHeight(METRICS.row_height * 5)
+        field_card.add(self.field_table)
+        field_bar = QHBoxLayout()
+        plan = QPushButton("קבע ביקור")
+        plan.clicked.connect(self.plan_visit)
+        field_bar.addWidget(plan)
+        remind = QPushButton("שלח תזכורת בוואטסאפ")
+        remind.setObjectName("WhatsApp")
+        remind.clicked.connect(self.remind_visit)
+        field_bar.addWidget(remind)
+        done = QPushButton("בוצע")
+        done.clicked.connect(self.visit_done)
+        field_bar.addWidget(done)
+        field_bar.addStretch(1)
+        field_card.add_layout(field_bar)
+        self.body.addWidget(field_card)
+        self._field: list[Any] = []
+
         recent = Card("פרויקטים אחרונים")
         self.recent_table = DataTable(
             ["מספר", "שם", "לקוח", "סטטוס", "עודכן"],
@@ -443,6 +472,7 @@ class HomePage(Page):
             self.show_business()
             self.scan_insights()
             self.show_today()
+            self.show_field()
         except Exception:  # noqa: BLE001 - a refresh that fails waits for the next one
             _log.exception("Live refresh of the home page failed")
 
@@ -562,6 +592,109 @@ class HomePage(Page):
             return
         self._insights = [i for i in self._insights if i.key != key]
         self.show_insights()
+
+    # -- the field diary ------------------------------------------------------ #
+    def _agenda(self) -> Any:
+        from ..projects.agenda import default_agenda
+
+        return self.checked_book(default_agenda(), "יומן הביקורים")
+
+    def show_field(self) -> None:
+        """Today's remaining visits and the next working day's, in time order."""
+        from datetime import date as _date
+
+        from ..projects.agenda import day_word, next_working_day
+
+        today = _date.today()
+        upcoming = next_working_day(today)
+        try:
+            agenda = self._agenda()
+        except Exception as exc:  # noqa: BLE001
+            self.field_headline.setText(f"היומן לא נקרא: {exc}")
+            self.field_table.set_rows([])
+            self._field = []
+            return
+        self._field = [a for a in agenda.on_day(today) if not a.done] + agenda.on_day(upcoming)
+        colours = {}
+        rows = []
+        for index, item in enumerate(self._field):
+            when = day_word(item.on, today) + (f" ⁦{item.time}⁩" if item.time else "")
+            reminded = "נשלחה" if item.reminded_on else ("—" if item.on == today else "לא נשלחה")
+            rows.append([when, item.kind.hebrew, item.customer_name or item.job_id or "—",
+                         item.address or "—", item.crew or "—", reminded])
+            if reminded == "לא נשלחה":
+                colours[(index, 5)] = self.colours.warning
+        self.field_table.set_rows(rows, colours=colours)
+        waiting = len(agenda.unreminded(upcoming))
+        count = len(agenda.on_day(upcoming))
+        self.field_headline.setText(
+            f"{day_word(upcoming, today)}: ⁦{count}⁩ ביקורים"
+            + (f" · ⁦{waiting}⁩ בלי תזכורת" if waiting else "")
+            if count else f"{day_word(upcoming, today)} אין ביקורים ביומן"
+        )
+
+    def _selected_visit(self) -> Any:
+        row = self.field_table.currentRow()
+        return self._field[row] if 0 <= row < len(self._field) else None
+
+    def plan_visit(self, job: Any = None, kind: str = "") -> None:
+        from ..projects import default_store
+        from ..sharing import customer_phone
+        from .dialogs import AppointmentDialog
+
+        try:
+            jobs = [j for j in default_store().all() if j.status.is_open]
+        except Exception:  # noqa: BLE001
+            jobs = []
+        store_jobs = {j.job_id: j for j in jobs}
+        dialog = AppointmentDialog(
+            self, jobs=jobs, job=job or self.session.job, kind=kind,
+            customer_lookup=lambda job_id: customer_phone(store_jobs.get(job_id)),
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        try:
+            self._agenda().add(dialog.appointment())
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "הביקור לא נשמר")
+            return
+        self.show_field()
+        self.status("הביקור נקבע ביומן")
+
+    def remind_visit(self) -> None:
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+
+        from ..branding import active_brand
+        from ..projects.agenda import reminder_text
+        from ..sharing import whatsapp_link
+
+        item = self._selected_visit()
+        if item is None:
+            self.status("בחרו ביקור מהרשימה")
+            return
+        brand = active_brand()
+        message = reminder_text(item, brand_name=brand.display_name,
+                                phone=getattr(brand, "phone", "") or "")
+        QDesktopServices.openUrl(QUrl(whatsapp_link(item.phone, message)))
+        try:
+            agenda = self._agenda()
+            agenda.mark_reminded(item.appointment_id)
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "לא נרשם שהתזכורת נשלחה")
+        self.show_field()
+
+    def visit_done(self) -> None:
+        item = self._selected_visit()
+        if item is None:
+            self.status("בחרו ביקור מהרשימה")
+            return
+        try:
+            self._agenda().mark_done(item.appointment_id)
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "לא נשמר")
+            return
+        self.show_field()
 
     def show_today(self) -> None:
         """What is due, worst-late first, and what nobody is chasing."""
@@ -771,6 +904,7 @@ class HomePage(Page):
         self.scan_insights()
         self.show_readiness()
         self.show_today()
+        self.show_field()
         when = (
             f"יום {hebrew_days[now.weekday()]}, "
             f"{now.day} ב{hebrew_months[now.month - 1]} {now.year}"
@@ -1115,6 +1249,11 @@ class ProjectsPage(Page):
         row.addWidget(advance)
         self._advance_button = advance
 
+        visit = QPushButton("קבע ביקור")
+        visit.setToolTip("מדידה, התקנה, אספקה — ביומן, עם תזכורת ללקוח")
+        visit.clicked.connect(self.plan_visit_for_job)
+        row.addWidget(visit)
+
         account = QPushButton("חשבון הפרויקט")
         account.setToolTip("עבודות, תוספות, תשלומים, חשבוניות — וכמה עוד חייבים")
         account.clicked.connect(self.open_account)
@@ -1133,7 +1272,8 @@ class ProjectsPage(Page):
         row.addStretch(1)
         detail.add_layout(row)
         # Nothing to act on until a job is chosen — and the buttons say so.
-        self._job_actions = [self.open_button, advance, account, pack, notify, self.status_combo]
+        self._job_actions = [self.open_button, advance, visit, account, pack, notify,
+                             self.status_combo]
         for widget in self._job_actions:
             widget.setEnabled(False)
         layout.addWidget(detail)
@@ -1210,6 +1350,13 @@ class ProjectsPage(Page):
         if account.uncovered <= 0.5:
             return "שולם"
         return f"⁦{account.uncovered:,.0f} ₪⁩"
+
+    def plan_visit_for_job(self) -> None:
+        job = self._selected_job()
+        window = self.window()
+        if job is None or not hasattr(window, "page"):
+            return
+        window.page("Home").plan_visit(job=job)
 
     def open_account(self) -> None:
         from .money_dialogs import JobAccountDialog
@@ -5530,6 +5677,16 @@ class ServicePage(Page):
         close_call.clicked.connect(self.close_call)
         self.header.add_action(close_call)
 
+        schedule = QPushButton("קבע ביקור")
+        schedule.clicked.connect(self.plan_service_visit)
+        self.header.add_action(schedule)
+
+        on_way = QPushButton("״בדרך אליך״ בוואטסאפ")
+        on_way.setObjectName("WhatsApp")
+        on_way.setToolTip("הודעה ללקוח שהטכנאי בדרך — חוסכת את השיחה ״איפה אתם?״")
+        on_way.clicked.connect(self.tell_on_the_way)
+        self.header.add_action(on_way)
+
         self.stats = StatRow([
             ("open", "קריאות פתוחות"), ("overdue", "באיחור"),
             ("ours", "שעות על חשבוננו"), ("charged", "נגבה"),
@@ -5610,6 +5767,55 @@ class ServicePage(Page):
             return
         self.refresh()
         self.status(f"נרשמה קריאה {call.call_id} — {call.symptom.hebrew}")
+
+    def plan_service_visit(self) -> None:
+        from ..projects.agenda import default_agenda
+        from .dialogs import AppointmentDialog
+
+        call = self._selected()
+        if call is None:
+            self.report(ProfileOSError("בחר קריאה מהרשימה"), "לא נבחרה קריאה")
+            return
+        kind = "plumbing" if call.symptom.trade == "plumbing" else "service"
+        dialog = AppointmentDialog(self, kind=kind)
+        dialog.customer.setText(call.customer_name)
+        dialog.phone.setText(call.phone)
+        dialog.address.setText(call.site)
+        dialog.note.setText(call.symptom.hebrew + (f" — {call.description}" if call.description else ""))
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        appointment = dialog.appointment()
+        appointment.call_id = call.call_id
+        appointment.job_id = appointment.job_id or call.job_id
+        try:
+            self.checked_book(default_agenda(), "יומן הביקורים").add(appointment)
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "הביקור לא נשמר")
+            return
+        self.status("הביקור נקבע ביומן — מופיע בדף הבית עם תזכורת ללקוח")
+
+    def tell_on_the_way(self) -> None:
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+
+        from ..branding import active_brand
+        from ..sharing import on_the_way_message, whatsapp_link
+
+        call = self._selected()
+        if call is None:
+            self.report(ProfileOSError("בחר קריאה מהרשימה"), "לא נבחרה קריאה")
+            return
+        minutes, ok = QInputDialog.getInt(
+            self, "בדרך ללקוח", "בעוד כמה דקות מגיעים? (0 — בלי זמן)", 30, 0, 600, 5
+        )
+        if not ok:
+            return
+        message = on_the_way_message(
+            brand_name=active_brand().display_name, customer_name=call.customer_name,
+            minutes=minutes,
+        )
+        QDesktopServices.openUrl(QUrl(whatsapp_link(call.phone, message)))
+        self.status("נפתח וואטסאפ עם ההודעה ללקוח")
 
     def close_call(self) -> None:
         """Close the selected call with the cause, which is the whole point."""

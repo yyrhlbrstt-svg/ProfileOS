@@ -349,6 +349,27 @@ def _tasks(context: dict[str, Any], today: date) -> list[Insight]:
     )]
 
 
+def _field(context: dict[str, Any], today: date) -> list[Insight]:
+    """Tomorrow's visits whose customers have not been told."""
+    from .projects.agenda import day_word, next_working_day
+
+    agenda = context.get("agenda")
+    if agenda is None:
+        return []
+    day = next_working_day(today)
+    waiting = agenda.unreminded(day)
+    if not waiting:
+        return []
+    return [Insight(
+        "warning",
+        _count(len(waiting), f"ביקור אחד {day_word(day, today)} — הלקוח עוד לא קיבל תזכורת",
+               f"ביקורים {day_word(day, today)} — הלקוחות עוד לא קיבלו תזכורת"),
+        "לקוח שלא בבית זה חצי יום של שני אנשים. תזכורת אחת בוואטסאפ: "
+        + _names(waiting, lambda a: a.customer_name or a.job_id or a.kind.hebrew),
+        "Home", f"remind:{day}:" + ",".join(sorted(a.appointment_id for a in waiting)),
+    )]
+
+
 def _draft(context: dict[str, Any], today: date) -> list[Insight]:
     from .projects.draft import draft_path
 
@@ -419,7 +440,7 @@ def _accounts(context: dict[str, Any], today: date) -> list[Insight]:
 
 
 RULES: tuple[Callable[[dict[str, Any], date], list[Insight]], ...] = (
-    _data_safety, _jobs, _accounts, _customers, _money, _service, _tasks, _draft,
+    _data_safety, _jobs, _accounts, _field, _customers, _money, _service, _tasks, _draft,
 )
 
 
@@ -473,6 +494,12 @@ def gather_context(**given: Any) -> dict[str, Any]:
 
         return default_register()
 
+    def agenda() -> Any:
+        from .projects.agenda import default_agenda
+
+        return default_agenda()
+
+    load("agenda", agenda)
     load("customers", customers)
     load("tasks", tasks)
     load("cheques", cheques)
@@ -536,6 +563,7 @@ def dismiss(key: str) -> None:
 _BOOK_NAMES = {
     "store": "תיקי העבודה", "jobs": "תיקי העבודה", "customers": "ספר הלקוחות",
     "tasks": "משימות המעקב", "cheques": "פנקס הצ׳קים", "service": "קריאות השירות",
+    "agenda": "יומן הביקורים",
 }
 
 

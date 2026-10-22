@@ -428,8 +428,15 @@ class NewServiceCallDialog(_FormDialog):
         self.symptom = QComboBox()
         from ..service import Symptom
 
-        for symptom in Symptom:
-            self.symptom.addItem(symptom.hebrew, symptom.value)
+        # Grouped by trade, so the person on the phone finds the fault fast.
+        for trade, heading in (("aluminium", "חלונות ודלתות"), ("plumbing", "אינסטלציה")):
+            self.symptom.addItem(f"— {heading} —", "")
+            self.symptom.model().item(self.symptom.count() - 1).setEnabled(False)
+            for symptom in Symptom:
+                if symptom.trade == trade:
+                    self.symptom.addItem(symptom.hebrew, symptom.value)
+        self.symptom.addItem(Symptom.OTHER.hebrew, Symptom.OTHER.value)
+        self.symptom.setCurrentIndex(1)
 
         self.delivered = QDateEdit()
         self.delivered.setCalendarPopup(True)
@@ -720,3 +727,101 @@ class QuickEstimateDialog(_FormDialog):
             )
         else:
             self.result.setText(self.estimate.describe())
+
+
+class AppointmentDialog(_FormDialog):
+    """Put a visit in the diary: when, what, for whom, and who goes."""
+
+    accept_text = "קבע ביקור"
+
+    def __init__(self, parent: QWidget | None = None, *, jobs: list[Any] | None = None,
+                 job: Any = None, kind: str = "", when: Any = None,
+                 customer_lookup: Callable[[str], Any] | None = None) -> None:
+        from datetime import date
+
+        from ..projects.agenda import VisitKind, next_working_day
+
+        super().__init__("ביקור ביומן", parent)
+        self._jobs = list(jobs or [])
+        self._lookup = customer_lookup
+
+        self.on = QDateEdit()
+        self.on.setCalendarPopup(True)
+        self.on.setDisplayFormat("dd/MM/yyyy")
+        self.on.setDate(when or next_working_day(date.today()))
+        self.time = QComboBox()
+        self.time.setEditable(True)
+        self.time.addItems(["", "07:30", "08:00", "09:00", "10:00", "12:00", "14:00",
+                            "08:00–12:00", "12:00–16:00"])
+        self.time.lineEdit().setPlaceholderText("במהלך היום")
+        self.kind = QComboBox()
+        for option in VisitKind:
+            self.kind.addItem(option.hebrew, option.value)
+        if kind:
+            self.kind.setCurrentIndex(max(0, self.kind.findData(kind)))
+        self.job = QComboBox()
+        self.job.addItem("— בלי פרויקט —", "")
+        for item in self._jobs:
+            label = f"{item.job_id} · {item.name}"
+            if item.customer_name:
+                label += f" · {item.customer_name}"
+            self.job.addItem(label, item.job_id)
+        self.customer = QLineEdit()
+        self.phone = QLineEdit()
+        self.phone.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
+        self.phone.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignAbsolute)
+        self.address = QLineEdit()
+        self.crew = QComboBox()
+        self.crew.setEditable(True)
+        self.crew.addItems(["", "צוות א׳", "צוות ב׳", "טכנאי שירות", "אינסטלטור"])
+        self.note = QLineEdit()
+        self.note.setPlaceholderText("להביא סולם, קומה 3 בלי מעלית…")
+
+        for label, widget in (
+            ("תאריך", self.on), ("שעה", self.time), ("סוג", self.kind),
+            ("פרויקט", self.job), ("לקוח", self.customer), ("טלפון", self.phone),
+            ("כתובת", self.address), ("מי יוצא", self.crew), ("הערה", self.note),
+        ):
+            self.grid.add(label, widget)
+
+        self.job.currentIndexChanged.connect(self._job_chosen)
+        if job is not None:
+            index = self.job.findData(job.job_id)
+            if index < 0:
+                self._jobs.append(job)
+                self.job.addItem(f"{job.job_id} · {job.name}", job.job_id)
+                index = self.job.count() - 1
+            self.job.setCurrentIndex(index)
+
+    def _job_chosen(self, _index: int) -> None:
+        wanted = self.job.currentData()
+        job = next((item for item in self._jobs if item.job_id == wanted), None)
+        if job is None:
+            return
+        if job.customer_name and not self.customer.text().strip():
+            self.customer.setText(job.customer_name)
+        if job.site_address and not self.address.text().strip():
+            self.address.setText(job.site_address)
+        if not self.phone.text().strip() and self._lookup is not None:
+            try:
+                phone = self._lookup(job.job_id) or ""
+            except Exception:  # noqa: BLE001 - typed by hand instead
+                phone = ""
+            self.phone.setText(phone)
+        if job.trade.value == "plumbing" and self.kind.currentData() == "other":
+            self.kind.setCurrentIndex(self.kind.findData("plumbing"))
+
+    def appointment(self) -> Any:
+        from ..projects.agenda import Appointment, VisitKind
+
+        return Appointment(
+            on=self.on.date().toPython(),
+            kind=VisitKind(self.kind.currentData()),
+            time=self.time.currentText().strip(),
+            customer_name=self.customer.text().strip(),
+            phone=self.phone.text().strip(),
+            address=self.address.text().strip(),
+            job_id=self.job.currentData() or "",
+            crew=self.crew.currentText().strip(),
+            note=self.note.text().strip(),
+        )
