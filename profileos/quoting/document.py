@@ -315,6 +315,16 @@ def render_quotation(
 
     # -- terms ---------------------------------------------------------------- #
     terms = display.payment_terms or ""
+    # The shop's standing payment line ("עד 12 תשלומים באשראי"): on a large
+    # job, how to pay is part of whether to say yes.
+    try:
+        from ..core.config import get_settings
+
+        standing = (get_settings().payment_note or "").strip()
+    except Exception:  # noqa: BLE001 - a quotation prints without it
+        standing = ""
+    if standing and standing not in terms:
+        terms = f"{terms}\n{standing}" if terms else standing
     if display.notes:
         terms = f"{terms}\n{display.notes}" if terms else display.notes
     if terms:

@@ -117,12 +117,21 @@ class NewJobDialog(_FormDialog):
         self.trade.addItem("אינסטלציה", "plumbing")
         self.trade.addItem("אלומיניום ואינסטלציה", "both")
 
+        from ..projects.model import LEAD_SOURCES
+
+        self.source = QComboBox()
+        self.source.setEditable(True)
+        self.source.addItem("")
+        self.source.addItems(LEAD_SOURCES)
+        self.source.lineEdit().setPlaceholderText("איך הגיע אלינו?")
+
         self.grid.add("תחום", self.trade)
         self.grid.add("לקוח", row)
         self.grid.add("שם הפרויקט", self.name)
         self.grid.add("אתר", self.site)
         self.grid.add("אסמכתה", self.reference)
         self.grid.add("מערכת", self.system)
+        self.grid.add("הגיע דרך", self.source)
 
         # A job without a name is a job nobody can find again.
         self.name.textChanged.connect(self._name_edited)
@@ -206,6 +215,7 @@ class NewJobDialog(_FormDialog):
             "site_address": self.site.text().strip(),
             "system_id": self.system.currentData() or "generic",
             "trade": self.trade.currentData() or "aluminium",
+            "source": self.source.currentText().strip(),
         }
 
 

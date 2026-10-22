@@ -177,6 +177,12 @@ class Settings(BaseModel):
     #: at source from every payment once אישור ניכוי במקור has lapsed, and a
     #: lapsed אישור ניהול ספרים loses public and contractor work — so both are
     #: watched, a month ahead.
+    #: The owner's own mobile, for the morning summary on WhatsApp.
+    owner_phone: str = ""
+    #: The shop's Google review link ("כתבו ביקורת"), sent after handover.
+    review_link: str = ""
+    #: Printed on every quotation: "אפשר לשלם עד 12 תשלומים באשראי".
+    payment_note: str = ""
     withholding_certificate_until: str = ""
     books_certificate_until: str = ""
     #: A second copy of each day's backup — a USB drive or a synced cloud

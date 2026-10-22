@@ -180,6 +180,71 @@ def visit_reminder_message(*, brand_name: str, customer_name: str = "", when: st
     return "\n".join(lines)
 
 
+def waze_link(address: str) -> str:
+    """A link that opens Waze driving to the address."""
+    return f"https://waze.com/ul?q={quote(address.strip(), safe='')}&navigate=yes"
+
+
+def crew_plan_message(visits: Any, *, day: str, brand_name: str) -> str:
+    """The day's visits for the crew: in order, each with a Waze link.
+
+    The crew reads it in the van at seven; every line answers "where, when,
+    who to call, what to bring", and the link starts the navigation.
+    """
+    lines = [f"תוכנית עבודה {day} — {brand_name}", ""]
+    count = 0
+    for visit in visits:
+        count += 1
+        when = f"⁦{visit.time}⁩ " if visit.time else ""
+        who = visit.customer_name or visit.job_id or ""
+        lines.append(f"{count}. {when}{visit.kind.hebrew} — {who}".rstrip(" —"))
+        if visit.address:
+            lines.append(f"   📍 {visit.address}")
+            lines.append(f"   {waze_link(visit.address)}")
+        if visit.phone:
+            lines.append(f"   ☎ ⁦{visit.phone}⁩")
+        if visit.note:
+            lines.append(f"   {visit.note}")
+        if visit.crew:
+            lines.append(f"   מי: {visit.crew}")
+        lines.append("")
+    if not count:
+        lines.append("אין ביקורים ביומן.")
+    return "\n".join(lines).rstrip()
+
+
+def checkup_message(*, brand_name: str, customer_name: str = "", trade: str = "aluminium",
+                    job_name: str = "") -> str:
+    """A year after handover: offer the yearly check, in the trade's terms."""
+    what = (
+        "בדיקה שנתית למערכת: דוד המים החמים, מסננים, ברזים וניקוזים"
+        if trade == "plumbing" else
+        "בדיקה שנתית לחלונות ולדלתות: מסילות, אטמים, ניקוז וכיוון כנפיים"
+    )
+    lines = [
+        _greeting(customer_name), "",
+        f"עברה שנה מאז שסיימנו{(' את ' + job_name) if job_name else ''}.",
+        f"אנחנו מציעים {what} — כדי שהכול ימשיך לעבוד כמו ביום הראשון.",
+        "רוצים שנקבע ביקור? אפשר לענות להודעה הזאת.",
+        "", "להסרה מרשימת התזכורות — השיבו ״הסר״.", brand_name,
+    ]
+    return "\n".join(lines)
+
+
+def review_request_message(*, brand_name: str, customer_name: str = "",
+                           link: str = "") -> str:
+    """After handover: thank the customer and ask for a review, once."""
+    lines = [
+        _greeting(customer_name), "",
+        f"תודה שבחרתם ב{brand_name}. מקווים שאתם נהנים מהעבודה.",
+        "אם הייתם מרוצים, נשמח מאוד אם תכתבו לנו המלצה קצרה — זה עוזר לנו יותר מכל פרסום:",
+    ]
+    if link:
+        lines.append(link)
+    lines += ["", "ואם משהו לא בסדר — פשוט ענו להודעה הזאת ונטפל.", brand_name]
+    return "\n".join(lines)
+
+
 def cheque_message(
     *,
     brand_name: str,
@@ -243,8 +308,12 @@ def customer_phone(job: Any) -> str:
 
 __all__ = [
     "cheque_message",
+    "checkup_message",
+    "crew_plan_message",
     "customer_phone",
     "material_list_message",
+    "review_request_message",
+    "waze_link",
     "on_the_way_message",
     "phone_for",
     "quote_message",

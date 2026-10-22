@@ -95,6 +95,22 @@ class LineKind(StrEnum):
         return {LineKind.QUOTED: "בהצעה", LineKind.EXTRA: "תוספת"}[self]
 
 
+#: Where work comes from, in the words a shop uses when it asks "how did you
+#: hear about us?". Free text is allowed too; these are the usual answers.
+LEAD_SOURCES: tuple[str, ...] = (
+    "המלצה של לקוח", "לקוח חוזר", "קבלן / אדריכל", "גוגל", "פייסבוק / אינסטגרם",
+    "מדרג", "שלט / רכב", "עלון / מודעה", "אחר",
+)
+
+
+#: Why a quotation was lost — asked when a job is marked lost, so that over a
+#: year the shop knows whether it loses on price, on time, or on silence.
+LOST_REASONS: tuple[str, ...] = (
+    "מחיר", "זמן אספקה", "לא חזרנו אליו בזמן", "בחר מתחרה", "הפרויקט בוטל / נדחה",
+    "לא ענה", "אחר",
+)
+
+
 class JobLine(RoundTrips):
     """A priced line on the job that is not a designed opening.
 
@@ -300,6 +316,15 @@ class JobFile(RoundTrips):
     site_address: str = ""
     system_id: str = "generic"
     trade: Trade = Trade.ALUMINIUM
+    #: How the customer found the shop — the answer that says where to spend
+    #: on advertising, once there are enough jobs to read it from.
+    source: str = ""
+    #: When the customer was asked for a review after handover.
+    review_requested: str = ""
+    #: Why the job was lost, when it was.
+    lost_reason: str = ""
+    #: When the yearly check was offered to the customer.
+    checkup_offered: str = ""
     schedule: ElementSchedule | None = None
     plumbing: PlumbingSpec | None = None
     #: Priced work beyond the designed openings, quoted or added on site.

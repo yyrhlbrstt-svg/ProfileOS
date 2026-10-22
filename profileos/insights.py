@@ -148,6 +148,67 @@ def _jobs(context: dict[str, Any], today: date) -> list[Insight]:
     tasks = context.get("tasks")
     found: list[Insight] = []
 
+    # Speed to quote: the shop that answers first usually gets the job.
+    waiting_quote = [
+        job for job in jobs
+        if job.status is JobStatus.ENQUIRY
+        and (_days_since(job.created, today) or 0) >= 2
+    ]
+    if waiting_quote:
+        found.append(Insight(
+            "warning",
+            _count(len(waiting_quote), "פנייה אחת מחכה להצעת מחיר יותר מיומיים",
+                   "פניות מחכות להצעת מחיר יותר מיומיים"),
+            "מי שעונה ראשון בדרך כלל מקבל את העבודה. אפשר להתחיל בהערכת מחיר "
+            "מהירה (Ctrl+E): "
+            + _names(waiting_quote, lambda job: job.customer_name or job.name),
+            "Projects", "enquiry:" + ",".join(sorted(job.job_id for job in waiting_quote)),
+        ))
+
+    # After handover: the moment a happy customer is most willing to say so —
+    # but only a customer who has paid and has nothing open with service.
+    from .projects.account import job_account
+
+    cheques = list(context.get("cheques") or [])
+    register = context.get("service")
+    open_calls = {
+        call.job_id for call in (register.open_calls() if register is not None else [])
+        if call.job_id
+    }
+    review = [
+        job for job in jobs
+        if job.status is JobStatus.INSTALLED and not job.review_requested
+        and 0 <= (_days_since(_status_since(job), today) or 99) <= 21
+        and job.job_id not in open_calls
+        and job_account(job, cheques).uncovered <= 0.5
+    ]
+    if review:
+        found.append(Insight(
+            "info",
+            _count(len(review), "לקוח אחד קיבל עבודה בשבועות האחרונים — בקשו המלצה",
+                   "לקוחות קיבלו עבודה בשבועות האחרונים — בקשו המלצה"),
+            "המלצה בגוגל מלקוח מרוצה שווה יותר מכל מודעה. בפרויקט: ״בקשת המלצה״: "
+            + _names(review, lambda job: job.customer_name or job.name),
+            "Projects", "review:" + ",".join(sorted(job.job_id for job in review)),
+        ))
+
+    # A year after handover: a paid check-up — tracks, seals and drainage,
+    # or the water heater and filters — is repeat work, and catches a
+    # warranty fault while it is still small.
+    checkup = [
+        job for job in jobs
+        if job.status is JobStatus.INSTALLED and not job.checkup_offered
+        and 330 <= (_days_since(_status_since(job), today) or 0) <= 420
+    ]
+    if checkup:
+        found.append(Insight(
+            "info",
+            _count(len(checkup), "לקוח אחד הגיע לבדיקה השנתית", "לקוחות הגיעו לבדיקה השנתית"),
+            "שנה אחרי המסירה — הציעו ביקור בדיקה (בפרויקט: ״הצעת בדיקה שנתית״): "
+            + _names(checkup, lambda job: job.customer_name or job.name),
+            "Projects", "checkup:" + ",".join(sorted(job.job_id for job in checkup)),
+        ))
+
     quoted = [job for job in jobs if job.status is JobStatus.QUOTED]
     waiting = [
         job for job in quoted
@@ -512,6 +573,50 @@ RULES: tuple[Callable[[dict[str, Any], date], list[Insight]], ...] = (
 )
 
 
+def morning_brief(found: list[Insight], context: dict[str, Any], *,
+                  today: date | None = None, brand_name: str = "") -> str:
+    """The owner's morning, as one WhatsApp message to themself.
+
+    Read at the first coffee, before the phone starts: the money, the field,
+    and the few things the scan found — most urgent first, no more than fit
+    on a phone screen.
+    """
+    from .projects.account import job_account
+    from .projects.agenda import day_word
+
+    today = today or date.today()
+    lines = [f"בוקר טוב ☀️ — {brand_name}".rstrip(" —"), f"⁦{today:%d/%m/%Y}⁩", ""]
+    jobs = context.get("jobs") or []
+    cheques = list(context.get("cheques") or [])
+    owed = sum(
+        job_account(job, cheques).uncovered for job in jobs
+        if job.status.value in ("won", "in_production", "installed")
+    )
+    if owed:
+        lines.append(f"💰 לגבייה בפרויקטים: ⁦{owed:,.0f} ₪⁩")
+    quoted = [job for job in jobs if job.status.value == "quoted"]
+    if quoted:
+        lines.append(
+            f"📨 הצעות פתוחות: ⁦{len(quoted)}⁩ בשווי ⁦{sum(j.quote_total for j in quoted):,.0f} ₪⁩"
+        )
+    agenda = context.get("agenda")
+    if agenda is not None:
+        visits = [a for a in agenda.on_day(today) if not a.done]
+        if visits:
+            lines.append(f"🚐 {day_word(today, today)} בשטח: ⁦{len(visits)}⁩ ביקורים")
+            for visit in visits[:6]:
+                lines.append(f"   • {visit.describe()}")
+    important = [insight for insight in found if insight.severity in ("danger", "warning")]
+    if important:
+        lines += ["", "שווה לבדוק היום:"]
+        for insight in important[:8]:
+            mark = "🔴" if insight.severity == "danger" else "🟠"
+            lines.append(f"{mark} {insight.title}")
+    else:
+        lines += ["", "✅ אין שום דבר דחוף."]
+    return "\n".join(lines)
+
+
 def gather_context(**given: Any) -> dict[str, Any]:
     """Read every book once. A book that cannot be read is left out."""
     from .core.config import get_settings
@@ -636,4 +741,6 @@ _BOOK_NAMES = {
 }
 
 
-__all__ = ["Insight", "RULES", "dismiss", "dismissed", "gather_context", "scan"]
+__all__ = [
+    "Insight", "RULES", "dismiss", "dismissed", "gather_context", "morning_brief", "scan",
+]

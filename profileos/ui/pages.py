@@ -269,6 +269,12 @@ class HomePage(Page):
         palette_button.clicked.connect(self._open_palette)
         self.header.add_action(palette_button)
 
+        brief = QPushButton("סיכום בוקר לוואטסאפ")
+        brief.setObjectName("WhatsApp")
+        brief.setToolTip("הכסף, השטח ומה דחוף — בהודעה אחת לטלפון שלך")
+        brief.clicked.connect(self.send_morning_brief)
+        self.header.add_action(brief)
+
         self.greeting = QLabel()
         self.greeting.setObjectName("HomeGreeting")
         self.body.addWidget(self.greeting)
@@ -398,6 +404,10 @@ class HomePage(Page):
         done = QPushButton("בוצע")
         done.clicked.connect(self.visit_done)
         field_bar.addWidget(done)
+        crew = QPushButton("שלח לצוות את התוכנית")
+        crew.setToolTip("כל הביקורים של היום הבא, לפי הסדר, עם קישור ניווט בווייז")
+        crew.clicked.connect(self.send_crew_plan)
+        field_bar.addWidget(crew)
         field_bar.addStretch(1)
         field_card.add_layout(field_bar)
         self.body.addWidget(field_card)
@@ -699,6 +709,56 @@ class HomePage(Page):
         except Exception as exc:  # noqa: BLE001
             self.report(exc, "לא נרשם שהתזכורת נשלחה")
         self.show_field()
+
+    def _open_whatsapp(self, phone: str, message: str) -> None:
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+
+        from ..sharing import whatsapp_link
+
+        QDesktopServices.openUrl(QUrl(whatsapp_link(phone, message)))
+
+    def send_morning_brief(self) -> None:
+        from ..branding import active_brand
+        from ..core.config import get_settings
+        from ..insights import gather_context, morning_brief, scan
+
+        try:
+            context = gather_context(has_job=self.session.job is not None)
+            found = scan(has_job=self.session.job is not None)
+            message = morning_brief(found, context, brand_name=active_brand().display_name)
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "הסיכום לא נוצר")
+            return
+        phone = get_settings().owner_phone
+        self._open_whatsapp(phone, message)
+        self.status(
+            "נפתח וואטסאפ עם סיכום הבוקר"
+            + ("" if phone else " — הזינו את הטלפון שלכם במערכת ← מפעיל כדי שיגיע ישר אליכם")
+        )
+
+    def send_crew_plan(self) -> None:
+        from datetime import date as _date
+
+        from ..branding import active_brand
+        from ..projects.agenda import day_word, next_working_day
+        from ..sharing import crew_plan_message
+
+        today = _date.today()
+        try:
+            agenda = self._agenda()
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "היומן לא נקרא")
+            return
+        # Before noon the crew needs today's plan; after it, the next day's.
+        from datetime import datetime as _datetime
+
+        day = today if _datetime.now().hour < 12 else next_working_day(today)
+        visits = [visit for visit in agenda.on_day(day) if not visit.done]
+        message = crew_plan_message(visits, day=day_word(day, today),
+                                    brand_name=active_brand().display_name)
+        self._open_whatsapp("", message)
+        self.status(f"נפתח וואטסאפ עם התוכנית ({day_word(day, today)}) — בחרו את הצוות ושלחו")
 
     def visit_done(self) -> None:
         item = self._selected_visit()
@@ -1265,19 +1325,10 @@ class ProjectsPage(Page):
         row.addWidget(advance)
         self._advance_button = advance
 
-        visit = QPushButton("קבע ביקור")
-        visit.setToolTip("מדידה, התקנה, אספקה — ביומן, עם תזכורת ללקוח")
-        visit.clicked.connect(self.plan_visit_for_job)
-        row.addWidget(visit)
-
         account = QPushButton("חשבון הפרויקט")
         account.setToolTip("עבודות, תוספות, תשלומים, חשבוניות — וכמה עוד חייבים")
         account.clicked.connect(self.open_account)
         row.addWidget(account)
-
-        pack = QPushButton("תיק עבודה להדפסה")
-        pack.clicked.connect(self.export_dossier)
-        row.addWidget(pack)
 
         # The customer asks "where is my order?" — the shop answers with one
         # click, in its own words, before the customer has to ask twice.
@@ -1285,10 +1336,30 @@ class ProjectsPage(Page):
         notify.setObjectName("WhatsApp")
         notify.clicked.connect(self.notify_customer)
         row.addWidget(notify)
+
+        # The rest of what can be done with a job, one click away rather than
+        # nine buttons wide: the row keeps the three things done every day.
+        from PySide6.QtWidgets import QMenu, QToolButton
+
+        more = QToolButton()
+        more.setText("עוד פעולות")
+        more.setObjectName("MoreButton")
+        more.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        menu = QMenu(more)
+        menu.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
+        for label, handler in (
+            ("קבע ביקור ביומן", self.plan_visit_for_job),
+            ("בקשת המלצה בגוגל", self.request_review),
+            ("הצעת בדיקה שנתית", self.offer_checkup),
+            ("תיק עבודה להדפסה", self.export_dossier),
+        ):
+            menu.addAction(label, handler)
+        more.setMenu(menu)
+        row.addWidget(more)
         row.addStretch(1)
         detail.add_layout(row)
         # Nothing to act on until a job is chosen — and the buttons say so.
-        self._job_actions = [self.open_button, advance, visit, account, pack, notify,
+        self._job_actions = [self.open_button, advance, account, notify, more,
                              self.status_combo]
         for widget in self._job_actions:
             widget.setEnabled(False)
@@ -1373,6 +1444,67 @@ class ProjectsPage(Page):
             return "שולם"
         return f"⁦{account.uncovered:,.0f} ₪⁩"
 
+    def request_review(self) -> None:
+        from datetime import date as _date
+
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+
+        from ..branding import active_brand
+        from ..core.config import get_settings
+        from ..sharing import customer_phone, review_request_message, whatsapp_link
+
+        job = self._selected_job()
+        if job is None:
+            self.status("בחר פרויקט מהרשימה")
+            return
+        link = get_settings().review_link
+        message = review_request_message(
+            brand_name=active_brand().display_name, customer_name=job.customer_name, link=link,
+        )
+        QDesktopServices.openUrl(QUrl(whatsapp_link(customer_phone(job), message)))
+        try:
+            store = self._store()
+            fresh = store.load(job.job_id)
+            fresh.review_requested = _date.today().isoformat()
+            store.save(fresh)
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "לא נרשם שהבקשה נשלחה")
+        self.status(
+            "נפתח וואטסאפ עם בקשת ההמלצה"
+            + ("" if link else " — הוסיפו קישור לביקורת בגוגל במערכת ← מפעיל")
+        )
+        self.refresh()
+
+    def offer_checkup(self) -> None:
+        from datetime import date as _date
+
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+
+        from ..branding import active_brand
+        from ..sharing import checkup_message, customer_phone, whatsapp_link
+
+        job = self._selected_job()
+        if job is None:
+            self.status("בחר פרויקט מהרשימה")
+            return
+        message = checkup_message(
+            brand_name=active_brand().display_name, customer_name=job.customer_name,
+            trade="plumbing" if job.trade.value == "plumbing" else "aluminium",
+            job_name=job.name,
+        )
+        QDesktopServices.openUrl(QUrl(whatsapp_link(customer_phone(job), message)))
+        try:
+            store = self._store()
+            fresh = store.load(job.job_id)
+            fresh.checkup_offered = _date.today().isoformat()
+            store.save(fresh)
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "לא נרשם שההצעה נשלחה")
+        self.status("נפתח וואטסאפ עם הצעת הבדיקה השנתית")
+        self.refresh()
+
     def plan_visit_for_job(self) -> None:
         job = self._selected_job()
         window = self.window()
@@ -1443,6 +1575,7 @@ class ProjectsPage(Page):
                 site_address=values["site_address"],
                 system_id=values["system_id"],
                 trade=values.get("trade", "aluminium"),
+                source=values.get("source", ""),
             )
         except Exception as exc:  # noqa: BLE001
             self.report(exc, "לא ניתן לפתוח את הפרויקט")
@@ -1563,9 +1696,25 @@ class ProjectsPage(Page):
             self.report(ProfileOSError("בחר פרויקט וסטטוס"), "אין מה לעדכן")
             return
         target = JobStatus(self.status_combo.currentData())
+        reason = ""
+        if target is JobStatus.LOST:
+            from ..projects.model import LOST_REASONS
+
+            reason, ok = QInputDialog.getItem(
+                self, "למה לא נסגר?", "מה הסיבה? (עוזר לדעת איפה מפסידים עבודות)",
+                list(LOST_REASONS), 0, True,
+            )
+            if not ok:
+                return
         try:
-            job.advance(target)
-            self._store().save(job)
+            # The copy on disk, not the one in the list: a payment or a line
+            # added in the job's account meanwhile is kept.
+            store = self._store()
+            job = store.load(job.job_id)
+            job.advance(target, reason)
+            if target is JobStatus.LOST:
+                job.lost_reason = reason.strip()
+            store.save(job)
         except Exception as exc:  # noqa: BLE001
             self.report(exc, "לא ניתן לעדכן את הסטטוס")
             return
@@ -7336,12 +7485,14 @@ class SystemPage(Page):
             values[field_name] = value.isoformat()
         for field_name, value in values.items():
             setattr(settings, field_name, value)
+        for field_name, edit in getattr(self, "_contact_fields", {}).items():
+            setattr(settings, field_name, edit.text().strip())
         try:
             save_settings(settings)
         except Exception as exc:  # noqa: BLE001
             self.report(exc, "התאריכים לא נשמרו")
             return
-        self.status("התאריכים נשמרו — התוכנה תזכיר חודש לפני שאישור פג")
+        self.status("נשמר — התוכנה תזכיר חודש לפני שאישור פג")
 
     def _brand_tab(self) -> QWidget:
         from ..branding import BRANDS, BUILTIN_BRANDS, configured_brand_id
@@ -7402,12 +7553,25 @@ class SystemPage(Page):
 
         # The shop's own certificates: lapsed, they cost 20–30% of every
         # contractor payment. Dates kept in settings; watched a month ahead.
-        certificates = Card("אישורים של העסק")
+        certificates = Card("פרטי העסק ואישורים")
         cert_grid = FieldGrid()
         from ..core.config import get_settings
 
         settings = get_settings()
         self._cert_fields: dict[str, Any] = {}
+        self._contact_fields: dict[str, Any] = {}
+        for field_name, label, hint in (
+            ("owner_phone", "הנייד שלך — לסיכום הבוקר", "050-000-0000"),
+            ("review_link", "קישור לביקורת בגוגל", "https://g.page/r/…/review"),
+            ("payment_note", "שורת תשלום בכל הצעה", "אפשר לשלם עד 12 תשלומים באשראי"),
+        ):
+            edit = QLineEdit(getattr(settings, field_name, "") or "")
+            edit.setPlaceholderText(hint)
+            if field_name != "payment_note":
+                edit.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
+                edit.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignAbsolute)
+            self._contact_fields[field_name] = edit
+            cert_grid.add(label, edit)
         for field_name, label in (
             ("withholding_certificate_until", "אישור ניכוי מס במקור — בתוקף עד"),
             ("books_certificate_until", "אישור ניהול ספרים — בתוקף עד"),
@@ -7418,7 +7582,7 @@ class SystemPage(Page):
             self._cert_fields[field_name] = edit
             cert_grid.add(label, edit)
         certificates.add(cert_grid)
-        save_certs = QPushButton("שמור תאריכים")
+        save_certs = QPushButton("שמור")
         save_certs.clicked.connect(self.save_certificates)
         certificates.add(save_certs)
         layout.addWidget(certificates)
@@ -8311,12 +8475,36 @@ class ReportsPage(Page):
         tabs.addTab(self._sales_tab(), "מכירות")
         tabs.addTab(self._customers_tab(), "לקוחות")
         tabs.addTab(self._pipeline_tab(), "צבר ואיחורים")
+        tabs.addTab(self._sources_tab(), "מאיפה העבודה מגיעה")
         self.body.addWidget(tabs, 1)
         self.tabs = tabs
 
         self._loaded = False
 
     # -- tabs ------------------------------------------------------------------ #
+    def _sources_tab(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, METRICS.space(3), 0, 0)
+        layout.setSpacing(METRICS.space(3))
+        self.sources_table = DataTable(
+            ["מקור", "פניות", "הוכרעו", "נסגרו", "אחוז סגירה", "שווי שנסגר", "ממוצע לעבודה"],
+            empty_text="עוד אין פרויקטים עם מקור — ״הגיע דרך״ נשאל בפתיחת פרויקט",
+        )
+        layout.addWidget(self.sources_table, 1)
+        self.lost_table = DataTable(["למה לא נסגר", "פרויקטים", "שווי שהוצע"],
+                                    empty_text="עוד לא נרשמה סיבה לעבודה שלא נסגרה")
+        self.lost_table.setMaximumHeight(METRICS.row_height * 6)
+        layout.addWidget(self.lost_table)
+        note = QLabel(
+            "לאן להשקיע בפרסום: המקור שמביא עבודות שנסגרות, בשווי גבוה. "
+            "אחוז על פחות מ־⁦5⁩ פרויקטים שהוכרעו מסומן ״מעט נתונים״ — עדיין לא מסקנה."
+        )
+        note.setObjectName("Hint")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        return page
+
     def _sales_tab(self) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
@@ -8414,6 +8602,22 @@ class ReportsPage(Page):
             return
 
         chosen = self.year_picker.currentData() or _date.today().year
+        source_rows = reports.by_source(jobs)
+        self.sources_table.set_rows([
+            [
+                row["source"], f"⁦{row['enquiries']}⁩", f"⁦{row['decided']}⁩", f"⁦{row['won']}⁩",
+                ("—" if row["win_rate_pct"] is None else f"⁦{row['win_rate_pct']:.0f}%⁩")
+                + (" · מעט נתונים" if row["thin"] and row["win_rate_pct"] is not None else ""),
+                f"⁦{row['won_value']:,.0f} ₪⁩" if row["won_value"] else "—",
+                f"⁦{row['average']:,.0f} ₪⁩" if row["average"] else "—",
+            ]
+            for row in source_rows
+        ], numeric_columns=(1, 2, 3, 5, 6))
+        self.lost_table.set_rows([
+            [row["reason"], f"⁦{row['count']}⁩",
+             f"⁦{row['value']:,.0f} ₪⁩" if row["value"] else "—"]
+            for row in reports.lost_reasons(jobs)
+        ], numeric_columns=(1, 2))
         report = reports.sales(jobs, reports.year(chosen))
         live = reports.pipeline(jobs)
         months = reports.by_month(jobs, chosen)

@@ -242,6 +242,50 @@ def by_month(jobs: Iterable[JobFile], of_year: int) -> list[dict[str, Any]]:
     return out
 
 
+def by_source(jobs: Iterable[JobFile]) -> list[dict[str, Any]]:
+    """Each lead source: how many came, how many were won, and what they were worth.
+
+    The question behind it is where the next advertising shekel goes. A
+    source with three jobs says little, and the row says so rather than
+    printing a confident percentage.
+    """
+    groups: dict[str, list[JobFile]] = {}
+    for job in jobs:
+        groups.setdefault(job.source.strip() or "לא ידוע", []).append(job)
+    rows: list[dict[str, Any]] = []
+    for source, members in groups.items():
+        decided = [job for job in members if _decided(job)]
+        won = [job for job in members if _won(job)]
+        won_value = sum(job.quote_total for job in won)
+        rows.append({
+            "source": source,
+            "enquiries": len(members),
+            "decided": len(decided),
+            "won": len(won),
+            "win_rate_pct": round(len(won) / len(decided) * 100.0, 1) if decided else None,
+            "won_value": round(won_value, 2),
+            "average": round(won_value / len(won), 2) if won else 0.0,
+            "thin": len(decided) < 5,
+        })
+    rows.sort(key=lambda row: (-row["won_value"], -row["enquiries"]))
+    return rows
+
+
+def lost_reasons(jobs: Iterable[JobFile]) -> list[dict[str, Any]]:
+    """Lost jobs grouped by why — price, time, or nobody calling back."""
+    groups: dict[str, list[JobFile]] = {}
+    for job in jobs:
+        if job.status is JobStatus.LOST:
+            groups.setdefault(job.lost_reason.strip() or "לא נרשמה סיבה", []).append(job)
+    rows = [
+        {"reason": reason, "count": len(members),
+         "value": round(sum(job.quote_total for job in members), 2)}
+        for reason, members in groups.items()
+    ]
+    rows.sort(key=lambda row: (-row["count"], -row["value"]))
+    return rows
+
+
 # --------------------------------------------------------------------------- #
 # Customers
 # --------------------------------------------------------------------------- #

@@ -513,6 +513,12 @@ QPlainTextEdit:focus, QTextEdit:focus, QDateEdit:focus {{
     border-color: {p.accent};
 }}
 QLineEdit[invalid="true"] {{ border-color: {p.danger}; }}
+QToolButton#MoreButton {{
+    background: {p.surface}; border: {m.border_width}px solid {p.border_strong};
+    border-radius: 8px; padding: 4px 12px; color: {p.text};
+}}
+QToolButton#MoreButton:hover {{ background: {p.surface_raised}; }}
+QToolButton#MoreButton::menu-indicator {{ image: none; width: 0; }}
 QFrame#SegmentBar {{
     background: {p.surface_raised}; border-radius: 9px;
 }}
