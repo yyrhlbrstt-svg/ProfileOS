@@ -3628,6 +3628,21 @@ class QuotePage(Page):
             caption = QLabel(label); caption.setObjectName("FieldLabel")
             row.addWidget(caption); row.addWidget(widget)
         row.addStretch(1)
+        # What the customer sees: a 3D picture of every opening, in a colour.
+        from .viewer3d import FINISHES as RENDER_FINISHES
+
+        self.show_3d = QCheckBox("הדמיה בהצעה")
+        self.show_3d.setChecked(True)
+        self.show_3d.setToolTip("תמונת תלת-ממד של כל פתח ליד השרטוט שלו")
+        row.addWidget(self.show_3d)
+        self.render_colour = QComboBox()
+        self.render_colour.addItem("גוון לפי הגמר", "")
+        for key, label in RENDER_FINISHES:
+            self.render_colour.addItem(label, key)
+        self.render_colour.addItem("דמוי עץ", "wood")
+        row.addWidget(self.render_colour)
+        self.show_3d.toggled.connect(self._apply_display)
+        self.render_colour.currentIndexChanged.connect(self._apply_display)
         controls.add_layout(row)
         self.body.addWidget(controls)
 
@@ -3680,6 +3695,13 @@ class QuotePage(Page):
         self._loading = False
 
     # -- the draft ----------------------------------------------------------- #
+    def _apply_display(self, *_args: Any) -> None:
+        """The picture settings go on the draft the documents are printed from."""
+        if self.draft is None:
+            return
+        self.draft.display.show_3d = self.show_3d.isChecked()
+        self.draft.display.render_colour = self.render_colour.currentData() or ""
+
     def start_draft(self) -> None:
         from ..quoting.editor import QuoteDraft
 
@@ -3700,6 +3722,7 @@ class QuotePage(Page):
                 },
             )
             self.draft.set_margin(self.margin.value())
+            self._apply_display()
         except Exception as exc:  # noqa: BLE001
             self.report(exc, "התמחור נכשל")
             return

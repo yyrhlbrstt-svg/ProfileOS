@@ -80,10 +80,11 @@ th,td{text-align:start}
 .totals{margin-top:8px;margin-inline-start:auto;width:290px}
 .totals td{border:0;padding:3px 8px}
 .totals tr:last-child td{border-top:2px solid var(--ink);font-weight:700;font-size:15px}
-.elevations{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:14px}
+.elevations{display:grid;grid-template-columns:repeat(auto-fill,minmax(330px,1fr));gap:14px}
 .elevations figure{margin:0;border:1px solid var(--line);border-radius:8px;padding:8px;
                    page-break-inside:avoid}
 .elevations svg{width:100%;height:auto}
+.elevations .pair{display:grid;grid-template-columns:1fr 1fr;gap:8px;align-items:center}
 .elevations figcaption{font-size:12px;color:var(--muted);text-align:center;padding-top:4px}
 .badge{display:inline-block;font-size:10px;border:1px solid var(--line);border-radius:99px;
        padding:1px 8px;color:var(--muted);margin-inline-start:6px;vertical-align:middle}
@@ -120,6 +121,29 @@ def _elevation_svg(build: Any, language: Any) -> str:
         style=ElevationStyle(scale=20, show_glass_sizes=False, show_dimensions=True),
     )
     return to_svg(drawing, scale=20, background="#ffffff")
+
+
+def _render_3d_svg(build: Any, colour: str) -> str:
+    """A 3D picture of one opening, as SVG — drawn without a graphics card,
+    so every computer and every PDF gets it. Empty if it cannot be drawn."""
+    try:
+        from ..viz3d import (
+            RenderOptions,
+            ViewStyle,
+            build_element_scene,
+            finish_materials,
+            presentation_camera,
+            render_svg,
+        )
+
+        scene = build_element_scene(build, style=ViewStyle(show_glass=True))
+        options = RenderOptions(
+            width=520, height=400, materials=finish_materials(colour),
+            background="#ffffff",
+        )
+        return render_svg(scene, presentation_camera(scene), options)
+    except Exception:  # noqa: BLE001 - the drawing is still there
+        return ""
 
 
 def render_quotation(
@@ -203,12 +227,19 @@ def render_quotation(
     # -- elevations ------------------------------------------------------------ #
     parts.append(f"<h2>{_esc(t('drawing.elevation'))}</h2>")
     parts.append('<div class="elevations">')
+    from .editor import FINISH_RENDER_COLOUR
+
+    colour = display.render_colour or FINISH_RENDER_COLOUR.get(variant.finish_id, "natural")
     for build in variant.builds:
         opening = build.opening
         quantity = f" ×{opening.quantity}" if opening.quantity > 1 else ""
+        picture = _render_3d_svg(build, colour) if display.show_3d else ""
         parts.append(
             "<figure>"
-            + _elevation_svg(build, locale.language)
+            + (
+                f'<div class="pair">{picture}{_elevation_svg(build, locale.language)}</div>'
+                if picture else _elevation_svg(build, locale.language)
+            )
             + f"<figcaption class='num'>{_esc(opening.name or opening.element_id)}{quantity} — "
             f"{opening.width:.0f} × {opening.height:.0f} {_esc(t('unit.mm'))}</figcaption></figure>"
         )

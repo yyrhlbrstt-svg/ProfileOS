@@ -79,6 +79,14 @@ class Finish:
 
 
 #: The finishes a quotation offers. Rates are stand-ins (see class docstring).
+#: The colour a finish is pictured in when nobody chose one. Only a picture:
+#: a RAL finish has no colour until the customer names it, so it is drawn in
+#: the commonest one and the quotation says the colour is for illustration.
+FINISH_RENDER_COLOUR = {
+    "mill": "natural", "anodized": "silver", "ral": "white",
+    "ral-premium": "anthracite", "wood": "wood",
+}
+
 FINISHES: dict[str, Finish] = {
     finish.id: finish
     for finish in (
@@ -111,6 +119,12 @@ class DisplayPolicy:
     show_labour_hours: bool = False
     show_options_comparison: bool = True
     show_vat: bool = True
+    #: A 3D picture of each opening beside its drawing — what the customer is
+    #: actually buying, in the colour they chose.
+    show_3d: bool = True
+    #: The colour the picture is drawn in (a key of ``FINISH_COLOURS``); empty
+    #: follows the quoted finish.
+    render_colour: str = ""
     payment_terms: str = ""
     notes: str = ""
 

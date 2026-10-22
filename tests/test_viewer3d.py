@@ -61,3 +61,30 @@ def test_a_machine_without_3d_keeps_the_ordinary_render():
     viewer = Viewer3D()
     assert viewer.supported is False
     assert viewer.show_build(_build()) is False
+
+
+def test_the_quotation_shows_each_opening_in_3d_in_the_chosen_colour():
+    from profileos.quoting.document import render_quotation
+    from profileos.quoting.editor import QuoteDraft
+
+    opening = Opening(name="W-01", width=1800, height=1400)
+    draft = QuoteDraft.start(
+        [opening], project_name="בדיקה", finish_id="ral",
+        fallback_rates={"profile": 5.5, "glass_m2": 60, "hardware": 12, "gasket_m": 1.1},
+    )
+    import re
+
+    def fills(colour: str) -> set[str]:
+        draft.display.render_colour = colour
+        html = render_quotation(draft)
+        assert 'class="pair"' in html
+        return set(re.findall(r'fill="(#[0-9a-fA-F]{6})"', html))
+
+    # The chosen colour changes the picture: anthracite is drawn darker.
+    dark, light = fills("anthracite"), fills("white")
+    assert dark != light
+    brightness = lambda colours: max(sum(int(c[i:i + 2], 16) for i in (1, 3, 5)) for c in colours)
+    assert brightness(dark - light) < brightness(light - dark)
+
+    draft.display.show_3d = False
+    assert 'class="pair"' not in render_quotation(draft)

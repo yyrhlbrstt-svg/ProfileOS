@@ -67,6 +67,35 @@ BRONZE_MATERIALS: dict[str, Material] = {
 }
 
 
+#: The finishes the live view offers, as the paper render's aluminium colour —
+#: so the picture in the quotation is the colour the customer chose on screen.
+FINISH_COLOURS: dict[str, tuple[int, int, int]] = {
+    "natural": (176, 182, 189),
+    "silver": (205, 209, 213),
+    "anthracite": (62, 68, 72),
+    "black": (36, 37, 39),
+    "white": (236, 236, 232),
+    "bronze": (150, 112, 66),
+    "champagne": (191, 167, 127),
+    "wood": (139, 94, 60),
+}
+
+
+def finish_materials(name: str) -> dict[str, "Material"]:
+    """The default materials with the aluminium in the named finish."""
+    base = FINISH_COLOURS.get(name)
+    if base is None:
+        return dict(DEFAULT_MATERIALS)
+    edge = tuple(max(0, int(c * 0.5)) for c in base)
+    if sum(base) < 200:  # dark finishes need a lighter edge to stay drawn
+        edge = tuple(min(255, c + 60) for c in base)
+    return {
+        **DEFAULT_MATERIALS,
+        "aluminium": Material(base=base, ambient=0.36, specular=0.22,
+                              edge=edge, edge_width=0.35),  # type: ignore[arg-type]
+    }
+
+
 @dataclass
 class Camera:
     """Where the eye is and what it can see."""
