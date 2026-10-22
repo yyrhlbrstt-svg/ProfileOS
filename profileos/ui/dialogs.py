@@ -748,6 +748,16 @@ class PriceListDialog(_FormDialog):
         self.surcharge.setRange(0.0, 100.0)
         self.surcharge.setDecimals(1)
         self.surcharge.setSuffix(" %")
+        # The bar length profiles are sold in, when the file has no length
+        # column: said once for the supplier, carried to its next lists.
+        self.bar_length: QDoubleSpinBox | None = None
+        if "length" not in matched:
+            self.bar_length = QDoubleSpinBox()
+            self.bar_length.setRange(0.0, 8.0)
+            self.bar_length.setDecimals(2)
+            self.bar_length.setSingleStep(0.5)
+            self.bar_length.setSuffix(" מ׳")
+            self.bar_length.setSpecialValueText("לא ידוע")
         self.unit: QComboBox | None = None
         if "unit" not in matched:
             # No unit column: every price is in one unit, and the person says
@@ -764,6 +774,8 @@ class PriceListDialog(_FormDialog):
         self.grid.add("מטבע", self.currency)
         if self.unit is not None:
             self.grid.add("המחירים הם", self.unit)
+        if self.bar_length is not None:
+            self.grid.add("אורך מוט", self.bar_length)
         self.grid.add("ההנחה שלכם", self.discount)
         self.grid.add("תוספת (מתכת, אנרגיה)", self.surcharge)
         self.grid.add("נקלט על ידי", self.recorded_by)
@@ -775,7 +787,8 @@ class PriceListDialog(_FormDialog):
         )
         text = f"⁦{count}⁩ שורות מחיר נקראו. עמודות: {columns}."
         if skipped:
-            text += f"\n⁦{len(skipped)}⁩ שורות לא נקראו, למשל: " + "; ".join(skipped[:3])
+            text += (f"\n⁦{len(skipped)}⁩ שורות לא נקראו או נקראו חלקית, למשל: "
+                     + "; ".join(skipped[:3]))
         text += "\nשום מחיר לא משתנה עד שמאשרים את המחירון."
         hint = QLabel(text)
         hint.setObjectName("Hint")
@@ -795,6 +808,8 @@ class PriceListDialog(_FormDialog):
         if terms is not None:
             self.discount.setValue(terms[0])
             self.surcharge.setValue(terms[1])
+            if self.bar_length is not None and len(terms) > 2:
+                self.bar_length.setValue(terms[2] / 1000.0)
 
     def _update_ok(self, *_: Any) -> None:
         self.ok_button.setEnabled(
@@ -813,6 +828,10 @@ class PriceListDialog(_FormDialog):
             "recorded_by": self.recorded_by.text().strip(),
             "discount_pct": self.discount.value(),
             "surcharge_pct": self.surcharge.value(),
+            "bar_length_mm": (
+                round(self.bar_length.value() * 1000.0) if self.bar_length is not None
+                and self.bar_length.value() > 0 else None
+            ),
             "unit": self.unit.currentData() if self.unit is not None else "",
         }
 

@@ -88,6 +88,9 @@ class ProposedLine:
     unit_price: float = 0.0
     price_source: str = ""
     supplier: str = ""
+    #: Where a bar's length came from: the supplier's list, or empty when the
+    #: shop's general setting decided it.
+    length_source: str = ""
 
     @property
     def total(self) -> float:
@@ -153,14 +156,55 @@ def _source(supplier: Any) -> str:
     return (getattr(supplier, "notes", "") or getattr(supplier, "name", "")).split(" · ")[0]
 
 
+def price_line(line: "ProposedLine", *,
+               mass_per_metre: Callable[[str], float | None] = lambda _code: None) -> "ProposedLine":
+    """Price one line at its quantity, from the lists in force — in place.
+
+    Used when the order is proposed and again when a quantity is changed, so
+    a price break or a minimum is applied to the quantity actually ordered.
+    """
+    line.unit_price, line.supplier, line.price_source = 0.0, "", ""
+    if line.quantity <= 0:
+        return line
+    if line.category == "profile" and line.unit == "bar":
+        metres = line.quantity * line.length_mm / 1000.0
+        # Metres first, as the quotation prices a profile: a list that does
+        # not say its unit is read the same way, never as a price per bar six
+        # times too low. A price per bar of a known length is already a price
+        # per metre of that bar. Per kilogram and per bar only when said.
+        options = [("m", metres)]
+        weight = mass_per_metre(line.code)
+        if weight:
+            options.append(("kg", metres * weight))
+        options.append(("bar", line.quantity))
+        priced = _price(line.code, options, "profile")
+        if priced is None:
+            return line
+        total, _quantity, supplier = priced
+        line.unit_price = round(total / line.quantity, 4)
+    else:
+        priced = _price(line.code, [(line.unit, line.quantity)], line.category)
+        if priced is None:
+            return line
+        total, quantity, supplier = priced
+        line.unit_price = round(total / quantity, 4) if quantity else 0.0
+    line.supplier = supplier.name
+    line.price_source = _source(supplier)
+    entry = supplier.entry(line.code)
+    if entry is not None and not line.description:
+        line.description = entry.description or ""
+    return line
+
+
 def propose(job: Any, *, mass_per_metre: Callable[[str], float | None] | None = None,
-            strategy: str = "auto", defaults: Any = None) -> Proposal:
+            strategy: str = "auto", defaults: Any = None,
+            lengths: tuple[dict[str, float], dict[str, str]] | None = None) -> Proposal:
     """What to order for this job, priced from the lists in force."""
     from ..elements import collect_cut_items
-    from ..models.orders import Project
+    from ..models.orders import Project, StockBar
     from ..nesting import nest_project
     from ..quoting.bom import build_bom
-    from ..quoting.pricelists import catalogue_weights
+    from ..quoting.pricelists import bar_lengths, catalogue_weights, code_key
 
     proposal = Proposal()
     builds, problems = build_job(job)
@@ -169,42 +213,40 @@ def propose(job: Any, *, mass_per_metre: Callable[[str], float | None] | None = 
         proposal.warnings.append("אין בפרויקט פתחים מתוכננים — אין מה להזמין")
         return proposal
     weights = mass_per_metre or catalogue_weights()
+    supplier_lengths, length_sources = lengths if lengths is not None else bar_lengths()
 
-    # -- profiles, in whole bars ------------------------------------------- #
-    project = Project(name=getattr(job, "name", "") or "פרויקט",
-                      items=collect_cut_items(builds))
+    # -- profiles, in whole bars of the length the supplier sells ----------- #
+    items = collect_cut_items(builds)
+    profile_ids = sorted({item.profile_id for item in items})
+    stock = [
+        StockBar(profile_id=pid, length=supplier_lengths[code_key(pid)])
+        for pid in profile_ids if code_key(pid) in supplier_lengths
+    ]
+    project = Project(name=getattr(job, "name", "") or "פרויקט", items=items, stock_bars=stock)
     try:
         report = nest_project(project, strategy=strategy, defaults=defaults)  # type: ignore[arg-type]
     except Exception as exc:  # noqa: BLE001 - said, and the job's other lines still come
         proposal.warnings.append(f"חישוב המוטות נכשל: {exc}")
         report = None
+    general = [pid for pid in profile_ids if code_key(pid) not in supplier_lengths]
+    if general and report is not None:
+        proposal.warnings.append(
+            "אורך המוט לפי הגדרת המפעל, כי המחירון לא אומר אותו: "
+            + ", ".join(f"⁦{pid}⁩" for pid in general[:6])
+            + " — ודאו מול הספק, או הזינו אורך מוט במחירון."
+        )
     if report is not None:
         for profile_id, failure in report.failures.items():
             proposal.warnings.append(f"⁦{profile_id}⁩: המוטות לא חושבו ({failure})")
         for profile_id, result in sorted(report.results.items()):
-            lengths = Counter(round(layout.stock_length) for layout in result.layouts
-                              if not layout.is_remnant)
-            for length, bars in sorted(lengths.items()):
-                metres = bars * length / 1000.0
-                # Metres first, as the quotation prices a profile: a list
-                # that does not say its unit is read the same way here, never
-                # as a price per bar six times too low. Per kilogram and per
-                # bar only when the list says so.
-                options = [("m", metres)]
-                weight = weights(profile_id)
-                if weight:
-                    options.append(("kg", metres * weight))
-                options.append(("bar", float(bars)))
+            lengths_used = Counter(round(layout.stock_length) for layout in result.layouts
+                                   if not layout.is_remnant)
+            for length, bars in sorted(lengths_used.items()):
                 line = ProposedLine("profile", profile_id, "", float(bars), "bar", float(length))
-                priced = _price(profile_id, options, "profile")
-                if priced is not None:
-                    total, _quantity, supplier = priced
-                    line.unit_price = round(total / bars, 4)
-                    line.supplier = supplier.name
-                    line.price_source = _source(supplier)
-                    entry = supplier.entry(profile_id)
-                    line.description = (entry.description if entry is not None else "") or ""
+                line.length_source = length_sources.get(code_key(profile_id), "")
+                price_line(line, mass_per_metre=weights)
                 proposal.lines.append(line)
+                _check_bar_price(line, proposal)
 
     # -- everything else that is bought, not cut ---------------------------- #
     bom = build_bom(builds, project_id=getattr(job, "job_id", ""), currency="ILS")
@@ -223,14 +265,24 @@ def propose(job: Any, *, mass_per_metre: Callable[[str], float | None] | None = 
 
             quantity = float(math.ceil(quantity))
         line = ProposedLine(category, bom_line.code, description, round(quantity, 3), unit)
-        priced = _price(bom_line.code, [(unit, quantity)], category)
-        if priced is not None:
-            total, quantity, supplier = priced
-            line.unit_price = round(total / quantity, 4) if quantity else 0.0
-            line.supplier = supplier.name
-            line.price_source = _source(supplier)
+        price_line(line)
         proposal.lines.append(line)
     return proposal
+
+
+def _check_bar_price(line: "ProposedLine", proposal: "Proposal") -> None:
+    """A price per bar with no length on the list is said to be unverified."""
+    from ..quoting.suppliers import find_price
+
+    found = find_price(line.code, line.quantity, unit="bar", currency="ILS", category="profile")
+    if found is None or line.unit_price <= 0:
+        return
+    entry = found[0].entry(line.code)
+    if entry is not None and not entry.metadata.get("bar_length_mm"):
+        proposal.warnings.append(
+            f"⁦{line.code}⁩: המחיר במחירון הוא למוט, בלי אורך — ודאו שהוא למוט של "
+            f"⁦{line.length_mm / 1000:g}⁩ מ׳, או הזינו אורך מוט במחירון."
+        )
 
 
 def order_message(order: Any, *, brand_name: str, job: Any) -> str:
@@ -287,6 +339,7 @@ __all__ = [
     "ProposedLine",
     "build_job",
     "order_message",
+    "price_line",
     "propose",
     "to_order",
 ]

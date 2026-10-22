@@ -3846,7 +3846,26 @@ class NestingPage(Page):
             self.report(ProfileOSError("אורכי המלאי חייבים להיות מספרים, מופרדים בפסיק"), "קלט שגוי")
             return
 
-        project = Project(name="פרויקט", items=collect_cut_items(self.session.builds))
+        items = collect_cut_items(self.session.builds)
+        # Each profile in the bar its supplier sells it in, when the price
+        # list says; the lengths typed above for every other profile.
+        from ..models.orders import StockBar
+        from ..quoting.pricelists import bar_lengths, code_key
+
+        try:
+            supplier_lengths, _sources = bar_lengths()
+        except Exception as exc:  # noqa: BLE001 - said; the typed lengths still apply
+            supplier_lengths = {}
+            self.status(f"אורכי המוטות מהמחירונים לא נקראו: {exc}")
+        profiles = sorted({item.profile_id for item in items})
+        stock = [StockBar(profile_id=pid, length=supplier_lengths[code_key(pid)])
+                 for pid in profiles if code_key(pid) in supplier_lengths]
+        project = Project(name="פרויקט", items=items, stock_bars=stock)
+        if stock:
+            self.status(
+                f"אורך המוט לפי מחירון הספק ל־⁦{len(stock)}⁩ פרופילים; "
+                "לשאר — לפי האורכים שהוקלדו"
+            )
         try:
             report = nest_project(project, strategy=self.strategy.currentData() or "auto")
         except Exception as exc:  # noqa: BLE001
@@ -6957,6 +6976,14 @@ class CataloguePage(Page):
             + (f" · נקלט על ידי {edition.recorded_by}" if edition.recorded_by else ""),
             f"התנאים שלכם: {edition.terms()}",
         ]
+        with_length = sum(1 for row in edition.prices.values() if edition.length_of(row))
+        if with_length:
+            lines.append(
+                f"אורך מוט ידוע ל־⁦{with_length}⁩ פריטים"
+                + (f" (ברירת מחדל ⁦{edition.bar_length_mm / 1000:g}⁩ מ׳)" if edition.bar_length_mm else "")
+            )
+        else:
+            lines.append("אורך המוט לא ידוע — ההזמנה תחושב לפי הגדרת המפעל")
         if edition.state != ListState.PENDING:
             lines.append(
                 book.state_text(edition)
@@ -7022,7 +7049,8 @@ class CataloguePage(Page):
         terms = {}
         for supplier_id in book.suppliers():
             latest = book.accepted(supplier_id)[-1]
-            terms[supplier_id] = (latest.discount_pct, latest.surcharge_pct)
+            terms[supplier_id] = (latest.discount_pct, latest.surcharge_pct,
+                                  latest.bar_length_mm)
         dialog = PriceListDialog(path.name, len(rows), skipped, matched, known,
                                  terms=terms, parent=self)
         if dialog.exec() != QDialog.DialogCode.Accepted:
@@ -7037,6 +7065,7 @@ class CataloguePage(Page):
                 valid_from=values["valid_from"], currency=values["currency"],
                 recorded_by=values["recorded_by"],
                 discount_pct=values["discount_pct"], surcharge_pct=values["surcharge_pct"],
+                bar_length_mm=values["bar_length_mm"],
                 warnings=[f"לא נקרא: {line}" for line in skipped[:50]],
             )
         except Exception as exc:  # noqa: BLE001

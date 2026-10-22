@@ -69,6 +69,35 @@ UNIT_HEBREW = {
 }
 
 
+#: A bar of aluminium profile is sold between these lengths; a figure
+#: outside them was read from the wrong column or in the wrong unit.
+MIN_BAR_MM = 2000.0
+MAX_BAR_MM = 8000.0
+
+
+def bar_length(text: Any) -> float | None:
+    """A bar length as a list writes it — "6", "6.5", "650", "6500" — in mm.
+
+    Under 20 is metres, 100 to 999 is centimetres, a thousand and over is
+    millimetres. Anything else, or outside a bar's real range, is not a bar
+    length: None, and the row is named rather than guessed at.
+    """
+    from ..migration.reader import to_number
+
+    value = to_number(text)
+    if value is None or value <= 0:
+        return None
+    if value < 20:
+        mm = value * 1000.0
+    elif 100 <= value < 1000:
+        mm = value * 10.0
+    elif value >= 1000:
+        mm = value
+    else:
+        return None
+    return mm if MIN_BAR_MM <= mm <= MAX_BAR_MM else None
+
+
 def unit_key(text: str) -> str:
     """One spelling of a unit; empty when it cannot be told."""
     cleaned = (text or "").strip().casefold().rstrip(".")
@@ -97,6 +126,9 @@ class PriceRow:
     #: The finish group the price is for (טבעי, לבן, RAL, דמוי עץ) when the
     #: list prices one code once per finish.
     finish: str = ""
+    #: The bar length the supplier sells this profile in, in millimetres,
+    #: when the list says. Zero: not said on this row.
+    length_mm: float = 0.0
 
     @property
     def key(self) -> str:
@@ -114,6 +146,7 @@ class PriceRow:
             code=str(raw["code"]), price=float(raw.get("price", 0.0) or 0.0),
             unit=str(raw.get("unit", "") or ""), description=str(raw.get("description", "") or ""),
             finish=str(raw.get("finish", "") or ""),
+            length_mm=float(raw.get("length_mm", 0.0) or 0.0),
         )
 
 
@@ -134,6 +167,9 @@ class PriceListEdition:
     #: these make it what the shop actually pays.
     discount_pct: float = 0.0
     surcharge_pct: float = 0.0
+    #: The bar length this supplier sells profiles in, when the list has no
+    #: length column — said once by the shop, in millimetres. Zero: unknown.
+    bar_length_mm: float = 0.0
     recorded_by: str = ""
     state: str = ListState.PENDING
     decided_at: str = ""
@@ -162,6 +198,10 @@ class PriceListEdition:
         if self.surcharge_pct:
             parts.append(f"תוספת ⁦{self.surcharge_pct:g}%⁩")
         return " · ".join(parts) or "מחיר מחירון, בלי הנחה"
+
+    def length_of(self, row: PriceRow) -> float:
+        """The bar length a row is sold in: its own, else the list's, else 0."""
+        return row.length_mm or self.bar_length_mm
 
     def for_code(self, code: str) -> PriceRow | None:
         """The one price for a code, or None — also when the list has a
@@ -200,6 +240,7 @@ class PriceListEdition:
         values["warnings"] = [str(w) for w in values.get("warnings") or []]
         values["discount_pct"] = float(values.get("discount_pct", 0.0) or 0.0)
         values["surcharge_pct"] = float(values.get("surcharge_pct", 0.0) or 0.0)
+        values["bar_length_mm"] = float(values.get("bar_length_mm", 0.0) or 0.0)
         return cls(prices=prices, **values)
 
 
@@ -447,7 +488,8 @@ class PriceListBook(MergingBook):
     def record(self, rows: Iterable[PriceRow], *, supplier: str, source: str,
                valid_from: str = "", currency: str = "ILS", recorded_by: str = "",
                warnings: Iterable[str] = (), discount_pct: float | None = None,
-               surcharge_pct: float | None = None) -> PriceListEdition:
+               surcharge_pct: float | None = None,
+               bar_length_mm: float | None = None) -> PriceListEdition:
         if not supplier.strip():
             raise ProfileOSError("כתבו מאיזה ספק המחירון")
         if not source.strip():
@@ -467,6 +509,13 @@ class PriceListBook(MergingBook):
             discount_pct = before[-1].discount_pct if before else 0.0
         if surcharge_pct is None:
             surcharge_pct = before[-1].surcharge_pct if before else 0.0
+        if bar_length_mm is None:
+            bar_length_mm = before[-1].bar_length_mm if before else 0.0
+        if bar_length_mm and not MIN_BAR_MM <= bar_length_mm <= MAX_BAR_MM:
+            raise ProfileOSError(
+                f"אורך מוט ⁦{bar_length_mm / 1000:g}⁩ מ׳ לא סביר — בין ⁦{MIN_BAR_MM / 1000:g}⁩ "
+                f"ל־⁦{MAX_BAR_MM / 1000:g}⁩ מ׳"
+            )
         if not 0.0 <= discount_pct < 100.0 or not 0.0 <= surcharge_pct <= 100.0:
             raise ProfileOSError("הנחה בין ⁦0⁩ ל־⁦100%⁩, תוספת בין ⁦0⁩ ל־⁦100%⁩")
         prices: dict[str, PriceRow] = {}
@@ -499,7 +548,7 @@ class PriceListBook(MergingBook):
             valid_from=valid_from[:10] if valid_from else "",
             currency=currency or "ILS", recorded_by=recorded_by.strip(),
             discount_pct=float(discount_pct), surcharge_pct=float(surcharge_pct),
-            warnings=notes, prices=prices,
+            bar_length_mm=float(bar_length_mm), warnings=notes, prices=prices,
         )
         self._editions[edition.edition_id] = edition
         self.save()
@@ -523,12 +572,13 @@ class PriceListBook(MergingBook):
         base = accepted[-1]
         factor = 1.0 + pct / 100.0
         rows = [
-            PriceRow(row.code, round(row.price * factor, 2), row.unit, row.description, row.finish)
+            PriceRow(row.code, round(row.price * factor, 2), row.unit, row.description,
+                     row.finish, row.length_mm)
             for row in base.prices.values()
         ]
         return self.record(
             rows, supplier=base.supplier, source=source, valid_from=valid_from,
-            currency=base.currency, recorded_by=recorded_by,
+            currency=base.currency, recorded_by=recorded_by, bar_length_mm=base.bar_length_mm,
             warnings=[f"נוצר ממחירון {base.source} בשינוי של ⁦{pct:+g}%⁩"],
         )
 
@@ -577,6 +627,17 @@ def default_price_lists() -> PriceListBook:
 # Reading a file
 # --------------------------------------------------------------------------- #
 
+def _row_length(values: dict[str, Any], label: str, problems: list[str]) -> float:
+    raw = str(values.get("length") or "").strip()
+    if not raw:
+        return 0.0
+    length = bar_length(raw)
+    if length is None:
+        problems.append(f"{label}: אורך המוט ״{raw}״ לא ברור — נקרא בלי אורך")
+        return 0.0
+    return length
+
+
 def rows_from_file(path: Path) -> tuple[list[PriceRow], list[str], dict[str, str]]:
     """The price rows of a supplier's Excel or CSV file.
 
@@ -603,6 +664,7 @@ def rows_from_file(path: Path) -> tuple[list[PriceRow], list[str], dict[str, str
             unit=str(values.get("unit") or "") if "unit" in plan.columns else "",
             description=str(values.get("description") or ""),
             finish=str(values.get("finish") or ""),
+            length_mm=_row_length(values, row.label, skipped),
         ))
     matched = {name: plan.columns[name] for name in PRICE_ALIASES if name in plan.columns}
     return rows, skipped, matched
@@ -635,12 +697,22 @@ def _as_supplier(edition: PriceListEdition,
         seen.add(code)
         unit = unit_key(row.unit)
         price = row.price
+        length = edition.length_of(row)
         metadata: dict[str, Any] = {"unit_known": bool(unit), "list": edition.edition_id}
+        if length:
+            metadata["bar_length_mm"] = length
         if unit == "kg":
             weight = mass_per_metre(row.code)
             if weight:
                 metadata.update({"price_per_kg": price, "kg_per_m": weight})
                 price, unit = round(price * weight, 4), "m"
+        elif unit == "bar" and length:
+            # A bar of known length is a price per metre of that bar: a
+            # quotation can use it, and bars of that length ordered come to
+            # exactly the price per bar. With no length it stays per bar —
+            # unusable for metres, never stretched over a bar it is not for.
+            metadata.update({"price_per_bar": price})
+            price, unit = round(price * 1000.0 / length, 6), "m"
         entries.append(PriceEntry(code=row.code, price=price, unit=unit or "pc",
                                   description=row.description or None, metadata=metadata))
     return Supplier(
@@ -649,6 +721,36 @@ def _as_supplier(edition: PriceListEdition,
         discount_pct=edition.discount_pct, surcharge_pct=edition.surcharge_pct,
         notes=f"{edition.source} · בתוקף מ־{edition.effective}",
     )
+
+
+def bar_lengths(book: PriceListBook | None = None) -> tuple[dict[str, float], dict[str, str]]:
+    """The bar length each profile is bought in, from the lists in force.
+
+    Returns ``code key → millimetres`` and ``code key → the list it came
+    from``. A code two suppliers sell in different lengths is left out: which
+    bar is bought is the shop's choice, and the general setting stands.
+    """
+    book = book or default_price_lists()
+    lengths: dict[str, float] = {}
+    sources: dict[str, str] = {}
+    disputed: set[str] = set()
+    for supplier_id in book.suppliers():
+        edition = book.current(supplier_id)
+        if edition is None:
+            continue
+        for row in edition.prices.values():
+            length = edition.length_of(row)
+            if not length:
+                continue
+            key = code_key(row.code)
+            if key in lengths and abs(lengths[key] - length) > 0.5:
+                disputed.add(key)
+            lengths[key] = length
+            sources[key] = f"{edition.supplier} — {edition.source}"
+    for key in disputed:
+        lengths.pop(key, None)
+        sources.pop(key, None)
+    return lengths, sources
 
 
 #: What went wrong the last time the lists were put in force, for the home
@@ -962,6 +1064,8 @@ __all__ = [
     "PriceListEdition",
     "PriceRow",
     "apply_price_lists",
+    "bar_length",
+    "bar_lengths",
     "catalogue_weights",
     "code_key",
     "compare",

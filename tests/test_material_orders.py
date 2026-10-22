@@ -394,3 +394,160 @@ def test_the_selection_follows_the_job_after_a_save(shop, monkeypatch):
     window.close()
     window.deleteLater()
     QCoreApplication.processEvents()
+
+
+class TestExactBarsAndPrices:
+    """The bar the supplier sells, and the price for that bar — nothing assumed."""
+
+    @pytest.mark.parametrize("text,mm", [
+        ("6", 6000.0), ("6.5", 6500.0), ("6,5", 6500.0), ("650", 6500.0), ("6500", 6500.0),
+        ("7", 7000.0), ("50", None), ("9", None), ("", None), ("מוט", None),
+    ])
+    def test_a_bar_length_however_the_list_writes_it(self, text, mm):
+        from profileos.quoting.pricelists import bar_length
+
+        assert bar_length(text) == mm
+
+    def test_the_length_column_is_read(self, tmp_path):
+        from profileos.quoting.pricelists import rows_from_file
+
+        path = tmp_path / "l.csv"
+        path.write_text('מק"ט;מחיר;יחידה;אורך מוט\nF;210;מוט;6.5\nS;180;מוט;שש\n',
+                        encoding="utf-8")
+        rows, problems, matched = rows_from_file(path)
+        assert "length" in matched
+        assert {r.code: r.length_mm for r in rows} == {"F": 6500.0, "S": 0.0}
+        assert any("S" in p and "לא ברור" in p for p in problems)
+
+    def test_a_bar_price_of_known_length_quotes_per_metre_and_orders_per_bar(self, shop):
+        from profileos.projects.materials import propose
+        from profileos.quoting.pricelists import PriceRow, default_price_lists
+        from profileos.quoting.suppliers import find_price
+
+        job = a_job()
+        code = next(l.code for l in propose(job, mass_per_metre=lambda c: None).lines
+                    if l.code.endswith("FRAME"))
+        book = default_price_lists()
+        edition = book.record([PriceRow(code, 210.0, "מוט", "משקוף", length_mm=6500.0)],
+                              supplier="קליל", source="x", discount_pct=20)
+        book.accept(edition.edition_id)
+        # A quotation counts metres: the bar's price spread over its length.
+        assert find_price(code, 13.0, unit="m", currency="ILS")[1] == pytest.approx(
+            13.0 * 210.0 / 6.5 * 0.8)
+        proposal = propose(job, mass_per_metre=lambda c: None)
+        frame = next(l for l in proposal.lines if l.code == code)
+        # Cut from the supplier's 6.5 m bar, priced at exactly its bar price.
+        assert frame.length_mm == 6500.0 and frame.length_source.startswith("קליל")
+        assert frame.unit_price == pytest.approx(210.0 * 0.8)
+
+    def test_a_suppliers_bar_length_said_once(self, shop):
+        from profileos.projects.materials import propose
+        from profileos.quoting.pricelists import PriceRow, default_price_lists
+
+        job = a_job()
+        code = next(l.code for l in propose(job, mass_per_metre=lambda c: None).lines
+                    if l.code.endswith("FRAME"))
+        book = default_price_lists()
+        first = book.record([PriceRow(code, 40.0, "מטר")], supplier="קליל", source="א",
+                            bar_length_mm=7000.0)
+        book.accept(first.edition_id)
+        second = book.record([PriceRow(code, 42.0, "מטר")], supplier="קליל", source="ב")
+        assert second.bar_length_mm == 7000.0          # carried over
+        frame = next(l for l in propose(job, mass_per_metre=lambda c: None).lines
+                     if l.code == code)
+        assert frame.length_mm == 7000.0
+        with pytest.raises(Exception):
+            book.record([PriceRow(code, 1.0, "מטר")], supplier="קליל", source="ג",
+                        bar_length_mm=60.0)
+
+    def test_without_a_length_the_general_setting_is_named(self, shop):
+        from profileos.projects.materials import propose
+
+        proposal = propose(a_job(), mass_per_metre=lambda c: None)
+        assert any("הגדרת המפעל" in w for w in proposal.warnings)
+        assert all(not l.length_source for l in proposal.lines if l.unit == "bar")
+
+    def test_a_bar_price_with_no_length_is_flagged(self, shop):
+        from profileos.projects.materials import propose
+        from profileos.quoting.pricelists import PriceRow, default_price_lists
+
+        job = a_job()
+        code = next(l.code for l in propose(job, mass_per_metre=lambda c: None).lines
+                    if l.code.endswith("FRAME"))
+        book = default_price_lists()
+        edition = book.record([PriceRow(code, 210.0, "מוט")], supplier="קליל", source="x")
+        book.accept(edition.edition_id)
+        proposal = propose(job, mass_per_metre=lambda c: None)
+        frame = next(l for l in proposal.lines if l.code == code)
+        assert frame.unit_price == pytest.approx(210.0)
+        assert any("למוט, בלי אורך" in w for w in proposal.warnings)
+
+    def test_two_suppliers_two_lengths_the_shop_decides(self, shop):
+        from profileos.quoting.pricelists import PriceRow, bar_lengths, default_price_lists
+
+        book = default_price_lists()
+        for supplier, length in (("קליל", 6000.0), ("אקסטל", 6500.0)):
+            edition = book.record([PriceRow("F", 40.0, "מטר", length_mm=length)],
+                                  supplier=supplier, source="x")
+            book.accept(edition.edition_id)
+        lengths, _sources = bar_lengths(book)
+        assert "F" not in lengths
+
+
+def test_a_changed_quantity_is_priced_again(shop):
+    pytest.importorskip("PySide6")
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication
+
+    from profileos.projects.materials import Proposal, ProposedLine
+    from profileos.quoting.suppliers import PriceBreak, PriceEntry, Supplier, register_supplier
+    from profileos.ui import money_dialogs
+
+    QApplication.instance() or QApplication([])
+    # A list with a quantity break: 10 handles or more are cheaper.
+    supplier = Supplier(id="shop:hw", name="פרזול", currency="ILS", entries=[
+        PriceEntry(code="H", price=25.0, unit="pc", metadata={"unit_known": True},
+                   breaks=[PriceBreak(min_quantity=10, price=20.0)])])
+    from profileos.core.registry import SUPPLIERS
+
+    SUPPLIERS.add(supplier.id, supplier, source="shop")
+    line = ProposedLine("hardware", "H", "ידית", 6, "pc")
+    from profileos.projects.materials import price_line
+
+    price_line(line)
+    assert line.unit_price == pytest.approx(25.0)
+    dialog = money_dialogs.MaterialOrderDialog(a_job(), Proposal(lines=[line]))
+    dialog.supplier.setCurrentText("פרזול")
+    dialog.table.item(0, 3).setText("12")
+    [chosen] = dialog.chosen()
+    assert chosen.quantity == 12 and chosen.unit_price == pytest.approx(20.0)
+    assert "20.00" in dialog.table.item(0, 4).text()
+
+
+def test_the_cutting_page_cuts_from_the_suppliers_bar(shop):
+    pytest.importorskip("PySide6")
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtCore import QCoreApplication
+    from PySide6.QtWidgets import QApplication
+
+    from profileos.quoting.pricelists import PriceRow, default_price_lists
+    from profileos.ui.main_window import MainWindow
+    from profileos.ui.theme import LIGHT
+
+    QApplication.instance() or QApplication([])
+    window = MainWindow(LIGHT)
+    window.page("Element").build_element()
+    codes = {cut.profile_id for build in window.session.builds for cut in build.cuts}
+    book = default_price_lists()
+    edition = book.record([PriceRow(code, 40.0, "מטר", length_mm=6500.0) for code in codes],
+                          supplier="קליל", source="x")
+    book.accept(edition.edition_id)
+    page = window.go_to_page("Nesting")
+    page.run()
+    report = window.session.nesting_report
+    assert report.results
+    assert {round(layout.stock_length) for result in report.results.values()
+            for layout in result.layouts} == {6500}
+    window.close()
+    window.deleteLater()
+    QCoreApplication.processEvents()

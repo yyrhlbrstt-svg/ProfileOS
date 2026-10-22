@@ -740,6 +740,8 @@ class MaterialOrderDialog(QDialog):
 
     def __init__(self, job: Any, proposal: Any, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        from dataclasses import replace
+
         from PySide6.QtCore import QDate
         from PySide6.QtWidgets import QDateEdit, QTableWidget, QTableWidgetItem
 
@@ -790,10 +792,16 @@ class MaterialOrderDialog(QDialog):
                 item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
                 self.table.setItem(row, column, item)
             quantity = QTableWidgetItem(f"{line.quantity:g}")
-            quantity.setToolTip(f"ב{line.unit_hebrew} — אפשר לשנות")
+            quantity.setToolTip(f"ב{line.unit_hebrew} — אפשר לשנות; המחיר יחושב מחדש")
             self.table.setItem(row, 3, quantity)
+            if line.unit == "bar":
+                self.table.item(row, 2).setToolTip(
+                    f"אורך המוט לפי {line.length_source}" if line.length_source
+                    else "אורך המוט לפי הגדרת המפעל — המחירון לא אומר אותו"
+                )
         self.table.resizeColumnsToContents()
-        self.table.itemChanged.connect(lambda _item: self._update_total())
+        self._lines = [replace(line) for line in proposal.lines]
+        self.table.itemChanged.connect(self._changed)
         layout.addWidget(self.table, 1)
         # One order is one supplier: lines another supplier's list prices are
         # left for that supplier's order, not sent to this one.
@@ -832,6 +840,29 @@ class MaterialOrderDialog(QDialog):
         self._match_supplier(self.supplier.currentText())
         self._update_total()
 
+    def _changed(self, item: Any) -> None:
+        """A quantity typed: price it again at that quantity (breaks, minimums)."""
+        if item.column() == 3:
+            quantity = self._quantity(item.row())
+            line = self._lines[item.row()]
+            if quantity is not None and quantity != line.quantity:
+                from ..projects.materials import price_line
+
+                line.quantity = quantity
+                price_line(line, mass_per_metre=self._weights())
+                cell = self.table.item(item.row(), 4)
+                self.table.blockSignals(True)
+                cell.setText(f"⁦{line.unit_price:,.2f} ₪⁩" if line.unit_price > 0 else "אין במחירון")
+                self.table.blockSignals(False)
+        self._update_total()
+
+    def _weights(self) -> Any:
+        if getattr(self, "_weights_cache", None) is None:
+            from ..quoting.pricelists import catalogue_weights
+
+            self._weights_cache = catalogue_weights()
+        return self._weights_cache
+
     def _match_supplier(self, supplier: str) -> None:
         wanted = " ".join(supplier.split()).casefold()
         for row, line in enumerate(self._proposal.lines):
@@ -863,7 +894,7 @@ class MaterialOrderDialog(QDialog):
         from dataclasses import replace
 
         lines = []
-        for row, line in enumerate(self._proposal.lines):
+        for row, line in enumerate(getattr(self, "_lines", self._proposal.lines)):
             tick = self.table.item(row, 0)
             quantity = self._quantity(row)
             if tick is None or tick.checkState() != Qt.CheckState.Checked or not quantity:

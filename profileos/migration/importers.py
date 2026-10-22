@@ -58,6 +58,7 @@ PRICE_ALIASES: dict[str, tuple[str, ...]] = {
     "supplier": ("ספק", "יצרן", "supplier", "vendor"),
     "currency": ("מטבע", "currency"),
     "finish": ("גוון", "צבע", "גימור", "קבוצת גוון", "finish", "colour", "color"),
+    "length": ("אורך מוט", "אורך", "אורך המוט", "length", "bar length", "stock length"),
 }
 
 
@@ -331,6 +332,7 @@ def plan_prices(path: Path) -> ImportPlan:
         plan.rows.append(Row(number, "create", code, "", {
             "code": code,
             "finish": finish,
+            "length": _value(row, plan.columns, "length"),
             "price": price,
             "description": _value(row, plan.columns, "description"),
             "unit": _value(row, plan.columns, "unit") or "pc",
