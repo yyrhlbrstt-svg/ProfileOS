@@ -97,7 +97,19 @@ def _install_requirements() -> bool:
     return done.returncode == 0
 
 
-def swap_in(staged: Path, root: Path | None = None, previous: Path | None = None) -> list[str]:
+def _holds(item: Path, protected: list[str]) -> bool:
+    """Whether moving ``item`` would move one of the shop's folders with it."""
+    for path in protected:
+        try:
+            Path(path).resolve().relative_to(item.resolve())
+            return True
+        except (ValueError, OSError):
+            continue
+    return False
+
+
+def swap_in(staged: Path, root: Path | None = None, previous: Path | None = None,
+            protected: list[str] | None = None) -> list[str]:
     """Move each item of ``staged`` into ``root``, the old one aside.
 
     Returns the names moved, in order, so a failure half-way can be undone
@@ -108,6 +120,9 @@ def swap_in(staged: Path, root: Path | None = None, previous: Path | None = None
     previous = PREVIOUS if previous is None else previous
     if (root / ".git").exists():
         raise OSError("תיקייה תחת git לא מתעדכנת בהחלפת קבצים")
+    for item in staged.iterdir():
+        if _holds(root / item.name, protected or []):
+            raise OSError(f"{item.name} מכיל את תיקיית הנתונים — לא יוזז")
     if previous.exists():
         shutil.rmtree(previous)
     previous.mkdir(parents=True)
@@ -216,7 +231,7 @@ def apply_pending() -> str:
         _write(RESULT, {"version": version, "outcome": "waiting", "reason": "backup"})
         return ""
     try:
-        moved = swap_in(staged)
+        moved = swap_in(staged, protected=list(ready.get("protect", []) or []))
     except OSError as exc:
         _say(f"  העדכון לא הותקן ({exc}) — ממשיכים בגרסה הקיימת.")
         _write(RESULT, {"version": version, "outcome": "failed", "reason": str(exc)})

@@ -405,3 +405,20 @@ def test_an_old_shortcut_starts_through_the_launcher(monkeypatch):
     assert calls and calls[0][-1].endswith("launcher.py")
     monkeypatch.setenv("PROFILEOS_LAUNCHER", "1")
     assert app._through_launcher() is None
+
+
+def test_data_inside_the_program_folder_is_never_moved(tmp_path, monkeypatch):
+    root = an_install(tmp_path, "2026.10.20.1")
+    data = root / "profileos" / "data" / "shop"
+    data.mkdir(parents=True)
+    monkeypatch.setattr(selfupdate, "protected_paths", lambda: [str(data)])
+    github = FakeGitHub("2026.10.22.5", a_build("2026.10.22.5"))
+    state = selfupdate.check_and_stage(fetch=github, root=root, check=lambda s: "")
+    assert not state.ready and "תיקיית הנתונים" in state.error
+    # And the launcher checks again, whatever ready.json says.
+    launcher = load_launcher()
+    staged = tmp_path / "staged"
+    (staged / "profileos").mkdir(parents=True)
+    with pytest.raises(OSError):
+        launcher.swap_in(staged, root, tmp_path / "previous", protected=[str(data)])
+    assert data.is_dir() and (root / "profileos" / "__init__.py").is_file()

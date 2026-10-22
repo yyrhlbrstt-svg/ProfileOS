@@ -230,6 +230,7 @@ def stage(release: Release, *, fetch: Fetcher | None = None, root: Path | None =
     """
     root = root or install_root()
     fetch = fetch or http_fetch
+    protected = guard_data(root)
     folder = updates_dir(root)
     folder.mkdir(parents=True, exist_ok=True)
     if not release.sha256 or len(release.sha256) != 64:
@@ -271,6 +272,8 @@ def stage(release: Release, *, fetch: Fetcher | None = None, root: Path | None =
         "commit": release.commit,
         "notes": release.notes,
         "staged_at": time.time(),
+        # The launcher checks these again before it moves anything.
+        "protect": protected,
     })
     return staged
 
@@ -342,6 +345,45 @@ def stage_git(release: Release, *, root: Path | None = None,
         "staged_at": time.time(),
     })
     return release.commit
+
+
+def protected_paths() -> list[str]:
+    """The shop's folders an update must never move: data, backups, mirror."""
+    try:
+        from .backup import default_backup_folder
+        from .config import get_settings
+
+        settings = get_settings()
+        paths = [settings.data_dir, default_backup_folder()]
+        if settings.backup_mirror:
+            paths.append(Path(settings.backup_mirror))
+        config_dir = getattr(settings, "config_dir", None)
+        if config_dir:
+            paths.append(Path(config_dir))
+    except Exception as exc:  # noqa: BLE001 - unknown means refuse, not guess
+        raise ProfileOSError(f"לא ניתן לדעת איפה הנתונים — העדכון לא יוכן ({exc})") from exc
+    return [str(Path(path).resolve()) for path in paths]
+
+
+def _inside(path: str, root: Path) -> bool:
+    try:
+        Path(path).resolve().relative_to(root.resolve())
+        return True
+    except ValueError:
+        return False
+
+
+def guard_data(root: Path) -> list[str]:
+    """Refuse to prepare an update that would move the shop's data with the program."""
+    protected = protected_paths()
+    inside = [path for path in protected if _inside(path, root)]
+    if inside:
+        raise ProfileOSError(
+            "תיקיית הנתונים או הגיבויים נמצאת בתוך תיקיית התוכנה ("
+            + ", ".join(inside) + "). כדי לא להזיז אותה, העדכון האוטומטי לא יבוצע — "
+            "העבירו את הנתונים לתיקייה אחרת במסך מערכת."
+        )
+    return protected
 
 
 def _differs(old: Path, new: Path) -> bool:
