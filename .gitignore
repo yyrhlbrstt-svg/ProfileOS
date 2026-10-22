@@ -9,3 +9,7 @@ dist/
 *.log
 .coverage
 htmlcov/
+
+# The program's own update staging, and the stamp a published build carries
+.updates/
+profileos/_release.json

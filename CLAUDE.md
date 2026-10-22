@@ -75,6 +75,15 @@ Do not `pkill -f pytest` — it kills the shell that runs it.
   Quick 3D): PBR finishes, shadows, orbit camera, leaves that open on their
   hinges; geometry comes from `profileos/viz3d/scene.py`
 - `tests/` — one file per area; UI tests drive real widgets offscreen
+- **Self-update.** `.github/workflows/release.yml` runs the whole suite on every
+  push; only a green run on the release branch publishes a version
+  (`tools/build_release.py`: zip + SHA-256 + Hebrew notes from
+  `profileos/data/whats_new.json`). The program (`profileos/core/selfupdate.py`)
+  downloads, verifies and test-starts it in the background; `launcher.py`
+  (stdlib only, run by `ProfileOS.bat`) puts it in place on the next start after
+  a backup, and rolls back a version that does not open. Add a Hebrew entry to
+  `whats_new.json` for every change the shop will notice. Tests that move
+  program files must use a temporary folder — never this tree.
 
 ## The team
 

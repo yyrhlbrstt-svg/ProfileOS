@@ -8235,6 +8235,86 @@ class CataloguePage(Page):
 class SystemPage(Page):
     """Updates, licence, brand, plugins and the capability comparison."""
 
+    # -- the program's own updates --------------------------------------- #
+    def _refresh_program_update(self) -> None:
+        from ..core import selfupdate
+
+        state = selfupdate.status()
+        current = state.installed
+        if current == "dev":
+            commit = selfupdate.installed().get("commit", "")
+            self.program_version.setText(
+                f"גרסה לפי git: ⁦{commit}⁩" if commit else "גרסת פיתוח (לא גרסה שפורסמה)"
+            )
+        else:
+            self.program_version.setText(f"גרסה מותקנת: ⁦{current}⁩")
+        text = state.describe()
+        if state.checked_at:
+            from datetime import datetime
+
+            text += f" · נבדק ⁦{datetime.fromtimestamp(state.checked_at):%d/%m %H:%M}⁩"
+        last = state.last or {}
+        if last.get("outcome") == "rolled_back":
+            text += f"\nגרסה {last.get('version')} לא נפתחה והוחזרה הגרסה הקודמת — היא לא תנוסה שוב."
+        self.program_state.setText(text)
+        self.program_restart.setEnabled(bool(state.ready))
+        self.program_restart.setToolTip(
+            "" if selfupdate.launched_by_launcher()
+            else "התוכנה לא הופעלה דרך ProfileOS.bat — סגרו ופתחו אותה מחדש כדי להתקין"
+        )
+        self.program_check.setEnabled(state.managed)
+
+    def check_program_update(self) -> None:
+        from ..core import selfupdate
+        from .background import run_in_background
+
+        if getattr(self, "_checking_program", False):
+            return
+        self._checking_program = True
+        self.program_check.setEnabled(False)
+        self.program_state.setText("בודק אם יש גרסה חדשה…")
+
+        def done(_state: Any, error: BaseException | None) -> None:
+            self._checking_program = False
+            if error is not None:
+                self.report(ProfileOSError(str(error)), "בדיקת העדכון נכשלה")
+            self._refresh_program_update()
+
+        run_in_background(selfupdate.check_and_stage, done)
+
+    def restart_for_update(self) -> None:
+        from ..core import selfupdate
+
+        if not selfupdate.status().ready:
+            return
+        if not selfupdate.launched_by_launcher():
+            QMessageBox.information(
+                self, "התקנת העדכון",
+                "העדכון מוכן ויותקן כשהתוכנה תיפתח מחדש דרך הסמל שלה (ProfileOS.bat).\n"
+                "סגרו את התוכנה ופתחו אותה שוב.",
+            )
+            return
+        window = self.window()
+        if hasattr(window, "restart_for_update"):
+            window.restart_for_update()
+
+    def show_whats_new(self, since: str = "") -> None:
+        from ..core import selfupdate
+
+        entries = selfupdate.whats_new(since)[:6]
+        if not entries:
+            QMessageBox.information(self, "מה חדש", "אין חידושים מאז הגרסה הקודמת.")
+            return
+        lines = []
+        for entry in entries:
+            lines.append(f"{entry.get('title', '')}")
+            lines += [f"  • {item}" for item in entry.get("items", [])]
+            lines.append("")
+        box = QMessageBox(self)
+        box.setWindowTitle("מה חדש בתוכנה")
+        box.setText("\n".join(lines).strip())
+        box.exec()
+
     title = "System"
     hebrew = "מערכת"
     subtitle = "עדכונים, רישוי, תוספים והיקף התוכנה"
@@ -8353,6 +8433,39 @@ class SystemPage(Page):
         layout = QVBoxLayout(page)
         layout.setContentsMargins(0, METRICS.space(3), 0, 0)
         layout.setSpacing(METRICS.space(3))
+
+        # -- the program itself ------------------------------------------- #
+        program = Card("עדכון התוכנה")
+        self.program_version = QLabel("")
+        self.program_version.setObjectName("HomeNext")
+        self.program_state = QLabel("")
+        self.program_state.setObjectName("Hint")
+        self.program_state.setWordWrap(True)
+        program.add(self.program_version)
+        program.add(self.program_state)
+        buttons = QHBoxLayout()
+        buttons.setSpacing(METRICS.space(2))
+        self.program_check = QPushButton("בדיקה עכשיו")
+        self.program_check.clicked.connect(self.check_program_update)
+        self.program_restart = QPushButton("התקנה והפעלה מחדש")
+        self.program_restart.setObjectName("Primary")
+        self.program_restart.clicked.connect(self.restart_for_update)
+        news = QPushButton("מה חדש")
+        news.clicked.connect(lambda: self.show_whats_new())
+        for button in (self.program_restart, self.program_check, news):
+            buttons.addWidget(button)
+        buttons.addStretch(1)
+        program.add_layout(buttons)
+        explain = QLabel(
+            "כל שיפור עובר את כל הבדיקות לפני שהוא מתפרסם. התוכנה מורידה גרסה "
+            "חדשה ברקע, מוודאת שהיא שלמה ושהיא נפתחת, ומתקינה אותה בהפעלה הבאה — "
+            "אחרי גיבוי של הנתונים. אם הגרסה החדשה לא נפתחת, חוזרים לקודמת מעצמם."
+        )
+        explain.setObjectName("Hint")
+        explain.setWordWrap(True)
+        program.add(explain)
+        layout.addWidget(program)
+        self._refresh_program_update()
 
         note = QLabel(
             "עדכוני תוכן הם מניפסטים חתומים. כל חבילה מורדת, החתימה שלה "

@@ -1,12 +1,28 @@
 @echo off
-cd /d %USERPROFILE%\Desktop
-echo Checking for updates...
-curl -L -o profileos_update.zip https://github.com/yyrhlbrstt-svg/ProfileOS/archive/refs/heads/claude/aluminum-cad-cam-system-dxfni8.zip
-if exist profileos_update.zip (
-    if exist ProfileOS-claude-aluminum-cad-cam-system-dxfni8 rmdir /s /q ProfileOS-claude-aluminum-cad-cam-system-dxfni8
-    tar -xf profileos_update.zip
-    del profileos_update.zip
+chcp 65001 >nul
+rem First installation on a new computer, in one double-click: downloads the
+rem latest *published* version (one that passed every test), installs it on
+rem the Desktop and starts it. On a computer that already has ProfileOS it only
+rem starts it — the program then keeps itself up to date, and nothing here
+rem ever deletes a folder.
+
+set TARGET=%USERPROFILE%\Desktop\ProfileOS
+if exist "%TARGET%\launcher.py" goto run
+
+echo   מוריד את הגרסה האחרונה של ProfileOS...
+mkdir "%TARGET%" 2>nul
+powershell -NoProfile -Command ^
+  "$r = Invoke-RestMethod 'https://api.github.com/repos/yyrhlbrstt-svg/ProfileOS/releases/latest';" ^
+  "$a = $r.assets | Where-Object { $_.name -like 'profileos-*.zip' } | Select-Object -First 1;" ^
+  "Invoke-WebRequest $a.browser_download_url -OutFile \"$env:TEMP\profileos.zip\";" ^
+  "Expand-Archive \"$env:TEMP\profileos.zip\" -DestinationPath '%TARGET%' -Force"
+if not exist "%TARGET%\launcher.py" (
+    echo   ההורדה נכשלה. בדקו את חיבור האינטרנט ונסו שוב.
+    pause
+    exit /b 1
 )
-cd ProfileOS-claude-aluminum-cad-cam-system-dxfni8
-pip install -e . --quiet
-python -m profileos.cli ui
+call "%TARGET%\install\התקנה.bat"
+
+:run
+cd /d "%TARGET%"
+call ProfileOS.bat

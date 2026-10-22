@@ -6,8 +6,12 @@ cd /d "%~dp0"
 rem The window stays open on purpose. A launcher that hides its own console
 rem also hides the one line that says why nothing happened, and a shop with a
 rem silent icon has no way to tell us what went wrong.
+rem
+rem launcher.py puts a downloaded, tested update in place first (after a
+rem backup), then starts the program, and puts the old version back by itself
+rem if the new one does not open. This file stays the same between versions.
 
-python -c "from profileos.ui.app import run; raise SystemExit(run())"
+python launcher.py
 if errorlevel 1 (
     color 0C
     echo.
@@ -16,3 +20,4 @@ if errorlevel 1 (
     echo.
     pause
 )
+exit /b

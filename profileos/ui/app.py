@@ -13,8 +13,28 @@ from ..core.logging_setup import configure_logging, get_logger
 _log = get_logger("ui.app")
 
 
+def _through_launcher() -> int | None:
+    """Started without the launcher (an old shortcut, ``profileos ui``)?
+    Start through it instead, so a ready update is put in place first and a
+    version that does not open is rolled back. None when already under it."""
+    import os
+    import subprocess
+
+    from ..core.selfupdate import install_root, launched_by_launcher
+
+    launcher = install_root() / "launcher.py"
+    if launched_by_launcher() or os.environ.get("PROFILEOS_NO_LAUNCHER") or not launcher.is_file():
+        return None
+    # This process only waits: it holds no file of the program open, so the
+    # launcher may put a new version in place underneath it.
+    return subprocess.call([sys.executable, str(launcher)], cwd=launcher.parent)
+
+
 def run(argv: Sequence[str] | None = None, *, theme: str | None = None) -> int:
     """Start the desktop application and return its exit code."""
+    delegated = _through_launcher()
+    if delegated is not None:
+        return delegated
     from PySide6.QtCore import Qt
     from PySide6.QtGui import QFont
     from PySide6.QtWidgets import QApplication
@@ -106,9 +126,18 @@ def run(argv: Sequence[str] | None = None, *, theme: str | None = None) -> int:
     window.auto_backup = True
     window.autosave_enabled = True
     window.watch_enabled = True
+    window.self_update_enabled = True
     from PySide6.QtCore import QTimer
 
     QTimer.singleShot(20_000, window.watch_suppliers)
+    # The program's own updates: shortly after it opens, then every few hours.
+    from ..core.selfupdate import CHECK_EVERY_S
+
+    QTimer.singleShot(60_000, window.check_for_update)
+    update_timer = QTimer(window)
+    update_timer.setInterval(CHECK_EVERY_S * 1000)
+    update_timer.timeout.connect(window.check_for_update)
+    update_timer.start()
     _install_error_handler(window)
     if session is not None:
         window.set_session_owner(session)
@@ -119,6 +148,12 @@ def run(argv: Sequence[str] | None = None, *, theme: str | None = None) -> int:
 
     backup_if_due()
     window._update_safety()
+    # The window is open: this version works — the launcher's proof, so it
+    # does not roll back an update that started fine.
+    from ..core.selfupdate import mark_started
+
+    mark_started()
+    QTimer.singleShot(1500, window.announce_update)
     window.offer_draft_recovery()
     _log.info("Desktop application started")
     return application.exec()

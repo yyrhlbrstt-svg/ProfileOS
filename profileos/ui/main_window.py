@@ -704,6 +704,71 @@ class MainWindow(QMainWindow):
 
         run_in_background(lambda: check_all(only_due=True), done)
 
+    #: Off for windows built by tests and scripts: only the real program goes
+    #: to look for a newer version of itself.
+    self_update_enabled = False
+
+    def check_for_update(self) -> None:
+        """Look for a newer version, download and check it, off the screen's thread."""
+        if not self.self_update_enabled or getattr(self, "_updating", False):
+            return
+        from ..core import selfupdate
+        from .background import run_in_background
+
+        self._updating = True
+
+        def done(state: Any, error: BaseException | None) -> None:
+            self._updating = False
+            if error is None and state is not None and state.ready:
+                self.statusBar().showMessage(
+                    f"גרסה חדשה ({state.ready}) הורדה ונבדקה — תותקן בהפעלה הבאה. "
+                    "מערכת ← עדכונים ← ״התקנה והפעלה מחדש״ כדי להתקין עכשיו.", 30000,
+                )
+            system = next((p for p in self.pages if p.title == "System"), None)
+            if system is not None and hasattr(system, "_refresh_program_update"):
+                system._refresh_program_update()
+
+        run_in_background(selfupdate.check_and_stage, done)
+
+    def restart_for_update(self) -> None:
+        """Close as on any close (saves, backup), then ask the launcher to
+        put the update in place and start again."""
+        from PySide6.QtWidgets import QApplication
+
+        from ..core.selfupdate import RESTART_CODE
+
+        application = QApplication.instance()
+        application.setQuitOnLastWindowClosed(False)
+        if self.close():
+            application.exit(RESTART_CODE)
+        else:
+            application.setQuitOnLastWindowClosed(True)
+
+    def announce_update(self) -> None:
+        """Once, after the launcher acted: what is new, or why the old version is back."""
+        from PySide6.QtWidgets import QMessageBox
+
+        from ..core import selfupdate
+
+        result = selfupdate.unannounced()
+        if result is None:
+            return
+        if result.get("outcome") == "rolled_back":
+            QMessageBox.warning(
+                self, "העדכון בוטל",
+                f"גרסה {result.get('version')} לא נפתחה, והתוכנה חזרה לגרסה הקודמת. "
+                "הנתונים לא נפגעו. הגרסה הזאת לא תנוסה שוב; כשתתפרסם גרסה מתוקנת "
+                "היא תותקן מעצמה.",
+            )
+            return
+        system = next((p for p in self.pages if p.title == "System"), None)
+        if system is not None and hasattr(system, "show_whats_new"):
+            from_version = str(result.get("from", "") or "")
+            parts = from_version.split(".")
+            since = f"{parts[0]}-{parts[1]}-{parts[2]}" if len(parts) >= 3 and parts[0].isdigit() else ""
+            self.statusBar().showMessage(f"התוכנה עודכנה לגרסה {result.get('version')}", 15000)
+            system.show_whats_new(since)
+
     # -- data safety ---------------------------------------------------------- #
     #: Off for windows built by tests and scripts; the application entry point
     #: turns it on, so only the real program writes the shop's files on its own.
