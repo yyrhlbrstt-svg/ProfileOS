@@ -768,7 +768,7 @@ class MainWindow(QMainWindow):
             return
         if result.get("outcome") == "failed":
             reason = str(result.get("reason", ""))
-            said = selfupdate.FAILED_REASONS.get(reason, f"העדכון לא הותקן: {reason}")
+            said = selfupdate.FAILED_REASONS.get(reason, f"העדכון לא הותקן: \u2066{reason}\u2069")
             if reason in ("rollback", "not_the_update"):
                 QMessageBox.warning(self, "העדכון לא הותקן", f"{said}. הנתונים לא נפגעו.")
             else:
@@ -805,7 +805,7 @@ class MainWindow(QMainWindow):
             asked = 0.0
         if _time.time() - asked < 7 * 24 * 3600:
             return
-        names = "، ".join(f"⁦{path.name}⁩" for path in scripts)
+        names = ", ".join(f"⁦{path.name}⁩" for path in scripts)
         box = QMessageBox(self)
         box.setIcon(QMessageBox.Icon.Question)
         box.setWindowTitle("קיצור דרך ישן על שולחן העבודה")

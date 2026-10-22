@@ -354,11 +354,15 @@ def documents_dir() -> Path:
     update replaces and the backup does not cover. A job card saved there
     would be gone with the next version.
     """
+    from PySide6.QtCore import QStandardPaths
+
+    # Windows' own answer — it follows OneDrive's redirection of Documents.
+    found = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.DocumentsLocation)
+    if found and Path(found).is_dir():
+        return Path(found)
     home = Path.home()
-    for candidate in (home / "Documents", home / "OneDrive" / "Documents", home / "מסמכים"):
-        if candidate.is_dir():
-            return candidate
-    return home
+    documents = home / "Documents"
+    return documents if documents.is_dir() else home
 
 
 def suggested_path(name: str) -> str:

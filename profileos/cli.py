@@ -1571,10 +1571,17 @@ def serve(
     except ImportError:
         _fail("The API needs FastAPI and uvicorn (pip install 'profileos[api]').")
 
-    # While the phone terminal runs, no update is put in place under it.
-    from .core.selfupdate import hold_instance
+    # While the phone terminal runs, no update is put in place under it —
+    # and it does not start in the middle of one.
+    import time as _time
+
+    from .core.selfupdate import hold_instance, installing
 
     hold_instance()
+    if installing():
+        console.print("עדכון של ProfileOS מותקן כרגע — הטרמינל יעלה כשיסתיים…")
+        while installing():
+            _time.sleep(5)
     console.print(_banner())
     console.print(f"[green]Serving[/] on http://{host}:{port}  (docs at /docs)")
     uvicorn.run("profileos.api.server:app", host=host, port=port, reload=reload)

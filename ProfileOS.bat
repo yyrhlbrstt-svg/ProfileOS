@@ -1,4 +1,60 @@
 @echo off
+goto start
+:: An older copy of this file may be replaced by this one while it runs (an
+:: update of a checkout). cmd then reads on from where the old copy ended:
+:: whatever offset that is, it lands in the empty lines below and reaches
+:: "exit /b" — never a stray half-command.
+::                                                                                                  
+::                                                                                                  
+::                                                                                                  
+::                                                                                                  
+::                                                                                                  
+::                                                                                                  
+::                                                                                                  
+::                                                                                                  
+::                                                                                                  
+::                                                                                                  
+::                                                                                                  
+::                                                                                                  
+::                                                                                                  
+::                                                                                                  
+::                                                                                                  
+::                                                                                                  
+::                                                                                                  
+::                                                                                                  
+::                                                                                                  
+::                                                                                                  
+::                                                                                                  
+::                                                                                                  
+::                                                                                                  
+::                                                                                                  
+::                                                                                                  
+::                                                                                                  
+::                                                                                                  
+::                                                                                                  
+::                                                                                                  
+::                                                                                                  
+::                                                                                                  
+::                                                                                                  
+::                                                                                                  
+::                                                                                                  
+::                                                                                                  
+::                                                                                                  
+::                                                                                                  
+::                                                                                                  
+::                                                                                                  
+::                                                                                                  
+::                                                                                                  
+::                                                                                                  
+::                                                                                                  
+::                                                                                                  
+::                                                                                                  
+::                                                                                                  
+::                                                                                                  
+::                                                                                                  
+exit /b
+
+:start
 chcp 65001 >nul
 title ProfileOS
 cd /d "%~dp0"

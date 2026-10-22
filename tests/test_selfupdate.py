@@ -744,10 +744,122 @@ class TestTheOldDesktopShortcut:
         assert lines[:2] == ["@echo off", "goto start"] and ":start" in lines
 
 
-def test_files_are_saved_in_documents_not_in_the_program(monkeypatch, tmp_path):
+def test_files_are_saved_in_documents_not_in_the_program():
+    pytest.importorskip("PySide6")
     from profileos.ui import widgets
 
-    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
-    assert widgets.documents_dir() == tmp_path
-    (tmp_path / "Documents").mkdir()
-    assert widgets.suggested_path("job-card.html") == str(tmp_path / "Documents" / "job-card.html")
+    documents = widgets.documents_dir()
+    assert documents.is_dir()
+    assert not str(documents.resolve()).startswith(str(REPO.resolve()))
+    assert widgets.suggested_path("job-card.html") == str(documents / "job-card.html")
+
+
+class TestARollbackIsAlwaysFinished:
+    staged = TestTheLauncher.staged
+    point = TestTheLauncher.point
+
+    def test_a_rollback_stopped_by_a_locked_file_is_finished_at_the_next_start(
+            self, tmp_path, monkeypatch):
+        root, launcher = self.staged(tmp_path, monkeypatch)
+        assert launcher.apply_pending() == "2026.10.22.5"
+        real = os.replace
+        calls = {"n": 0}
+
+        def locked(source, target):
+            calls["n"] += not str(source).endswith(".tmp")
+            if calls["n"] == 3:
+                raise PermissionError("locked")
+            return real(source, target)
+
+        monkeypatch.setattr(launcher.os, "replace", locked)
+        assert launcher._roll_back("2026.10.22.5") is False
+        monkeypatch.setattr(launcher.os, "replace", real)
+        # Half-way: the program must not be started on it.
+        started: list[str] = []
+        monkeypatch.setattr(launcher, "run_program", lambda: started.append("x") or 0)
+        assert launcher._cannot_start()
+        # Next start: finished, whole, and then started.
+        assert launcher.start_once() == 0 and started == ["x"]
+        assert selfupdate.installed(root)["version"] == "2026.10.20.1"
+        assert (root / "launcher.py").read_text() == "# old launcher\n"
+        assert (root / "requirements.txt").is_file()
+
+    def test_a_rollback_without_the_lock_waits_for_the_next_start(self, tmp_path, monkeypatch):
+        root, launcher = self.staged(tmp_path, monkeypatch)
+        assert launcher.apply_pending() == "2026.10.22.5"
+        monkeypatch.setattr(launcher, "take_lock", lambda *a, **k: None)
+        assert launcher._roll_back("2026.10.22.5") is False
+        assert selfupdate.installed(root)["version"] == "2026.10.22.5"   # untouched
+        monkeypatch.undo()
+        self.point(launcher, root, monkeypatch)
+        launcher.apply_pending()
+        assert selfupdate.installed(root)["version"] == "2026.10.20.1"
+
+    def test_no_start_while_another_window_installs(self, tmp_path, monkeypatch):
+        root, launcher = self.staged(tmp_path, monkeypatch)
+        other = a_live_process()
+        started: list[str] = []
+        try:
+            (root / ".updates" / "launcher.lock").write_text(str(other.pid))
+            monkeypatch.setattr(launcher, "LOCK_WAIT_S", 0.2)
+            monkeypatch.setattr(launcher, "run_program", lambda: started.append("x") or 0)
+            assert launcher.start_once() == 1 and not started
+            assert selfupdate.installing(root)
+        finally:
+            other.kill()
+            other.wait()
+        assert not selfupdate.installing(root)
+
+    def test_no_start_when_recovery_itself_fails(self, tmp_path, monkeypatch):
+        root, launcher = self.staged(tmp_path, monkeypatch)
+        real = os.replace
+        calls = {"n": 0}
+
+        def cut(source, target):
+            calls["n"] += not str(source).endswith(".tmp")
+            if calls["n"] == 4:
+                raise SystemExit("power cut")
+            return real(source, target)
+
+        monkeypatch.setattr(launcher.os, "replace", cut)
+        with pytest.raises(SystemExit):
+            launcher._apply_pending()
+
+        def still_locked(source, target):
+            if not str(source).endswith(".tmp"):
+                raise PermissionError("locked")
+            return real(source, target)
+
+        monkeypatch.setattr(launcher.os, "replace", still_locked)
+        started: list[str] = []
+        monkeypatch.setattr(launcher, "run_program", lambda: started.append("x") or 0)
+        assert launcher.start_once() == 1 and not started
+        monkeypatch.setattr(launcher.os, "replace", real)
+        assert launcher.start_once() == 0 and started == ["x"]
+        assert selfupdate.installed(root)["version"] == "2026.10.20.1"
+
+
+def test_a_component_too_old_counts_as_missing(tmp_path):
+    (tmp_path / "requirements.txt").write_text("pydantic>=999\npydantic>=1\n")
+    assert selfupdate.missing_components(tmp_path) == ["pydantic>=999"]
+
+
+def test_a_slow_start_check_is_tried_again_not_written_off(tmp_path, monkeypatch):
+    staged = tmp_path / "staged"
+    (staged / "profileos").mkdir(parents=True)
+
+    def slow(args, **kw):
+        raise subprocess.TimeoutExpired(args, 600)
+
+    monkeypatch.setattr(selfupdate.subprocess, "run", slow)
+    with pytest.raises(ProfileOSError, match="ננסה שוב"):
+        selfupdate.self_check(staged)
+
+
+def test_profileos_bat_replaced_while_running_reads_on_into_exit():
+    new = (REPO / "ProfileOS.bat").read_bytes().replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
+    for old_length in (518, 532, 1100, 2000):      # the earlier copies, LF and CRLF
+        rest = new[old_length:]
+        assert set(rest[:rest.index(b"\r\nexit /b\r\n")]) <= set(b": \r\n"), old_length
+    text = new.decode("utf-8")
+    assert "python launcher.py" in text and text.index(":start") < text.index("python launcher.py")

@@ -26,6 +26,8 @@ _log = get_logger("insights")
 QUOTE_STALE_DAYS = 7
 #: How long a won job may wait before it reaches the floor.
 WON_STALE_DAYS = 14
+#: Days after a job is won before a missing deposit is worth a word.
+DEPOSIT_GRACE_DAYS = 3
 #: How long a job may sit in production before somebody asks why.
 PRODUCTION_STALE_DAYS = 30
 #: Days without a backup before it is worth a line on the home page.
@@ -535,6 +537,33 @@ def _accounts(context: dict[str, Any], today: date) -> list[Insight]:
             "Projects", "owing:" + ",".join(
                 sorted(f"{job.job_id}={account.uncovered:.0f}" for job, account in owing)
             ),
+        ))
+
+    # Work under way with not a shekel in hand and not a cheque promised:
+    # a customer who changes their mind leaves the shop with the material.
+    unpaid = []
+    for job in jobs:
+        if job.status not in (JobStatus.WON, JobStatus.IN_PRODUCTION):
+            continue
+        account = job_account(job, cheques)
+        if account.total_gross <= 0 or account.received + account.in_cheques > 0.5:
+            continue
+        ordered = job.material_ordered
+        settled_days = _days_since(_status_since(job), today) or 0
+        if ordered or job.status is JobStatus.IN_PRODUCTION or settled_days >= DEPOSIT_GRACE_DAYS:
+            unpaid.append((job, account, ordered))
+    if unpaid:
+        exposed = [entry for entry in unpaid if entry[2]]
+        found.append(Insight(
+            "danger" if exposed else "warning",
+            _count(len(unpaid), "פרויקט אחד בעבודה בלי מקדמה", "פרויקטים בעבודה בלי מקדמה"),
+            "לא התקבל תשלום ולא צ׳ק: "
+            + _names(unpaid, lambda entry: f"{entry[0].customer_name or entry[0].name} "
+                     f"⁦{entry[1].total_gross:,.0f} ₪⁩"
+                     + (" — חומר כבר הוזמן" if entry[2] else ""))
+            + ". מקדמה לפני הזמנת חומר שומרת עליכם אם הלקוח מתחרט. "
+            "תשלום שהתקבל נרשם בפרויקט ← חשבון הפרויקט ← רישום תשלום.",
+            "Projects", "deposit:" + ",".join(sorted(job.job_id for job, _a, _o in unpaid)),
         ))
 
     pending = [

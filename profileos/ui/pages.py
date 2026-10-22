@@ -2151,7 +2151,7 @@ class ProjectsPage(Page):
         layout.addLayout(bar)
 
         self.customers_table = DataTable(
-            ["קוד", "שם", "טלפון", "עיר", "כתובת", "איש קשר", "דוא\"ל", "פרויקטים"],
+            ["קוד", "שם", "טלפון", "עיר", "כתובת", "איש קשר", "דוא\"ל", "פרויקטים", "יתרה"],
             empty_text="עדיין אין לקוחות — לחץ ״לקוח חדש״",
         )
         self.customers_table.doubleClicked.connect(lambda _index: self.edit_customer())
@@ -2213,6 +2213,28 @@ class ProjectsPage(Page):
         self.refresh()
         self.status(f"עודכנו פרטי {updated.name}")
 
+    def _owed_by_customer(self) -> dict[str, float]:
+        """What each customer still owes across their jobs, not even covered
+        by a cheque — the figure to have in front of you when they call.
+        Worked out once per refresh, not on every key typed in the search."""
+        cached = getattr(self, "_owed_cache", None)
+        if cached is not None:
+            return cached
+        from ..projects.account import job_account
+
+        owed: dict[str, float] = {}
+        jobs = [job for job in getattr(self, "_all_jobs", [])
+                if job.customer_id and job.status.value in ("won", "in_production", "installed")]
+        cheques = self._cheques_for_accounts() if jobs else []
+        for job in jobs:
+            try:
+                due = job_account(job, cheques).uncovered
+            except Exception:  # noqa: BLE001 - one odd job never hides the list
+                continue
+            owed[job.customer_id] = owed.get(job.customer_id, 0.0) + due
+        self._owed_cache = owed
+        return owed
+
     def show_customers(self) -> None:
         """The customer list, filtered by whatever is typed in its search box."""
         from ..projects.contacts import search_customers
@@ -2230,6 +2252,7 @@ class ProjectsPage(Page):
         for job in getattr(self, "_all_jobs", []):
             if job.customer_id:
                 jobs_per_customer[job.customer_id] = jobs_per_customer.get(job.customer_id, 0) + 1
+        owed = self._owed_by_customer()
         self._shown_customers = shown
         self.customers_table._empty_text = (
             f"אין לקוח התואם ״{needle.strip()}״" if needle.strip()
@@ -2240,9 +2263,10 @@ class ProjectsPage(Page):
                 c.customer_id, c.name, f"⁦{c.phone}⁩" if c.phone else "",
                 c.city, c.address, c.contact, c.email,
                 str(jobs_per_customer.get(c.customer_id, 0) or ""),
+                f"⁦{owed[c.customer_id]:,.0f} ₪⁩" if owed.get(c.customer_id, 0) > 0.5 else "",
             ]
             for c in shown
-        ], numeric_columns=(7,))
+        ], numeric_columns=(7, 8))
 
     # -- refresh ------------------------------------------------------------- #
     def refresh(self) -> None:
@@ -2252,6 +2276,7 @@ class ProjectsPage(Page):
         before = self._selected_job() if hasattr(self, "_jobs") else None
         self._jobs = store.all()
         self._all_jobs = list(self._jobs)
+        self._owed_cache = None
         needle = self.search.text().strip().lower()
         if needle:
             # A customer on the phone says their number before their name:

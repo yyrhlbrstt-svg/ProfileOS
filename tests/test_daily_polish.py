@@ -184,3 +184,32 @@ def test_reprinting_a_won_jobs_quote_keeps_the_agreed_price(shop):
     window.close()
     window.deleteLater()
     QCoreApplication.processEvents()
+
+
+
+def test_the_customer_list_shows_what_each_one_still_owes(shop):
+    pytest.importorskip("PySide6")
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtCore import QCoreApplication, Qt
+    from PySide6.QtWidgets import QApplication
+
+    from profileos.projects import Payment, default_customers, default_store
+    from profileos.ui.main_window import MainWindow
+    from profileos.ui.theme import LIGHT
+
+    QApplication.instance() or QApplication([])
+    customer = default_customers().add("משפחת לוי", phone="052-8841200")
+    job = JobFile(job_id="J-2026-0001", name="חלונות", customer_id=customer.customer_id,
+                  customer_name=customer.name, status=JobStatus.INSTALLED, quote_total=10_000)
+    job.payments = [Payment(amount=9_000)]
+    default_store().save(job)
+    window = MainWindow(LIGHT)
+    page = window.go_to_page("Projects")
+    page.refresh()
+    table = page.customers_table
+    headers = [table.model().headerData(i, Qt.Orientation.Horizontal) for i in range(table.model().columnCount())]
+    column = headers.index("יתרה")
+    assert table.model().index(0, column).data() == "⁦2,800 ₪⁩"
+    window.close()
+    window.deleteLater()
+    QCoreApplication.processEvents()

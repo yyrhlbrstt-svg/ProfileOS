@@ -184,3 +184,39 @@ def test_a_certificate_about_to_lapse_is_flagged_a_month_ahead(shop):
     assert "אישור ניכוי מס במקור פג בעוד ⁦20⁩ ימים" in titles
     assert "אישור ניהול ספרים פג" in titles
     assert any(i.severity == "danger" and "ניהול ספרים" in i.title for i in found)
+
+
+def _deposit(found):
+    return [i for i in found if i.key.startswith("deposit:")]
+
+
+def test_work_under_way_without_a_deposit_is_found(shop):
+    from profileos.projects.model import MaterialOrder
+
+    just_won = _job("J-20", JobStatus.WON, since=TODAY - timedelta(days=1),
+                    quote_total=20_000, customer_name="לוי")
+    assert not _deposit(_scan(jobs=[just_won]))             # a day's grace
+    waited = _job("J-21", JobStatus.WON, since=TODAY - timedelta(days=4),
+                  quote_total=20_000, customer_name="כהן")
+    found = _deposit(_scan(jobs=[waited]))
+    assert found and found[0].severity == "warning" and "⁦23,600 ₪⁩" in found[0].detail
+    # Material ordered and nothing in hand: money has gone out.
+    just_won.material_orders = [MaterialOrder(supplier="קליל")]
+    found = _deposit(_scan(jobs=[just_won]))
+    assert found[0].severity == "danger" and "חומר כבר הוזמן" in found[0].detail
+
+
+def test_a_deposit_or_a_cheque_in_the_drawer_is_enough(shop):
+    from profileos.projects import Payment
+
+    paid = _job("J-22", JobStatus.IN_PRODUCTION, since=TODAY - timedelta(days=9),
+                quote_total=20_000)
+    paid.payments = [Payment(amount=5_000)]
+    promised = _job("J-23", JobStatus.IN_PRODUCTION, since=TODAY - timedelta(days=9),
+                    quote_total=20_000)
+    book = ChequeBook()
+    book.add(Cheque(number="1001", bank="12", amount=5_000, customer="כהן",
+                    due=TODAY + timedelta(days=30), job_id="J-23"))
+    assert not _deposit(_scan(jobs=[paid, promised], cheques=book))
+    nothing = _job("J-24", JobStatus.IN_PRODUCTION, since=TODAY, quote_total=20_000)
+    assert _deposit(_scan(jobs=[nothing], cheques=book))

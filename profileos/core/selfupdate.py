@@ -28,6 +28,7 @@ import hashlib
 import json
 import os
 import shutil
+import site
 import subprocess
 import sys
 import tempfile
@@ -211,9 +212,28 @@ def _requirement_name(line: str) -> str:
     return line.strip()
 
 
+def _satisfied(line: str, installed_version: str) -> bool:
+    """Whether the installed version meets the line's ``>=`` and the like.
+    Unknown how to tell → taken as met (pip decides at install)."""
+    try:
+        from packaging.requirements import Requirement
+    except ImportError:
+        try:
+            from pip._vendor.packaging.requirements import Requirement  # type: ignore
+        except ImportError:
+            return True
+    try:
+        requirement = Requirement(line)
+        if requirement.marker is not None and not requirement.marker.evaluate():
+            return True
+        return requirement.specifier.contains(installed_version, prereleases=True)
+    except Exception:  # noqa: BLE001 - an odd line is pip's to judge
+        return True
+
+
 def missing_components(staged: Path) -> list[str]:
-    """The lines of the new version's ``requirements.txt`` naming a component
-    this computer does not have at all."""
+    """The lines of the new version's ``requirements.txt`` this computer does
+    not meet: a component it lacks, or has in a version too old."""
     from importlib import metadata
 
     try:
@@ -221,14 +241,18 @@ def missing_components(staged: Path) -> list[str]:
     except OSError:
         return []
     missing = []
-    for line in lines:
+    for raw in lines:
+        line = raw.split("#", 1)[0].strip()
         name = _requirement_name(line)
         if not name:
             continue
         try:
-            metadata.version(name)
+            have = metadata.version(name)
         except metadata.PackageNotFoundError:
-            missing.append(line.split("#", 1)[0].strip())
+            missing.append(line)
+            continue
+        if not _satisfied(line, have):
+            missing.append(line)
     return missing
 
 
@@ -275,6 +299,8 @@ def self_check(staged: Path) -> str:
             "PROFILEOS_DATA_DIR": str(Path(scratch) / "data"),
             "HOME": str(Path(scratch) / "home"),
             "USERPROFILE": str(Path(scratch) / "home"),
+            # Components installed with pip --user stay visible.
+            "PYTHONUSERBASE": site.getuserbase(),
             "QT_QPA_PLATFORM": "offscreen",
         }
         # os._exit: what is being checked is that the window builds; Qt's
@@ -289,9 +315,13 @@ def self_check(staged: Path) -> str:
         )
         try:
             done = subprocess.run([sys.executable, "-c", code], cwd=staged, env=env,
-                                  capture_output=True, text=True, timeout=300)
+                                  capture_output=True, text=True, timeout=600)
         except (OSError, subprocess.TimeoutExpired) as exc:
-            return str(exc)
+            # A slow computer (an antivirus scanning the new files) is not a
+            # broken version: try again later, do not write it off.
+            raise ProfileOSError(
+                "בדיקת הגרסה החדשה לא הסתיימה בזמן — ננסה שוב מאוחר יותר"
+            ) from exc
     if done.returncode != 0 or "ok" not in done.stdout:
         said = (done.stderr or done.stdout).strip()
         return said.splitlines()[-1] if said else f"exit {done.returncode}"
@@ -547,7 +577,7 @@ FAILED_REASONS = {
     "interrupted": "ההתקנה נקטעה באמצע והגרסה הקודמת הוחזרה — העדכון יורד מחדש",
     "damaged": "קובץ העדכון השתנה מאז שנבדק — הוא יורד מחדש",
     "merge": "לא ניתן היה לקדם את התיקייה לגרסה החדשה — יש בה שינויים מקומיים",
-    "rollback": "הגרסה החדשה לא נפתחה ולא ניתן היה להחזיר את הקודמת אוטומטית — פנו לתמיכה",
+    "rollback": "הגרסה החדשה לא נפתחה, והחזרת הגרסה הקודמת תושלם בפתיחה הבאה של התוכנה",
     "not_the_update": "גם הגרסה הקודמת לא נפתחה — הבעיה אינה בעדכון. פנו לתמיכה",
 }
 
@@ -574,7 +604,7 @@ class Status:
             if last.get("outcome") == "waiting":
                 return WAITING_REASONS.get(reason, "")
             if last.get("outcome") == "failed":
-                return FAILED_REASONS.get(reason, f"העדכון לא הותקן: {reason}")
+                return FAILED_REASONS.get(reason, f"העדכון לא הותקן: {_v(reason)}")
         if last.get("outcome") == "failed" and reason in ("rollback", "not_the_update"):
             return FAILED_REASONS[reason]
         return self.error
@@ -721,6 +751,31 @@ def mark_started(root: Path | None = None) -> None:
         _log.warning("Could not mark the start: %s", exc)
 
 
+def installing(root: Path | None = None) -> bool:
+    """Whether the launcher is putting an update in place right now (or one
+    was stopped half-way and waits for the next start to finish it)."""
+    folder = updates_dir(root)
+    if (folder / "previous" / ".swapping").exists():
+        return True
+    lock = folder / "launcher.lock"
+    if not lock.exists():
+        return False
+    if os.name == "nt":
+        try:
+            lock.unlink()  # held open by a running launcher: refused
+        except FileNotFoundError:
+            return False
+        except PermissionError:
+            return True
+        return False
+    try:
+        pid = int(lock.read_text(encoding="ascii").split()[0])
+        os.kill(pid, 0)
+    except (OSError, ValueError, IndexError):
+        return False
+    return True
+
+
 _INSTANCE: Any = None
 
 
@@ -846,6 +901,7 @@ __all__ = [
     "CHECK_EVERY_S",
     "PROVEN_AFTER_S",
     "hold_instance",
+    "installing",
     "missing_components",
     "old_desktop_scripts",
     "replace_old_script",

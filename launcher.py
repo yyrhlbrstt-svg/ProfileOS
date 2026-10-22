@@ -137,7 +137,8 @@ def _in_progress(previous: Path) -> Path:
 
 
 def swap_in(staged: Path, root: Path | None = None, previous: Path | None = None,
-            protected: list[str] | None = None, *, finish: bool = True) -> list[str]:
+            protected: list[str] | None = None, *, finish: bool = True,
+            version: str = "") -> list[str]:
     """Move each item of ``staged`` into ``root``, the old one aside.
 
     Every move is written to a journal before the next, so whatever stops
@@ -160,7 +161,7 @@ def swap_in(staged: Path, root: Path | None = None, previous: Path | None = None
     if previous.exists():
         shutil.rmtree(previous)
     previous.mkdir(parents=True)
-    _write(_in_progress(previous), {"at": time.time()})
+    _write(_in_progress(previous), {"at": time.time(), "version": version})
     moved: list[str] = []
     journal: list[dict] = []
     _write(_journal(previous), journal)
@@ -228,22 +229,28 @@ def swap_back(moved: list | None = None, root: Path | None = None,
 
 
 def recover() -> None:
-    """A swap that a power cut or a crash stopped half-way: put the old version back.
+    """An install or a rollback that a power cut, a closed window or a locked
+    file stopped half-way: put the old version back, whole.
 
     The half-moved update is not trusted again: it is dropped and the program
-    downloads and checks it afresh.
+    downloads and checks it afresh. Components installed for it go back too.
     """
-    if not _in_progress(PREVIOUS).exists():
+    marker = _read(_in_progress(PREVIOUS), None)
+    if marker is None and not _in_progress(PREVIOUS).exists():
         return
-    _say("  עדכון קודם נקטע באמצע — מחזירים את הגרסה הקודמת…")
+    _say("  עדכון קודם לא הסתיים — מחזירים את הגרסה הקודמת…")
     swap_back()
     ready = _read(READY, {})
-    version = str(ready.get("version", "")) if isinstance(ready, dict) else ""
-    if isinstance(ready, dict) and ready.get("path"):
-        shutil.rmtree(str(ready["path"]), ignore_errors=True)
+    ready = ready if isinstance(ready, dict) else {}
+    version = str((marker or {}).get("version", "") if isinstance(marker, dict) else "") \
+        or str(ready.get("version", ""))
+    staged = _staged_path(ready)
+    if staged is not None:
+        shutil.rmtree(staged, ignore_errors=True)
     READY.unlink(missing_ok=True)
-    _write(RESULT, {"version": version, "outcome": "failed", "reason": "interrupted",
-                    "at": time.time()})
+    if version:
+        _restore_components(version)
+    _result(version, "failed", "interrupted")
 
 
 def _mark_bad(version: str) -> None:
@@ -436,16 +443,26 @@ def _restore_components(version: str) -> None:
     listing = UPDATES / "components-before.txt"
     lines = [line for line in str(saved["freeze"]).splitlines()
              if line and not line.startswith(("-e ", "#")) and " @ " not in line]
+    _say("  מחזירים את הרכיבים לגרסאות הקודמות…")
     try:
         listing.write_text("\n".join(lines) + "\n", encoding="utf-8")
-        subprocess.run([_python(), "-m", "pip", "install", "-r", str(listing), "--quiet"],
-                       cwd=ROOT, timeout=1800)
+        subprocess.run([_python(), "-m", "pip", "install", "-r", str(listing), "--quiet",
+                        "--retries", "1", "--timeout", "15"],
+                       cwd=ROOT, timeout=900)
+        COMPONENTS_BEFORE.unlink(missing_ok=True)
     except (OSError, subprocess.TimeoutExpired):
         pass
 
 
 #: ``pip freeze`` from before a version installed components, to undo them.
 COMPONENTS_BEFORE = UPDATES / "components_before.json"
+
+
+def _remember_components(version: str) -> None:
+    try:
+        _write(COMPONENTS_BEFORE, {"version": version, "freeze": _freeze()})
+    except OSError:
+        pass  # without it a rollback keeps the new components: not fatal
 
 
 # --------------------------------------------------------------------------- #
@@ -487,9 +504,10 @@ def apply_git(ready: dict) -> str:
         READY.unlink(missing_ok=True)
         return ""
     if ready.get("needs_components"):
-        _write(COMPONENTS_BEFORE, {"version": version, "freeze": _freeze()})
+        _remember_components(version)
         if not _install_requirements():
             _git("reset", "--keep", str(ready.get("previous_commit", "")))
+            _restore_components(version)
             _say("  לא ניתן היה להתקין רכיבים (אין אינטרנט?) — העדכון יחכה.")
             _result(version, "waiting", "components")
             return ""
@@ -540,17 +558,18 @@ def _apply_pending() -> str:
         return ""
     try:
         moved = swap_in(staged, protected=list(ready.get("protect", []) or []),
-                        finish=False)
+                        finish=False, version=version)
     except OSError as exc:
         _say(f"  העדכון לא הותקן ({exc}) — ממשיכים בגרסה הקיימת.")
         _result(version, "failed", str(exc))
         return ""
     if ready.get("needs_components"):
         _say("  מתקין רכיבים חדשים שהגרסה צריכה…")
-        _write(COMPONENTS_BEFORE, {"version": version, "freeze": _freeze()})
+        _remember_components(version)
         if not _install_requirements():
             # The old version goes back; the new one returns to where it waits.
             swap_back(moved, keep_new_in=staged)
+            _restore_components(version)
             _say("  לא ניתן היה להתקין רכיבים (אין אינטרנט?) — העדכון יחכה.")
             _result(version, "waiting", "components")
             return ""
@@ -591,29 +610,53 @@ def run_program() -> int:
 
 
 def _roll_back(installed: str) -> bool:
-    """Put the previous version back. False when it could not be done."""
+    """Put the previous version back. False when it could not be done now.
+
+    In a folder of files the marker goes down first: a rollback that stops
+    half-way (a locked file, another window) is finished by :func:`recover`
+    at the next start, and nothing deletes the old copy before that.
+    """
     handle = None
     try:
-        handle = take_lock()
+        _mark_bad(installed)
+    except OSError:
+        pass
+    try:
         previous = _read(PREVIOUS_COMMIT, {})
-        if (ROOT / ".git").exists() and isinstance(previous, dict) and previous.get("commit"):
+        git = (ROOT / ".git").exists() and isinstance(previous, dict) and previous.get("commit")
+        if not git:
+            if not _journal(PREVIOUS).exists():
+                return False
+            _write(_in_progress(PREVIOUS), {"at": time.time(), "version": installed})
+        handle = take_lock()
+        if handle is None:
+            return False
+        if git:
             done = _git("reset", "--keep", str(previous["commit"]))
             if done.returncode != 0:
                 return False
         else:
-            if not _journal(PREVIOUS).exists():
-                return False
             swap_back()
         _restore_components(installed)
     except (OSError, subprocess.SubprocessError):
         return False
     finally:
         release_lock(handle)
-        try:
-            _mark_bad(installed)
-        except OSError:
-            pass
     return True
+
+
+def _cannot_start() -> str:
+    """Why the program must not be started now, in words; empty when it may."""
+    if _in_progress(PREVIOUS).exists():
+        return ("  ההחלפה לגרסה הקודמת לא הסתיימה (קובץ נעול?). סגרו את כל חלונות ProfileOS "
+                "ופתחו שוב — היא תושלם אוטומטית. אם זה חוזר, הפעילו מחדש את המחשב.")
+    try:
+        busy = LOCK.exists() and not _holder_gone(LOCK)
+    except OSError:
+        busy = False
+    if busy:
+        return "  עדכון מותקן כרגע מחלון אחר. המתינו שיסתיים ופתחו שוב."
+    return ""
 
 
 def _opened() -> bool:
@@ -624,6 +667,11 @@ def start_once() -> int:
     """Put a ready update in place (if any), start the program, and roll the
     update back if the new version could not open its window."""
     installed = apply_pending()
+    # Never on a half-swapped folder, nor while another window installs.
+    problem = _cannot_start()
+    if problem:
+        _say(problem)
+        return 1
     if not installed:
         return run_program()
     try:
@@ -637,9 +685,8 @@ def start_once() -> int:
     # this version is not tried again, and the program says so.
     _say("  הגרסה החדשה לא נפתחה — חוזרים לגרסה הקודמת.")
     if not _roll_back(installed):
-        _say("  לא ניתן היה להחזיר את הגרסה הקודמת אוטומטית.")
-        _say(f"  הגרסה הקודמת שמורה בתיקייה: {PREVIOUS}")
-        _say("  הנתונים לא נפגעו. צלמו את המסך הזה ושלחו.")
+        _say("  לא ניתן היה להחזיר את הגרסה הקודמת כרגע — היא תוחזר בפתיחה הבאה.")
+        _say("  הנתונים לא נפגעו. סגרו את כל חלונות ProfileOS ופתחו שוב.")
         _result(installed, "failed", "rollback")
         return 1
     _result(installed, "rolled_back")
