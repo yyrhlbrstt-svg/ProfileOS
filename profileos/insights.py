@@ -761,7 +761,9 @@ def _material(context: dict[str, Any], today: date) -> list[Insight]:
         if status not in ("won", "in_production"):
             continue
         openings = getattr(getattr(job, "schedule", None), "openings", None)
-        if openings and not job.material_ordered:
+        # Won and not yet ordered. A job already in production had its
+        # material bought somehow — this software just was not told.
+        if status == "won" and openings and not job.material_ordered:
             since = _days_since(_status_since(job), today)
             if since is None or since >= 2:
                 waiting.append(job)

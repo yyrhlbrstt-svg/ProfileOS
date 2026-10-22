@@ -230,3 +230,167 @@ def test_ordering_from_the_projects_page(shop, monkeypatch):
     window.close()
     window.deleteLater()
     QCoreApplication.processEvents()
+
+
+class TestWhatTheReviewFound:
+    def frame_code(self) -> str:
+        from profileos.projects.materials import propose
+
+        return next(l.code for l in propose(a_job(), mass_per_metre=lambda c: None).lines
+                    if l.code.endswith("FRAME"))
+
+    def test_a_list_without_a_unit_is_read_per_metre_like_the_quotation(self, shop):
+        from profileos.projects.materials import propose
+        from profileos.quoting.pricelists import PriceRow, default_price_lists
+
+        code = self.frame_code()
+        book = default_price_lists()
+        edition = book.record([PriceRow(code, 40.0, "")], supplier="קליל", source="x",
+                              discount_pct=20)
+        book.accept(edition.edition_id)
+        frame = next(l for l in propose(a_job(), mass_per_metre=lambda c: None).lines
+                     if l.code == code)
+        assert frame.unit_price == pytest.approx(40.0 * 0.8 * frame.length_mm / 1000)
+
+    def test_a_price_per_bar_when_the_list_says_so(self, shop):
+        from profileos.projects.materials import propose
+
+        code = self.frame_code()
+        price_list({code: (180.0, "מוט")})
+        frame = next(l for l in propose(a_job(), mass_per_metre=lambda c: None).lines
+                     if l.code == code)
+        assert frame.unit_price == pytest.approx(180.0 * 0.8)
+
+    def test_what_the_bill_could_not_size_is_said(self, shop, monkeypatch):
+        from profileos.projects import materials
+        from profileos.quoting import bom as bom_module
+
+        real = bom_module.build_bom
+
+        def warned(*args, **kwargs):
+            bill = real(*args, **kwargs)
+            bill.warnings.append("W1: accessories not sized (תריס)")
+            return bill
+
+        monkeypatch.setattr(bom_module, "build_bom", warned)
+        proposal = materials.propose(a_job(), mass_per_metre=lambda c: None)
+        assert any("accessories not sized" in w for w in proposal.warnings)
+
+    def test_an_order_from_another_supplier_keeps_the_price_warning(self, shop, monkeypatch):
+        from types import SimpleNamespace
+
+        from profileos.quoting import pricelists
+        from profileos.quoting.pricelists import PriceRow, default_price_lists, impact
+
+        book = default_price_lists()
+        first = book.record([PriceRow("F", 40.0, "מטר")], supplier="קליל", source="א")
+        book.accept(first.edition_id)
+        second = book.record([PriceRow("F", 44.0, "מטר")], supplier="קליל", source="ב",
+                             valid_from=(date.today() + timedelta(days=10)).isoformat())
+        monkeypatch.setattr(pricelists, "job_materials", lambda job: [
+            SimpleNamespace(code="F", quantity=100.0, unit=SimpleNamespace(value="m"))])
+        job = a_job()
+        job.material_orders.append(MaterialOrder(supplier="ספק הפרזול"))
+        assert [c.job.job_id for c in impact(book, second, [job]).to_order] == [job.job_id]
+
+    def test_only_won_jobs_are_told_to_order(self, shop):
+        from profileos.insights import scan
+        from profileos.projects import default_store
+        from profileos.projects.model import StatusEvent
+
+        job = a_job(status=JobStatus.IN_PRODUCTION)
+        job.history = [StatusEvent(status=JobStatus.IN_PRODUCTION,
+                                   at=(date.today() - timedelta(days=30)).isoformat())]
+        default_store().save(job)
+        assert not any("לא הוזמן" in i.title for i in scan())
+
+
+def test_the_order_dialog_guards_what_is_sent(shop, monkeypatch):
+    pytest.importorskip("PySide6")
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QApplication
+
+    from profileos.projects.materials import Proposal, ProposedLine
+    from profileos.ui import money_dialogs
+
+    QApplication.instance() or QApplication([])
+    warned: list[str] = []
+    monkeypatch.setattr(money_dialogs, "_warn", lambda parent, title, exc: warned.append(str(exc)))
+    proposal = Proposal(lines=[
+        ProposedLine("profile", "F", "משקוף", 4, "bar", 6000.0, 192.0, "x", "קליל"),
+        ProposedLine("hardware", "H", "ידית", 6, "pc", 0.0, 25.0, "y", "ספק הפרזול"),
+        ProposedLine("gasket", "G", "גומייה", 30, "m"),
+    ])
+    dialog = money_dialogs.MaterialOrderDialog(a_job(), proposal)
+    dialog.supplier.setCurrentText("קליל")
+    ticked = [dialog.table.item(r, 0).checkState() == Qt.CheckState.Checked for r in range(3)]
+    # Another supplier's priced line is not sent to this one; unpriced goes along.
+    assert ticked == [True, False, True]
+
+    dialog.table.item(0, 3).setText("")
+    dialog._finish(dialog.RECORD)
+    assert warned and "F" in warned[0] and dialog.result() == 0
+
+    dialog.table.item(0, 3).setText("5")
+    dialog._finish(dialog.RECORD)
+    assert [line.code for line in dialog.values()["lines"]] == ["F", "G"]
+
+
+def test_an_order_moves_forward_only(monkeypatch):
+    pytest.importorskip("PySide6")
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication
+
+    from profileos.ui import money_dialogs
+
+    QApplication.instance() or QApplication([])
+    warned: list[str] = []
+    monkeypatch.setattr(money_dialogs, "_warn", lambda parent, title, exc: warned.append(str(exc)))
+    job = a_job()
+    job.material_orders.append(MaterialOrder(supplier="קליל"))
+    dialog = money_dialogs.MaterialOrdersDialog(job)
+    dialog.table.selectRow(0)
+    dialog._set("received")
+    dialog._set("cancelled")
+    assert dialog.changes == [(job.material_orders[0].order_id, "received")] and warned
+    # The job itself is untouched until the page saves.
+    assert job.material_orders[0].state is MaterialOrderState.SENT
+
+
+def test_the_selection_follows_the_job_after_a_save(shop, monkeypatch):
+    pytest.importorskip("PySide6")
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtCore import QCoreApplication
+    from PySide6.QtGui import QDesktopServices
+    from PySide6.QtWidgets import QApplication
+
+    from profileos.projects import default_store
+    from profileos.ui import background, money_dialogs
+    from profileos.ui.main_window import MainWindow
+    from profileos.ui.theme import LIGHT
+
+    QApplication.instance() or QApplication([])
+    monkeypatch.setattr(background, "run_in_background", lambda work, done: done(work(), None))
+    monkeypatch.setattr(QDesktopServices, "openUrl", lambda url: None)
+    store = default_store()
+    store.save(a_job(job_id="J-2026-0001"))
+    store.save(a_job(job_id="J-2026-0002"))
+    window = MainWindow(LIGHT)
+    page = window.go_to_page("Projects")
+    page.refresh()
+    row = next(i for i, j in enumerate(page._jobs) if j.job_id == "J-2026-0001")
+    page.jobs_table.selectRow(row)
+
+    def record(self):
+        self.supplier.setCurrentText("קליל")
+        self._finish(self.RECORD)
+        return self.result()
+
+    monkeypatch.setattr(money_dialogs.MaterialOrderDialog, "exec", record)
+    page.order_material()
+    assert page._selected_job().job_id == "J-2026-0001"
+    assert "J-2026-0001" in page.job_summary.text() and "הזמנה אחת" in page.job_summary.text()
+    window.close()
+    window.deleteLater()
+    QCoreApplication.processEvents()

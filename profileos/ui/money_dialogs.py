@@ -795,12 +795,20 @@ class MaterialOrderDialog(QDialog):
         self.table.resizeColumnsToContents()
         self.table.itemChanged.connect(lambda _item: self._update_total())
         layout.addWidget(self.table, 1)
+        # One order is one supplier: lines another supplier's list prices are
+        # left for that supplier's order, not sent to this one.
+        self.supplier.currentTextChanged.connect(self._match_supplier)
 
         self.summary = QLabel("")
         self.summary.setObjectName("Hint")
         self.summary.setWordWrap(True)
         layout.addWidget(self.summary)
         warnings = list(proposal.warnings)
+        earlier = [o for o in getattr(job, "material_orders", []) if o.state.value != "cancelled"]
+        if earlier:
+            warnings.insert(0, "כבר הוזמן לפרויקט: " + "; ".join(
+                f"{o.supplier} — ⁦{len(o.lines)}⁩ שורות ({o.state.hebrew})" for o in earlier
+            ) + ". הכמויות כאן הן לכל הפרויקט — הורידו את מה שכבר הוזמן.")
         warnings.append("הזכוכית מוזמנת לפי מידה בנפרד, ממסך ״זכוכית״.")
         hint = QLabel("\n".join(warnings))
         hint.setObjectName("Hint")
@@ -821,7 +829,27 @@ class MaterialOrderDialog(QDialog):
         buttons.addStretch(1)
         buttons.addWidget(cancel)
         layout.addLayout(buttons)
+        self._match_supplier(self.supplier.currentText())
         self._update_total()
+
+    def _match_supplier(self, supplier: str) -> None:
+        wanted = " ".join(supplier.split()).casefold()
+        for row, line in enumerate(self._proposal.lines):
+            tick = self.table.item(row, 0)
+            if tick is None or not line.supplier:
+                continue  # unpriced lines go with whichever supplier is chosen
+            mine = " ".join(line.supplier.split()).casefold() == wanted
+            tick.setCheckState(Qt.CheckState.Checked if mine else Qt.CheckState.Unchecked)
+
+    def invalid(self) -> list[str]:
+        """Codes of ticked lines whose quantity is not a number."""
+        bad = []
+        for row in range(self.table.rowCount()):
+            tick = self.table.item(row, 0)
+            if tick is not None and tick.checkState() == Qt.CheckState.Checked \
+                    and self._quantity(row) is None:
+                bad.append(self.table.item(row, 1).text())
+        return bad
 
     def _quantity(self, row: int) -> float | None:
         from ..migration.reader import to_number
@@ -862,6 +890,15 @@ class MaterialOrderDialog(QDialog):
         if not self.supplier.currentText().strip():
             _warn(self, "חסר ספק", ValueError("כתבו למי ההזמנה"))
             return
+        bad = self.invalid()
+        if bad:
+            # A ticked line with no quantity would silently leave the order:
+            # the supplier would get the order without the frame bars.
+            _warn(self, "כמות חסרה", ValueError(
+                "בשורות האלה הכמות ריקה או לא מספר: " + ", ".join(f"⁦{c}⁩" for c in bad)
+                + ". תקנו את הכמות או הורידו את הסימון."
+            ))
+            return
         if not self.chosen():
             _warn(self, "אין מה להזמין", ValueError("סמנו לפחות שורה אחת עם כמות"))
             return
@@ -877,6 +914,16 @@ class MaterialOrderDialog(QDialog):
         }
 
 
+#: Where an order may go from where it is. An order that arrived does not
+#: become cancelled, and a cancelled one does not come back.
+NEXT_STATES = {
+    "sent": ("confirmed", "received", "cancelled"),
+    "confirmed": ("received", "cancelled"),
+    "received": (),
+    "cancelled": (),
+}
+
+
 class MaterialOrdersDialog(QDialog):
     """The job's orders, and what came of each: confirmed, received, cancelled."""
 
@@ -884,7 +931,8 @@ class MaterialOrdersDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle(f"הזמנות חומר — {job.name}")
         self.setMinimumSize(720, 380)
-        self._orders = list(job.material_orders)
+        # Copies: a state chosen here is only real once the page has saved it.
+        self._orders = [order.model_copy(deep=True) for order in job.material_orders]
         layout = QVBoxLayout(self)
         layout.setContentsMargins(*(METRICS.space(5),) * 4)
         layout.setSpacing(METRICS.space(3))
@@ -933,6 +981,12 @@ class MaterialOrdersDialog(QDialog):
             _warn(self, "לא נבחרה הזמנה", ValueError("בחרו הזמנה מהרשימה"))
             return
         order = self._orders[rows.selectedRows()[0].row()]
+        allowed = NEXT_STATES.get(order.state.value, ())
+        if state not in allowed:
+            _warn(self, "לא אפשרי", ValueError(
+                f"ההזמנה {order.state.hebrew} — אי אפשר לסמן אותה כ״{MaterialOrderState(state).hebrew}״"
+            ))
+            return
         order.state = MaterialOrderState(state)
         self.changes.append((order.order_id, state))
         self._fill()

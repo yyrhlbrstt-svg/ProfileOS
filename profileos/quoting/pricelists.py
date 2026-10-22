@@ -926,8 +926,10 @@ def impact(book: PriceListBook, edition: PriceListEdition, jobs: Iterable[Any], 
         elif status in NOT_ORDERED_STATES:
             if edition.in_force() and edition.state == ListState.ACCEPTED:
                 continue  # already paying the new price
-            if getattr(job, "material_ordered", False):
-                continue  # bought already, at whatever it cost
+            if any(order.state.value != "cancelled"
+                   and supplier_key(order.supplier) == edition.supplier_id
+                   for order in getattr(job, "material_orders", []) or []):
+                continue  # bought from this supplier already, at whatever it cost
             base = book.current(supplier)
             bucket = result.to_order
         else:

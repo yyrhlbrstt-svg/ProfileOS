@@ -1422,7 +1422,7 @@ class ProjectsPage(Page):
         if orders:
             ordered = sum(o.total for o in orders)
             waiting = [o for o in orders if o.open]
-            text = f"חומר: ⁦{len(orders)}⁩ הזמנות"
+            text = "חומר: הזמנה אחת" if len(orders) == 1 else f"חומר: ⁦{len(orders)}⁩ הזמנות"
             if ordered:
                 text += f" · ⁦{ordered:,.0f} ₪⁩ לפי המחירונים"
                 if job.quote_total:
@@ -1451,15 +1451,27 @@ class ProjectsPage(Page):
             self.report(ProfileOSError("בפרויקט אין פתחים מתוכננים — אין ממה לחשב חומר"),
                         "אין מה להזמין")
             return
+        if getattr(self, "_proposing", False):
+            self.status("החישוב כבר בדרך")
+            return
+        self._proposing = True
         self.status("מחשב מוטות ומחירים…")
+        # The bar lengths as they are now, taken here: the cutting page may
+        # change the setting while the work runs on its own thread.
+        import copy
+
+        from ..core.config import get_settings
+
+        defaults = copy.deepcopy(get_settings().nesting)
 
         def done(proposal: Any, error: BaseException | None) -> None:
+            self._proposing = False
             if error is not None:
                 self.report(ProfileOSError(str(error)), "חישוב החומר נכשל")
                 return
             self._send_material_order(job, proposal)
 
-        run_in_background(lambda: propose(job), done)
+        run_in_background(lambda: propose(job, defaults=defaults), done)
 
     def _send_material_order(self, job: Any, proposal: Any) -> None:
         from PySide6.QtCore import QUrl
@@ -1472,6 +1484,7 @@ class ProjectsPage(Page):
 
         dialog = MaterialOrderDialog(job, proposal, self)
         if dialog.exec() != QDialog.DialogCode.Accepted:
+            self.status("לא נשלחה הזמנה")
             return
         values = dialog.values()
         order = to_order(values["lines"], supplier=values["supplier"],
@@ -2182,6 +2195,9 @@ class ProjectsPage(Page):
     # -- refresh ------------------------------------------------------------- #
     def refresh(self) -> None:
         store = self._store()
+        # The job chosen before: saving moves it in the list (newest first),
+        # and the selection must follow the job, not stay on its old row.
+        before = self._selected_job() if hasattr(self, "_jobs") else None
         self._jobs = store.all()
         self._all_jobs = list(self._jobs)
         needle = self.search.text().strip().lower()
@@ -2233,6 +2249,11 @@ class ProjectsPage(Page):
         self.jobs_table.set_rows(rows, numeric_columns=(4, 5, 8), colours=colours)
         # A list with a row nobody has clicked still has a most-recent job, and
         # showing its detail beats an empty panel that says nothing was chosen.
+        if before is not None:
+            index = next((i for i, j in enumerate(self._jobs) if j.job_id == before.job_id), -1)
+            if index >= 0 and (self._selected_job() is None
+                               or self._selected_job().job_id != before.job_id):
+                self.jobs_table.selectRow(index)
         if rows and not self.jobs_table.selectionModel().hasSelection():
             self.jobs_table.setCurrentCell(0, 0)
         # The summary shows the job as just re-read: a selection that stayed

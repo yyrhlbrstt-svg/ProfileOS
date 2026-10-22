@@ -130,7 +130,8 @@ class Proposal:
         return [line for line in self.lines if line.supplier in (supplier, "")]
 
 
-def _price(code: str, options: list[tuple[str, float]]) -> tuple[float, float, Any] | None:
+def _price(code: str, options: list[tuple[str, float]],
+           category: str | None = None) -> tuple[float, float, Any] | None:
     """Price ``code`` in the first unit some list sells it in.
 
     ``options`` are ``(unit, quantity in that unit)``. Returns the total, the
@@ -141,7 +142,7 @@ def _price(code: str, options: list[tuple[str, float]]) -> tuple[float, float, A
     for unit, quantity in options:
         if quantity <= 0:
             continue
-        found = find_price(code, quantity, unit=unit, currency="ILS")
+        found = find_price(code, quantity, unit=unit, currency="ILS", category=category)
         if found is not None:
             supplier, total = found
             return total, quantity, supplier
@@ -153,7 +154,7 @@ def _source(supplier: Any) -> str:
 
 
 def propose(job: Any, *, mass_per_metre: Callable[[str], float | None] | None = None,
-            strategy: str = "auto") -> Proposal:
+            strategy: str = "auto", defaults: Any = None) -> Proposal:
     """What to order for this job, priced from the lists in force."""
     from ..elements import collect_cut_items
     from ..models.orders import Project
@@ -173,7 +174,7 @@ def propose(job: Any, *, mass_per_metre: Callable[[str], float | None] | None = 
     project = Project(name=getattr(job, "name", "") or "פרויקט",
                       items=collect_cut_items(builds))
     try:
-        report = nest_project(project, strategy=strategy)  # type: ignore[arg-type]
+        report = nest_project(project, strategy=strategy, defaults=defaults)  # type: ignore[arg-type]
     except Exception as exc:  # noqa: BLE001 - said, and the job's other lines still come
         proposal.warnings.append(f"חישוב המוטות נכשל: {exc}")
         report = None
@@ -185,12 +186,17 @@ def propose(job: Any, *, mass_per_metre: Callable[[str], float | None] | None = 
                               if not layout.is_remnant)
             for length, bars in sorted(lengths.items()):
                 metres = bars * length / 1000.0
-                options = [("bar", float(bars)), ("m", metres)]
+                # Metres first, as the quotation prices a profile: a list
+                # that does not say its unit is read the same way here, never
+                # as a price per bar six times too low. Per kilogram and per
+                # bar only when the list says so.
+                options = [("m", metres)]
                 weight = weights(profile_id)
                 if weight:
                     options.append(("kg", metres * weight))
+                options.append(("bar", float(bars)))
                 line = ProposedLine("profile", profile_id, "", float(bars), "bar", float(length))
-                priced = _price(profile_id, options)
+                priced = _price(profile_id, options, "profile")
                 if priced is not None:
                     total, _quantity, supplier = priced
                     line.unit_price = round(total / bars, 4)
@@ -202,6 +208,8 @@ def propose(job: Any, *, mass_per_metre: Callable[[str], float | None] | None = 
 
     # -- everything else that is bought, not cut ---------------------------- #
     bom = build_bom(builds, project_id=getattr(job, "job_id", ""), currency="ILS")
+    # What the bill could not size (a shutter, an accessory) is said, not lost.
+    proposal.warnings += [w for w in bom.warnings if "אורכים נטו" not in w]
     for bom_line in bom.sorted_lines():
         category = bom_line.category.value
         if category == "profile" or category in LEFT_OUT:
@@ -215,7 +223,7 @@ def propose(job: Any, *, mass_per_metre: Callable[[str], float | None] | None = 
 
             quantity = float(math.ceil(quantity))
         line = ProposedLine(category, bom_line.code, description, round(quantity, 3), unit)
-        priced = _price(bom_line.code, [(unit, quantity)])
+        priced = _price(bom_line.code, [(unit, quantity)], category)
         if priced is not None:
             total, quantity, supplier = priced
             line.unit_price = round(total / quantity, 4) if quantity else 0.0
