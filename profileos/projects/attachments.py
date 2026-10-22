@@ -44,6 +44,10 @@ class AttachmentKind(StrEnum):
     PROGRESS_PHOTO = "progress_photo"
     DEFECT_PHOTO = "defect_photo"
     HANDOVER_PHOTO = "handover_photo"
+    #: Before and after the work — what an insurer's appraiser asks for on
+    #: water damage, and what ends a warranty argument.
+    BEFORE_PHOTO = "before_photo"
+    AFTER_PHOTO = "after_photo"
     SIGNED_QUOTE = "signed_quote"
     SIGNED_DELIVERY = "signed_delivery"
     SUPPLIER_CONFIRMATION = "supplier_confirmation"
@@ -60,6 +64,8 @@ class AttachmentKind(StrEnum):
             "progress_photo": "צילום התקדמות",
             "defect_photo": "צילום ליקוי",
             "handover_photo": "צילום מסירה",
+            "before_photo": "צילום לפני העבודה",
+            "after_photo": "צילום אחרי העבודה",
             "signed_quote": "הצעה חתומה",
             "signed_delivery": "תעודת משלוח חתומה",
             "supplier_confirmation": "אישור ספק",
@@ -82,6 +88,8 @@ class AttachmentKind(StrEnum):
             AttachmentKind.SURVEY_PHOTO,
             AttachmentKind.HANDOVER_PHOTO,
             AttachmentKind.DEFECT_PHOTO,
+            AttachmentKind.BEFORE_PHOTO,
+            AttachmentKind.AFTER_PHOTO,
         )
 
 

@@ -370,6 +370,58 @@ def _field(context: dict[str, Any], today: date) -> list[Insight]:
     )]
 
 
+def _paperwork(context: dict[str, Any], today: date) -> list[Insight]:
+    """The shop's own certificates, and supplier price lists out of date."""
+    found: list[Insight] = []
+    settings = context.get("settings")
+    if settings is not None:
+        for field_name, label in (
+            ("withholding_certificate_until", "אישור ניכוי מס במקור"),
+            ("books_certificate_until", "אישור ניהול ספרים"),
+        ):
+            raw = getattr(settings, field_name, "") or ""
+            if not raw:
+                found.append(Insight(
+                    "info", f"לא הוזן תוקף ל{label}",
+                    "כשהאישור פג, קבלן מנכה 20–30% מכל תשלום. הזינו את התאריך "
+                    "במסך מערכת ← מפעיל, והתוכנה תזכיר חודש לפני.",
+                    "System", f"cert-missing:{field_name}",
+                ))
+                continue
+            try:
+                until = date.fromisoformat(raw[:10])
+            except ValueError:
+                continue
+            days = (until - today).days
+            if days < 0:
+                found.append(Insight(
+                    "danger", f"{label} פג ב־⁦{until:%d/%m/%Y}⁩",
+                    "כל תשלום מקבלן ינוכה עכשיו במלואו. חדשו מול רואה החשבון ועדכנו "
+                    "כאן את התאריך החדש.", "System", f"cert:{field_name}:{raw}",
+                ))
+            elif days <= 30:
+                found.append(Insight(
+                    "warning", f"{label} פג בעוד ⁦{days}⁩ ימים",
+                    f"בתוקף עד ⁦{until:%d/%m/%Y}⁩ — כדאי לבקש חידוש מרואה החשבון עכשיו.",
+                    "System", f"cert:{field_name}:{raw}",
+                ))
+    try:
+        from .quoting.suppliers import all_suppliers
+
+        stale = [supplier for supplier in all_suppliers() if not supplier.is_current()]
+    except Exception:  # noqa: BLE001 - no suppliers is not a finding
+        stale = []
+    if stale:
+        found.append(Insight(
+            "warning",
+            _count(len(stale), "מחירון ספק אחד לא בתוקף", "מחירוני ספקים לא בתוקף"),
+            "הצעות שמתומחרות ממנו עלולות להיות במחיר ישן: "
+            + _names(stale, lambda supplier: supplier.name or supplier.id),
+            "Catalogue", "suppliers:" + ",".join(sorted(s.id for s in stale)),
+        ))
+    return found
+
+
 def _draft(context: dict[str, Any], today: date) -> list[Insight]:
     from .projects.draft import draft_path
 
@@ -426,6 +478,20 @@ def _accounts(context: dict[str, Any], today: date) -> list[Insight]:
             "Projects", "extras:" + ",".join(sorted(line.line_id for _job, line in pending)),
         ))
 
+    from .projects.progress import retention_held
+
+    held = [(job, retention_held(job)) for job in jobs
+            if job.status is JobStatus.INSTALLED and job.progress_bills]
+    held = [(job, amount) for job, amount in held if amount > 0]
+    if held:
+        found.append(Insight(
+            "warning",
+            _count(len(held), "עיכבון אחד מחכה לגבייה מקבלן", "עיכבונות מחכים לגבייה מקבלנים"),
+            "העבודה נמסרה — העיכבון משתחרר עכשיו: "
+            + _names(held, lambda pair: f"{pair[0].name} ⁦{pair[1]:,.0f} ₪⁩"),
+            "Projects", "retention:" + ",".join(sorted(job.job_id for job, _a in held)),
+        ))
+
     missing = [(job, invoice) for job in jobs for invoice in invoices_missing_allocation(job)]
     if missing:
         found.append(Insight(
@@ -440,7 +506,8 @@ def _accounts(context: dict[str, Any], today: date) -> list[Insight]:
 
 
 RULES: tuple[Callable[[dict[str, Any], date], list[Insight]], ...] = (
-    _data_safety, _jobs, _accounts, _field, _customers, _money, _service, _tasks, _draft,
+    _data_safety, _jobs, _accounts, _field, _customers, _money, _service, _tasks,
+    _paperwork, _draft,
 )
 
 
@@ -452,6 +519,7 @@ def gather_context(**given: Any) -> dict[str, Any]:
     settings = get_settings()
     context.setdefault("data_dir", settings.data_dir)
     context.setdefault("mirror", settings.backup_mirror)
+    context.setdefault("settings", settings)
 
     def load(key: str, reader: Callable[[], Any]) -> None:
         if key in context:

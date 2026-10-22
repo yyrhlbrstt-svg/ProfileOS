@@ -227,6 +227,15 @@ def _short_stamp(stamp: str) -> str:
     return moment.strftime("%d/%m/%Y %H:%M")
 
 
+def _iso_to_shop_date(text: str) -> str:
+    from datetime import date
+
+    try:
+        return date.fromisoformat(text[:10]).strftime("%d/%m/%Y")
+    except (TypeError, ValueError):
+        return text
+
+
 class HomePage(Page):
     """Where the day starts: what has been done, and what the next step is.
 
@@ -7205,6 +7214,35 @@ class SystemPage(Page):
         ("אתר", "website"),
     )
 
+    def save_certificates(self) -> None:
+        from datetime import datetime
+
+        from ..core.config import get_settings, save_settings
+
+        settings = get_settings()
+        for field_name, edit in self._cert_fields.items():
+            text = edit.text().strip()
+            if not text:
+                setattr(settings, field_name, "")
+                continue
+            for pattern in ("%d/%m/%Y", "%d.%m.%Y", "%Y-%m-%d", "%d/%m/%y"):
+                try:
+                    value = datetime.strptime(text, pattern).date()
+                    break
+                except ValueError:
+                    value = None
+            if value is None:
+                self.report(ProfileOSError(f"״{text}״ אינו תאריך — כתבו למשל 31/03/2027"),
+                            "התאריך לא נשמר")
+                return
+            setattr(settings, field_name, value.isoformat())
+        try:
+            save_settings(settings)
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "התאריכים לא נשמרו")
+            return
+        self.status("התאריכים נשמרו — התוכנה תזכיר חודש לפני שאישור פג")
+
     def _brand_tab(self) -> QWidget:
         from ..branding import BRANDS, BUILTIN_BRANDS, configured_brand_id
 
@@ -7261,6 +7299,29 @@ class SystemPage(Page):
         self.brand_note.setObjectName("Hint")
         self.brand_note.setWordWrap(True)
         layout.addWidget(self.brand_note)
+
+        # The shop's own certificates: lapsed, they cost 20–30% of every
+        # contractor payment. Dates kept in settings; watched a month ahead.
+        certificates = Card("אישורים של העסק")
+        cert_grid = FieldGrid()
+        from ..core.config import get_settings
+
+        settings = get_settings()
+        self._cert_fields: dict[str, Any] = {}
+        for field_name, label in (
+            ("withholding_certificate_until", "אישור ניכוי מס במקור — בתוקף עד"),
+            ("books_certificate_until", "אישור ניהול ספרים — בתוקף עד"),
+        ):
+            edit = QLineEdit(getattr(settings, field_name, "") or "")
+            edit.setPlaceholderText("31/03/2027")
+            edit.setText(_iso_to_shop_date(getattr(settings, field_name, "") or ""))
+            self._cert_fields[field_name] = edit
+            cert_grid.add(label, edit)
+        certificates.add(cert_grid)
+        save_certs = QPushButton("שמור תאריכים")
+        save_certs.clicked.connect(self.save_certificates)
+        certificates.add(save_certs)
+        layout.addWidget(certificates)
 
         note = QLabel(
             "הפרטים האלה מופיעים על הצעות מחיר, כרטיסי עבודה ובכותרת של כל "

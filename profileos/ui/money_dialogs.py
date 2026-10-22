@@ -322,6 +322,7 @@ class JobAccountDialog(QDialog):
         tabs.addTab(self._lines_tab(), "עבודות ותוספות")
         tabs.addTab(self._payments_tab(), "תשלומים")
         tabs.addTab(self._invoices_tab(), "חשבוניות")
+        tabs.addTab(self._bills_tab(), "חשבונות חלקיים")
         layout.addWidget(tabs, 1)
 
         close = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
@@ -417,6 +418,29 @@ class JobAccountDialog(QDialog):
         layout.addWidget(self.invoices_table, 1)
         return page
 
+    def _bills_tab(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        row = QHBoxLayout()
+        add = QPushButton("חשבון חלקי חדש")
+        add.setObjectName("Primary")
+        add.clicked.connect(self.add_bill)
+        row.addWidget(add)
+        copy = QPushButton("העתק חשבון נבחר")
+        copy.setToolTip("לשליחה למשרד הקבלן בוואטסאפ או במייל")
+        copy.clicked.connect(self.copy_bill)
+        row.addWidget(copy)
+        self.retention_label = QLabel("")
+        self.retention_label.setObjectName("Hint")
+        row.addWidget(self.retention_label, 1)
+        layout.addLayout(row)
+        self.bills_table = DataTable(
+            ["מס׳", "תאריך", "מצטבר", "חשבון זה", "מע״מ", "עיכבון", "ניכוי במקור", "לתשלום"],
+            empty_text="לעבודה מול קבלן ראשי: כל חודש — האחוז המצטבר שאושר",
+        )
+        layout.addWidget(self.bills_table, 1)
+        return page
+
     # -- showing --------------------------------------------------------------- #
     def refresh(self) -> None:
         from ..projects.account import invoices_missing_allocation, job_account
@@ -463,6 +487,19 @@ class JobAccountDialog(QDialog):
              _money(payment.withheld), payment.reference or "—"]
             for payment in job.payments
         ], numeric_columns=(1, 3))
+
+        from ..projects.progress import bill_figures, retention_held
+
+        self._bills = bill_figures(job)
+        self.bills_table.set_rows([
+            [str(f.number), f.on, f"⁦{f.cumulative_pct:g}%⁩", _money(f.this_net),
+             _money(f.vat), _money(f.retention), _money(f.withholding), _money(f.to_pay)]
+            for f in self._bills
+        ], numeric_columns=(3, 4, 5, 6, 7))
+        held = retention_held(job)
+        self.retention_label.setText(
+            f"עיכבון שמוחזק אצל הקבלן: ⁦{held:,.0f} ₪⁩ — לגבות במסירה" if held else ""
+        )
 
         missing = {invoice.number for invoice in invoices_missing_allocation(job)}
         self.invoices_table.set_rows([
@@ -589,6 +626,49 @@ class JobAccountDialog(QDialog):
             withheld=round(withheld.value(), 2), reference=reference.text().strip(),
         )
         self._change(lambda job: job.payments.append(payment), "התשלום")
+
+    def add_bill(self) -> None:
+        from ..projects.progress import next_bill
+
+        job = self.job()
+        last = job.progress_bills[-1] if job.progress_bills else None
+        pct, ok = QInputDialog.getDouble(
+            self, "חשבון חלקי", "אחוז מצטבר שאושר עד עכשיו:",
+            min(100.0, (last.cumulative_pct if last else 0) + 10), 0.1, 100, 1,
+        )
+        if not ok:
+            return
+        retention, ok = QInputDialog.getDouble(
+            self, "עיכבון", "אחוז עיכבון:", last.retention_pct if last else 5.0, 0, 20, 1
+        )
+        if not ok:
+            return
+        withholding, ok = QInputDialog.getDouble(
+            self, "ניכוי במקור", "אחוז ניכוי מס במקור (לפי האישור שלכם):",
+            last.withholding_pct if last else 0.0, 0, 50, 1,
+        )
+        if not ok:
+            return
+        try:
+            bill = next_bill(job, pct, retention_pct=retention, withholding_pct=withholding)
+        except Exception as exc:  # noqa: BLE001
+            _warn(self, "החשבון לא נוסף", exc)
+            return
+        self._change(lambda fresh: fresh.progress_bills.append(bill), "החשבון החלקי")
+
+    def copy_bill(self) -> None:
+        from PySide6.QtWidgets import QApplication
+
+        from ..branding import active_brand
+        from ..projects.progress import bill_text
+
+        row = self.bills_table.currentRow()
+        bills = getattr(self, "_bills", [])
+        if not 0 <= row < len(bills):
+            return
+        QApplication.clipboard().setText(
+            bill_text(self.job(), bills[row], brand_name=active_brand().display_name)
+        )
 
     def add_invoice(self) -> None:
         from ..projects import InvoiceRecord

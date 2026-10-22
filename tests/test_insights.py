@@ -169,3 +169,18 @@ def test_tomorrows_customers_who_were_not_told(shop):
     diary.add(Appointment(on=next_working_day(TODAY), customer_name="רחל"))
     found = [i for i in _scan(jobs=[], agenda=diary) if i.key.startswith("remind:")]
     assert found and "רחל" in found[0].detail
+
+
+def test_a_certificate_about_to_lapse_is_flagged_a_month_ahead(shop):
+    from types import SimpleNamespace
+
+    soon = SimpleNamespace(
+        withholding_certificate_until=(TODAY + timedelta(days=20)).isoformat(),
+        books_certificate_until=(TODAY - timedelta(days=1)).isoformat(),
+        backup_mirror=None,
+    )
+    found = _scan(jobs=[], settings=soon)
+    titles = _titles(found)
+    assert "אישור ניכוי מס במקור פג בעוד ⁦20⁩ ימים" in titles
+    assert "אישור ניהול ספרים פג" in titles
+    assert any(i.severity == "danger" and "ניהול ספרים" in i.title for i in found)

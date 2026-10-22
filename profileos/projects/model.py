@@ -183,6 +183,27 @@ class InvoiceRecord(RoundTrips):
     issuer: str = ""
 
 
+class ProgressBill(RoundTrips):
+    """One interim bill to a main contractor (חשבון חלקי מצטבר).
+
+    The contractor approves a cumulative percentage of the work; this bill is
+    what that adds over the last one. They hold back a retention (עיכבון)
+    until the end, and deduct income tax at source when the shop's
+    certificate says so.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    number: int
+    on: str = Field(default_factory=lambda: date.today().isoformat())
+    #: Approved so far, as a percentage of the whole job (0–100).
+    cumulative_pct: float
+    retention_pct: float = 5.0
+    withholding_pct: float = 0.0
+    approved_by: str = ""
+    note: str = ""
+
+
 class PlumbingSpec(RoundTrips):
     """The plumbing side of a job: what fixtures, for how many dwellings."""
 
@@ -277,6 +298,7 @@ class JobFile(RoundTrips):
     lines: list[JobLine] = Field(default_factory=list)
     payments: list[Payment] = Field(default_factory=list)
     invoices: list[InvoiceRecord] = Field(default_factory=list)
+    progress_bills: list[ProgressBill] = Field(default_factory=list)
 
     #: A snapshot of the last quotation, so the job list can show money
     #: without repricing every job it displays.

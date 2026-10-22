@@ -245,3 +245,30 @@ class TestField:
         assert Symptom.BLOCKAGE.trade == "plumbing"
         assert Symptom.DROPPED.trade == "aluminium"
         assert Symptom.BURST.likely_severity is Severity.BLOCKING
+
+
+class TestProgressBills:
+    def _job(self) -> JobFile:
+        return JobFile(job_id="J-20", name="בניין בעלי", quote_total=100_000)
+
+    def test_each_bill_is_what_the_new_percentage_adds(self):
+        from profileos.projects.progress import bill_figures, next_bill, retention_held
+
+        job = self._job()
+        job.progress_bills.append(next_bill(job, 30, withholding_pct=5))
+        job.progress_bills.append(next_bill(job, 60, withholding_pct=5))
+        first, second = bill_figures(job)
+        assert first.this_net == 30_000 and second.this_net == 30_000
+        assert second.cumulative_net == 60_000
+        assert second.retention == 1_500 and second.withholding == 1_500
+        assert second.to_pay == pytest.approx(30_000 + 5_400 - 1_500 - 1_500)
+        assert retention_held(job) == 3_000
+
+    def test_a_bill_that_goes_backwards_is_refused(self):
+        from profileos.core.errors import ProfileOSError
+        from profileos.projects.progress import next_bill
+
+        job = self._job()
+        job.progress_bills.append(next_bill(job, 40))
+        with pytest.raises(ProfileOSError):
+            next_bill(job, 35)

@@ -173,6 +173,12 @@ class Settings(BaseModel):
     theme: str = "light"
     #: Where the daily backups go; beside the data folder when unset.
     backup_folder: Path | None = None
+    #: The shop's own certificates, as ISO dates. A contractor deducts 20–30%
+    #: at source from every payment once אישור ניכוי במקור has lapsed, and a
+    #: lapsed אישור ניהול ספרים loses public and contractor work — so both are
+    #: watched, a month ahead.
+    withholding_certificate_until: str = ""
+    books_certificate_until: str = ""
     #: A second copy of each day's backup — a USB drive or a synced cloud
     #: folder — so a dead disk does not take the backups with it.
     backup_mirror: Path | None = None
