@@ -112,7 +112,12 @@ class NewJobDialog(_FormDialog):
         self.system = QComboBox()
         for entry_id, label in systems:
             self.system.addItem(label, entry_id)
+        self.trade = QComboBox()
+        self.trade.addItem("אלומיניום", "aluminium")
+        self.trade.addItem("אינסטלציה", "plumbing")
+        self.trade.addItem("אלומיניום ואינסטלציה", "both")
 
+        self.grid.add("תחום", self.trade)
         self.grid.add("לקוח", row)
         self.grid.add("שם הפרויקט", self.name)
         self.grid.add("אתר", self.site)
@@ -200,6 +205,7 @@ class NewJobDialog(_FormDialog):
             "reference": self.reference.text().strip(),
             "site_address": self.site.text().strip(),
             "system_id": self.system.currentData() or "generic",
+            "trade": self.trade.currentData() or "aluminium",
         }
 
 

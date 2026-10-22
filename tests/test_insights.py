@@ -141,3 +141,21 @@ def test_a_new_backup_failure_is_not_hidden_by_an_old_dismissal(shop, monkeypatc
     monkeypatch.setattr(backup, "_STATUS", {"error": "אין הרשאה", "last": "", "mirror_error": ""})
     second = [i for i in _scan(jobs=[]) if i.title == "הגיבוי האוטומטי נכשל"][0]
     assert second.key not in dismissed()
+
+
+def test_an_installed_job_not_fully_paid_is_found(shop):
+    from profileos.projects import Payment
+
+    job = _job("J-9", JobStatus.INSTALLED, since=TODAY - timedelta(days=5),
+               quote_total=10_000, customer_name="דוד")
+    job.payments = [Payment(amount=9_000)]
+    owing = [i for i in _scan(jobs=[job]) if i.key.startswith("owing:")]
+    assert owing and "2,800" in owing[0].detail
+
+
+def test_an_extra_nobody_agreed_is_found(shop):
+    from profileos.projects import JobLine, LineKind
+
+    job = _job("J-10", JobStatus.IN_PRODUCTION, since=TODAY)
+    job.lines = [JobLine(kind=LineKind.EXTRA, description="חלון נוסף", unit_price=900)]
+    assert "לא אושרה" in _titles(_scan(jobs=[job]))

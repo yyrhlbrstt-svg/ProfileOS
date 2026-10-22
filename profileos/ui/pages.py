@@ -875,6 +875,11 @@ class ProjectsPage(Page):
         save.clicked.connect(self.save_current)
         self.header.add_action(save)
 
+        prices = QPushButton("מחירון")
+        prices.setToolTip("המחירים שלכם לכל סוג עבודה — אלומיניום ואינסטלציה")
+        prices.clicked.connect(self.open_pricebook)
+        self.header.add_action(prices)
+
         self.stats = StatRow([
             ("open", "פרויקטים פתוחים"), ("quoted", "בהצעה"),
             ("production", "בייצור"), ("backlog", "צבר הזמנות"),
@@ -1069,14 +1074,22 @@ class ProjectsPage(Page):
         layout.setContentsMargins(0, METRICS.space(3), 0, 0)
         layout.setSpacing(METRICS.space(3))
 
+        search_row = QHBoxLayout()
         self.search = QLineEdit()
         self.search.setPlaceholderText("חיפוש לפי שם, לקוח, מספר או אתר…")
         self.search.setClearButtonEnabled(True)
         self.search.textChanged.connect(lambda _text: self.refresh())
-        layout.addWidget(self.search)
+        search_row.addWidget(self.search, 1)
+        self.trade_filter = QComboBox()
+        self.trade_filter.addItem("כל התחומים", "")
+        self.trade_filter.addItem("אלומיניום", "aluminium")
+        self.trade_filter.addItem("אינסטלציה", "plumbing")
+        self.trade_filter.currentIndexChanged.connect(lambda _i: self.refresh())
+        search_row.addWidget(self.trade_filter)
+        layout.addLayout(search_row)
 
         self.jobs_table = DataTable(
-            ["מספר", "שם", "לקוח", "סטטוס", "יחידות", "שווי", "עודכן"],
+            ["מספר", "שם", "לקוח", "סטטוס", "יחידות", "שווי", "עודכן", "תחום", "לגבייה"],
             empty_text="אין עדיין פרויקטים — לחץ ״פרויקט חדש״ כדי לפתוח את הראשון",
         )
         self.jobs_table.itemSelectionChanged.connect(self._show_job)
@@ -1102,6 +1115,11 @@ class ProjectsPage(Page):
         row.addWidget(advance)
         self._advance_button = advance
 
+        account = QPushButton("חשבון הפרויקט")
+        account.setToolTip("עבודות, תוספות, תשלומים, חשבוניות — וכמה עוד חייבים")
+        account.clicked.connect(self.open_account)
+        row.addWidget(account)
+
         pack = QPushButton("תיק עבודה להדפסה")
         pack.clicked.connect(self.export_dossier)
         row.addWidget(pack)
@@ -1115,7 +1133,7 @@ class ProjectsPage(Page):
         row.addStretch(1)
         detail.add_layout(row)
         # Nothing to act on until a job is chosen — and the buttons say so.
-        self._job_actions = [self.open_button, advance, pack, notify, self.status_combo]
+        self._job_actions = [self.open_button, advance, account, pack, notify, self.status_combo]
         for widget in self._job_actions:
             widget.setEnabled(False)
         layout.addWidget(detail)
@@ -1172,6 +1190,58 @@ class ProjectsPage(Page):
             self.status_combo.addItem(status.hebrew, status.value)
         self.status_combo.setEnabled(self.status_combo.count() > 0)
 
+    # -- money ------------------------------------------------------------------ #
+    def _cheques_for_accounts(self) -> list[Any]:
+        try:
+            from ..erp.collection import default_cheques
+
+            return list(default_cheques())
+        except Exception:  # noqa: BLE001 - the list still shows without cheques
+            return []
+
+    @staticmethod
+    def _owed_cell(job: Any, cheques: list[Any], job_account: Any) -> str:
+        """What the job still owes, for jobs that are owed anything yet."""
+        if job.status.value not in ("won", "in_production", "installed"):
+            return "—"
+        account = job_account(job, cheques)
+        if account.total_gross <= 0:
+            return "—"
+        if account.uncovered <= 0.5:
+            return "שולם"
+        return f"⁦{account.uncovered:,.0f} ₪⁩"
+
+    def open_account(self) -> None:
+        from .money_dialogs import JobAccountDialog
+
+        job = self._selected_job()
+        if job is None:
+            self.status("בחר פרויקט מהרשימה")
+            return
+        dialog = JobAccountDialog(
+            job.job_id, self._store(), self,
+            cheques=self._cheques_for_accounts, pricebook=self._pricebook,
+        )
+        dialog.exec()
+        self.refresh()
+
+    def _pricebook(self) -> Any:
+        from ..quoting.pricebook import default_pricebook
+
+        if getattr(self, "_book_of_prices", None) is None:
+            self._book_of_prices = self.checked_book(default_pricebook(), "המחירון")
+        return self._book_of_prices
+
+    def open_pricebook(self) -> None:
+        from .money_dialogs import PriceBookDialog
+
+        try:
+            book = self._pricebook()
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "המחירון לא נקרא")
+            return
+        PriceBookDialog(book, self).exec()
+
     def new_job(self) -> None:
         from ..systems import DIRECTORY
         from .dialogs import NewJobDialog
@@ -1203,6 +1273,7 @@ class ProjectsPage(Page):
                 reference=values["reference"],
                 site_address=values["site_address"],
                 system_id=values["system_id"],
+                trade=values.get("trade", "aluminium"),
             )
         except Exception as exc:  # noqa: BLE001
             self.report(exc, "לא ניתן לפתוח את הפרויקט")
@@ -1697,7 +1768,15 @@ class ProjectsPage(Page):
                     job.site_address, job.reference,
                 )).lower()
             ]
+        wanted_trade = self.trade_filter.currentData() if hasattr(self, "trade_filter") else ""
+        if wanted_trade:
+            from ..projects import Trade
 
+            self._jobs = [job for job in self._jobs if job.trade.includes(Trade(wanted_trade))]
+
+        from ..projects.account import job_account
+
+        cheques = self._cheques_for_accounts()
         colours: dict[tuple[int, int], str] = {}
         tint = {
             "enquiry": self.colours.text_muted,
@@ -1716,13 +1795,17 @@ class ProjectsPage(Page):
                 # amount is isolated so the bidi run does not reorder it.
                 f"⁦{job.quote_total:,.0f} ₪⁩" if job.quote_total else "—",
                 job.updated,
+                job.trade.hebrew,
+                self._owed_cell(job, cheques, job_account),
             ])
             colours[(index, 3)] = tint.get(job.status.value, self.colours.text)
+            if rows[-1][-1] not in ("—", "שולם"):
+                colours[(index, 8)] = self.colours.warning
         self.jobs_table._empty_text = (
             f"לא נמצא פרויקט התואם ״{needle}״" if needle
             else "אין עדיין פרויקטים — לחץ ״פרויקט חדש״ כדי לפתוח את הראשון"
         )
-        self.jobs_table.set_rows(rows, numeric_columns=(4, 5), colours=colours)
+        self.jobs_table.set_rows(rows, numeric_columns=(4, 5, 8), colours=colours)
         # A list with a row nobody has clicked still has a most-recent job, and
         # showing its detail beats an empty panel that says nothing was chosen.
         if rows and not self.jobs_table.selectionModel().hasSelection():
@@ -3661,9 +3744,23 @@ class QuotePage(Page):
         # The description is the sentence; the figures size to themselves.
         self.lines.stretch(1)
         lines_card.add(self.lines, 1)
+        line_bar = QHBoxLayout()
+        line_bar.setSpacing(METRICS.space(2))
+        from_book = QPushButton("הוסף עבודה מהמחירון")
+        from_book.setToolTip("פירוק, הובלה, מנוף, החלפת דוד, פתיחת סתימה…")
+        from_book.clicked.connect(self.add_work_line)
+        line_bar.addWidget(from_book)
+        free = QPushButton("שורה חופשית")
+        free.clicked.connect(self.add_free_line)
+        line_bar.addWidget(free)
+        drop = QPushButton("הסר שורת עבודה")
+        drop.clicked.connect(self.remove_work_line)
+        line_bar.addWidget(drop)
+        line_bar.addStretch(1)
         undo = QPushButton("בטל עריכה אחרונה")
         undo.clicked.connect(self.undo_edit)
-        lines_card.add(undo)
+        line_bar.addWidget(undo)
+        lines_card.add_layout(line_bar)
         splitter.addWidget(lines_card)
 
         side = QWidget()
@@ -3695,6 +3792,93 @@ class QuotePage(Page):
         self._loading = False
 
     # -- the draft ----------------------------------------------------------- #
+    # -- work lines from the price book ---------------------------------------- #
+    def _load_work_lines(self, job: Any) -> None:
+        """The job's quoted work lines come with it into a new quotation."""
+        if self.draft is None or job is None:
+            return
+        from ..quoting.editor import ExtraLine
+
+        for index, line in enumerate(
+            (line for line in job.lines if line.kind.value == "quoted"), start=1
+        ):
+            self.draft.extra_lines.append(ExtraLine(
+                code=f"X-{index:02d}", description=line.description,
+                quantity=line.quantity, unit=line.unit, unit_price=line.unit_price,
+                item_code=line.item_code,
+            ))
+
+    def _pricebook(self) -> Any:
+        from ..quoting.pricebook import default_pricebook
+
+        if getattr(self, "_book_of_prices", None) is None:
+            self._book_of_prices = self.checked_book(default_pricebook(), "המחירון")
+        return self._book_of_prices
+
+    def _need_draft(self) -> bool:
+        if self.draft is None:
+            self.start_draft()
+        return self.draft is not None
+
+    def add_work_line(self) -> None:
+        from .money_dialogs import PriceItemPicker
+
+        if not self._need_draft():
+            return
+        try:
+            book = self._pricebook()
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "המחירון לא נקרא")
+            return
+        job = self.session.job
+        trade = job.trade.value if job is not None else "both"
+        picker = PriceItemPicker(book, self, trade=trade)
+        if picker.exec() != QDialog.DialogCode.Accepted or picker.item() is None:
+            return
+        item = picker.item()
+        price = picker.price.value()
+        if price > 0 and price != item.price:
+            try:
+                book.set_price(item.code, price)
+            except Exception:  # noqa: BLE001 - the line still carries its price
+                pass
+        try:
+            self.draft.add_extra_line(
+                item.name, quantity=picker.quantity.value(), unit=item.unit,
+                unit_price=price, item_code=item.code, by="desktop",
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "השורה לא נוספה")
+            return
+        self.refresh_draft()
+
+    def add_free_line(self) -> None:
+        if not self._need_draft():
+            return
+        text, ok = QInputDialog.getText(self, "שורה חופשית", "מה העבודה?")
+        if not ok or not text.strip():
+            return
+        price, ok = QInputDialog.getDouble(self, "מחיר", "מחיר לפני מע״מ:", 0, 0, 10_000_000, 2)
+        if not ok:
+            return
+        try:
+            self.draft.add_extra_line(text.strip(), unit_price=price, by="desktop")
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "השורה לא נוספה")
+            return
+        self.refresh_draft()
+
+    def remove_work_line(self) -> None:
+        if self.draft is None:
+            return
+        row = self.lines.currentRow()
+        code = self.lines.item(row, 0) if row >= 0 else None
+        if code is None or not code.text().startswith("X-"):
+            self.status("בחרו שורת עבודה (מסומנת X) כדי להסיר אותה")
+            return
+        self.draft.remove_extra_line(code.text(), by="desktop")
+        self.refresh_draft()
+
     def _apply_display(self, *_args: Any) -> None:
         """The picture settings go on the draft the documents are printed from."""
         if self.draft is None:
@@ -3705,10 +3889,15 @@ class QuotePage(Page):
     def start_draft(self) -> None:
         from ..quoting.editor import QuoteDraft
 
-        if not self.session.builds:
+        job = self.session.job
+        # A plumbing job is quoted from work lines alone; a window job needs
+        # its openings first.
+        work_only = job is not None and (
+            job.trade.value != "aluminium" or any(line.kind.value == "quoted" for line in job.lines)
+        )
+        if not self.session.builds and not work_only:
             self.report(ProfileOSError("עדיין לא תוכננו פתחים. תכנן פתח בעמוד ״פתח״ ואז חזור לכאן."), "אין מה לתמחר")
             return
-        job = self.session.job
         try:
             self.draft = QuoteDraft.start(
                 [build.opening for build in self.session.builds],
@@ -3723,6 +3912,7 @@ class QuotePage(Page):
             )
             self.draft.set_margin(self.margin.value())
             self._apply_display()
+            self._load_work_lines(job)
         except Exception as exc:  # noqa: BLE001
             self.report(exc, "התמחור נכשל")
             return
@@ -3770,7 +3960,13 @@ class QuotePage(Page):
             return
         try:
             value = float(str(item.text()).replace(",", ""))
-            self.draft.set_line_price(code.text(), value, by="desktop")
+            extra = next((line for line in self.draft.extra_lines if line.code == code.text()), None)
+            if extra is not None:
+                if value < 0:
+                    raise ProfileOSError("מחיר לא יכול להיות שלילי")
+                extra.unit_price = round(value, 2)
+            else:
+                self.draft.set_line_price(code.text(), value, by="desktop")
         except Exception as exc:  # noqa: BLE001
             self.report(exc, "לא ניתן לקבוע את המחיר")
         self.refresh_draft()
@@ -3800,12 +3996,16 @@ class QuotePage(Page):
                         f"{opening.name or opening.element_id} — {kind} "
                         f"\u2066{opening.width:.0f} × {opening.height:.0f}\u2069 מ״מ"
                     )
+                note = "נערך ידנית" if line["edited"] else ""
+                if line.get("extra"):
+                    note = "לא הוזן מחיר" if line["unit_price"] <= 0 else "עבודה"
                 rows.append([
-                    line["code"], description, f"{line['quantity']:g}",
+                    line["code"], description,
+                    f"{line['quantity']:g} {line['unit']}" if line.get("extra") else f"{line['quantity']:g}",
                     f"{line['unit_price']:,.2f}", f"{line['total']:,.2f}",
-                    "נערך ידנית" if line["edited"] else "",
+                    note,
                 ])
-                if line["edited"]:
+                if line["edited"] or note == "לא הוזן מחיר":
                     colours[(index, 5)] = self.colours.warning
             self.lines.set_rows(rows, numeric_columns=(2, 3, 4), colours=colours)
             # Re-enable editing: set_rows makes items, so flags come from the
@@ -3973,6 +4173,18 @@ class QuotePage(Page):
             store = default_store()
             job = self.session.save_design_to_job(store)
             job.record_quote(float(totals["net"]), self.draft.quotation.currency)
+            # The work lines quoted are the job's quoted lines from now on;
+            # extras added on site are left exactly as they are.
+            from ..projects import JobLine, LineKind
+
+            job.lines = [line for line in job.lines if line.kind is not LineKind.QUOTED] + [
+                JobLine(
+                    kind=LineKind.QUOTED, description=extra.description,
+                    quantity=extra.quantity, unit=extra.unit,
+                    unit_price=extra.unit_price, item_code=extra.item_code,
+                )
+                for extra in self.draft.extra_lines
+            ]
             if job.status is JobStatus.ENQUIRY:
                 job.advance(JobStatus.QUOTED, "הצעה הופקה מהמערכת")
             store.save(job)
@@ -4652,6 +4864,21 @@ class PlumbingPage(Page):
         export.clicked.connect(self.export_takeoff)
         self.header.add_action(export)
 
+        supplier = QPushButton("הזמנה מהספק בוואטסאפ")
+        supplier.setObjectName("WhatsApp")
+        supplier.clicked.connect(self.order_from_supplier)
+        self.header.add_action(supplier)
+
+        to_quote = QPushButton("העבר להצעת מחיר")
+        to_quote.setToolTip("כל כלי סניטרי הופך לשורת התקנה מהמחירון")
+        to_quote.clicked.connect(self.send_to_quote)
+        self.header.add_action(to_quote)
+
+        keep = QPushButton("שמור בפרויקט")
+        keep.clicked.connect(self.save_to_job)
+        self.header.add_action(keep)
+        self._loaded_for = ""
+
         self.stats = StatRow([
             ("fixtures", "כלים"), ("demand", "ספיקה"),
             ("dfu", "יחידות ניקוז"), ("stack", "מפל"), ("loss", "איבוד חום"),
@@ -5149,18 +5376,132 @@ class PlumbingPage(Page):
         )
         if not path:
             return
+        import io
+
+        from ..core.storage import atomic_write_bytes
+
         try:
-            with open(path, "w", encoding="utf-8-sig", newline="") as handle:
-                writer = csv.writer(handle)
-                writer.writerow(["סוג", "תיאור", "כמות", "יחידה", "הערה"])
-                writer.writerows(self._takeoff.rows())
+            buffer = io.StringIO(newline="")
+            writer = csv.writer(buffer)
+            writer.writerow(["סוג", "תיאור", "כמות", "יחידה", "הערה"])
+            writer.writerows(self._takeoff.rows())
+            atomic_write_bytes(Path(path), buffer.getvalue().encode("utf-8-sig"))
         except Exception as exc:  # noqa: BLE001
             self.report(exc, "הייצוא נכשל")
             return
         self.status(f"כתב הכמויות נשמר: {path}")
 
     def refresh(self) -> None:
+        # The open job's own fixture counts, once per job, so this page shows
+        # the plumbing of the job that is open rather than the last typed.
+        job = self.session.job
+        spec = getattr(job, "plumbing", None) if job is not None else None
+        if job is not None and spec is not None and self._loaded_for != job.job_id:
+            self._loaded_for = job.job_id
+            self.dwellings.blockSignals(True)
+            self.dwellings.setValue(max(1, spec.dwellings))
+            self.dwellings.blockSignals(False)
+            for fixture_id, box in self.counts.items():
+                box.blockSignals(True)
+                box.setValue(int(spec.fixtures.get(fixture_id, 0)))
+                box.blockSignals(False)
         self._recount()
+
+    # -- the plumbing as part of the job ------------------------------------- #
+    def _counts(self) -> dict[str, int]:
+        return {fid: box.value() for fid, box in self.counts.items() if box.value()}
+
+    def save_to_job(self) -> bool:
+        """The fixture schedule is the job's, kept with it."""
+        from ..projects import PlumbingSpec, Trade, default_store
+
+        job = self.session.job
+        if job is None:
+            self.report(ProfileOSError("פתחו פרויקט קודם, ואז שמרו בו את האינסטלציה."),
+                        "אין פרויקט פתוח")
+            return False
+        try:
+            store = default_store()
+            fresh = store.load(job.job_id)
+            fresh.plumbing = PlumbingSpec(fixtures=self._counts(), dwellings=self.dwellings.value())
+            if fresh.trade is Trade.ALUMINIUM:
+                fresh.trade = Trade.BOTH
+            fresh.touch()
+            store.save(fresh)
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "האינסטלציה לא נשמרה בפרויקט")
+            return False
+        self.session.job = fresh
+        self._loaded_for = fresh.job_id
+        self.status(f"האינסטלציה נשמרה ב{fresh.job_id}")
+        return True
+
+    def send_to_quote(self) -> None:
+        """Each fixture becomes its installation line from the price book."""
+        from ..plumbing import FIXTURES
+        from ..quoting.pricebook import default_pricebook
+
+        counts = self._counts()
+        if not counts:
+            self.report(ProfileOSError("הזינו כמויות של כלים סניטריים קודם"), "אין מה להעביר")
+            return
+        if self.session.job is None:
+            self.report(ProfileOSError(
+                "פתחו פרויקט (או צרו חדש בתחום ״אינסטלציה״) — ההצעה נשמרת בו."
+            ), "אין פרויקט פתוח")
+            return
+        if not self.save_to_job():
+            return
+        try:
+            book = default_pricebook()
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "המחירון לא נקרא")
+            return
+        names = {fixture.id: fixture.hebrew for fixture in FIXTURES}
+        window = self.window()
+        if not hasattr(window, "go_to_page"):
+            return
+        quote = window.go_to_page("Quotation")
+        if quote.draft is None:
+            quote.start_draft()
+        if quote.draft is None:
+            return
+        unpriced = 0
+        for fixture_id, count in counts.items():
+            item = book.for_fixture(fixture_id)
+            if item is not None:
+                quote.draft.add_extra_line(item.name, quantity=count, unit=item.unit,
+                                           unit_price=item.price, item_code=item.code)
+                unpriced += 0 if item.priced else 1
+            else:
+                quote.draft.add_extra_line(f"התקנת {names.get(fixture_id, fixture_id)}",
+                                           quantity=count)
+                unpriced += 1
+        quote.refresh_draft()
+        self.status(
+            "הכלים הועברו להצעת המחיר"
+            + (f" · ל־⁦{unpriced}⁩ שורות עוד אין מחיר — לחצו פעמיים על המחיר" if unpriced else "")
+        )
+
+    def order_from_supplier(self) -> None:
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+
+        from ..branding import active_brand
+        from ..sharing import material_list_message, whatsapp_link
+
+        if self._takeoff is None:
+            self.run_design()
+        if self._takeoff is None:
+            return
+        job = self.session.job
+        message = material_list_message(
+            self._takeoff.rows(), brand_name=active_brand().display_name,
+            job_name=job.name if job is not None else "",
+            site=job.site_address if job is not None else "",
+        )
+        QDesktopServices.openUrl(QUrl(whatsapp_link("", message)))
+        self.status("נפתח וואטסאפ עם רשימת החומרים — בחרו את הספק ושלחו")
 
 
 # --------------------------------------------------------------------------- #

@@ -1,0 +1,630 @@
+"""The windows that handle a job's money: the price book, and the job's account.
+
+Each change is written at once, onto the copy of the job that is on disk now,
+so a payment recorded here is never undone by another screen saving an older
+copy of the same job.
+"""
+
+from __future__ import annotations
+
+from typing import Any, Callable
+
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import (
+    QCheckBox,
+    QComboBox,
+    QDialog,
+    QDialogButtonBox,
+    QDoubleSpinBox,
+    QHBoxLayout,
+    QInputDialog,
+    QLabel,
+    QLineEdit,
+    QMessageBox,
+    QPushButton,
+    QTabWidget,
+    QVBoxLayout,
+    QWidget,
+)
+
+from .theme import METRICS
+from .widgets import DataTable, FieldGrid
+
+TRADES = (("both", "הכול"), ("aluminium", "אלומיניום"), ("plumbing", "אינסטלציה"))
+
+
+def _money(value: float) -> str:
+    return f"⁦{value:,.0f} ₪⁩" if value else "—"
+
+
+def _warning_colour(widget: QWidget) -> str:
+    """The palette's warning colour, from the window the dialog belongs to."""
+    window = widget.parent().window() if widget.parent() is not None else None
+    colours = getattr(window, "colours", None)
+    return getattr(colours, "warning", "#B25000")
+
+
+def _warn(parent: QWidget, title: str, exc: Exception) -> None:
+    box = QMessageBox(parent)
+    box.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
+    box.setIcon(QMessageBox.Icon.Warning)
+    box.setWindowTitle(title)
+    box.setText(str(exc))
+    box.exec()
+
+
+# --------------------------------------------------------------------------- #
+# Picking from the price book
+# --------------------------------------------------------------------------- #
+class PriceItemPicker(QDialog):
+    """Search the price book and choose one item and a quantity."""
+
+    def __init__(self, book: Any, parent: QWidget | None = None, *, trade: str = "both") -> None:
+        super().__init__(parent)
+        self.setWindowTitle("הוספה מהמחירון")
+        self.setMinimumSize(620, 480)
+        self._book = book
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(*(METRICS.space(5),) * 4)
+        layout.setSpacing(METRICS.space(3))
+
+        row = QHBoxLayout()
+        self.search = QLineEdit()
+        self.search.setPlaceholderText("חיפוש: סתימה, דוד, מנוף, פירוק…")
+        self.search.setClearButtonEnabled(True)
+        row.addWidget(self.search, 1)
+        self.trade = QComboBox()
+        for key, label in TRADES:
+            self.trade.addItem(label, key)
+        self.trade.setCurrentIndex(max(0, self.trade.findData(trade)))
+        row.addWidget(self.trade)
+        layout.addLayout(row)
+
+        self.table = DataTable(["קוד", "עבודה", "יחידה", "מחיר", "קטגוריה"],
+                               empty_text="אין פריט כזה — אפשר לכתוב שורה חופשית")
+        self.table.stretch(1)
+        self.table.doubleClicked.connect(lambda _i: self.accept())
+        layout.addWidget(self.table, 1)
+
+        grid = FieldGrid()
+        self.quantity = QDoubleSpinBox()
+        self.quantity.setRange(0.01, 100000)
+        self.quantity.setDecimals(2)
+        self.quantity.setValue(1)
+        grid.add("כמות", self.quantity)
+        self.price = QDoubleSpinBox()
+        self.price.setRange(0, 10_000_000)
+        self.price.setDecimals(2)
+        self.price.setSuffix(" ₪")
+        grid.add("מחיר ליחידה", self.price)
+        layout.addWidget(grid)
+        self.note = QLabel("")
+        self.note.setObjectName("FieldWarning")
+        self.note.setWordWrap(True)
+        self.note.hide()
+        layout.addWidget(self.note)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("הוסף")
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setObjectName("Primary")
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("ביטול")
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+        self._shown: list[Any] = []
+        self.search.textChanged.connect(lambda _t: self._fill())
+        self.trade.currentIndexChanged.connect(lambda _i: self._fill())
+        self.table.itemSelectionChanged.connect(self._picked)
+        self._fill()
+        self.search.setFocus()
+
+    def _fill(self) -> None:
+        self._shown = self._book.search(self.search.text(), self.trade.currentData() or "")
+        self.table.set_rows([
+            [item.code, item.name, item.unit,
+             _money(item.price) if item.priced else "לא הוזן", item.category]
+            for item in self._shown
+        ], numeric_columns=(3,))
+        if self._shown:
+            self.table.setCurrentCell(0, 0)
+
+    def _picked(self) -> None:
+        item = self.item()
+        if item is None:
+            return
+        self.price.setValue(item.price)
+        self.note.setVisible(not item.priced)
+        self.note.setText(
+            "לפריט הזה עוד לא הוזן מחיר במחירון. הקלידו מחיר — הוא יישמר גם במחירון."
+        )
+
+    def item(self) -> Any:
+        row = self.table.currentRow()
+        return self._shown[row] if 0 <= row < len(self._shown) else None
+
+
+# --------------------------------------------------------------------------- #
+# The price book itself
+# --------------------------------------------------------------------------- #
+class PriceBookDialog(QDialog):
+    """Every kind of work the shop charges for, and its price."""
+
+    def __init__(self, book: Any, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("המחירון של העסק")
+        self.setMinimumSize(820, 560)
+        self._book = book
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(*(METRICS.space(5),) * 4)
+        layout.setSpacing(METRICS.space(3))
+
+        intro = QLabel(
+            "המחירים שלכם לכל סוג עבודה — לא הצעת מחיר של ספק. פריט בלי מחיר "
+            "מסומן ״לא הוזן״ בכל מקום שמשתמשים בו, עד שמזינים לו מחיר. "
+            "לחיצה כפולה על שורה מעדכנת את המחיר."
+        )
+        intro.setObjectName("Hint")
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+
+        row = QHBoxLayout()
+        self.search = QLineEdit()
+        self.search.setPlaceholderText("חיפוש…")
+        self.search.setClearButtonEnabled(True)
+        row.addWidget(self.search, 1)
+        self.trade = QComboBox()
+        for key, label in TRADES:
+            self.trade.addItem(label, key)
+        row.addWidget(self.trade)
+        add = QPushButton("פריט חדש")
+        add.setObjectName("Primary")
+        add.clicked.connect(self.add_item)
+        row.addWidget(add)
+        layout.addLayout(row)
+
+        self.table = DataTable(
+            ["קוד", "עבודה", "יחידה", "מחיר", "מקור המחיר", "קטגוריה"],
+            empty_text="המחירון ריק",
+        )
+        self.table.stretch(1)
+        self.table.doubleClicked.connect(lambda _i: self.edit_price())
+        layout.addWidget(self.table, 1)
+        self.summary = QLabel("")
+        self.summary.setObjectName("Hint")
+        layout.addWidget(self.summary)
+
+        close = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        close.button(QDialogButtonBox.StandardButton.Close).setText("סגור")
+        close.rejected.connect(self.reject)
+        layout.addWidget(close)
+
+        self._shown: list[Any] = []
+        self.search.textChanged.connect(lambda _t: self.refresh())
+        self.trade.currentIndexChanged.connect(lambda _i: self.refresh())
+        self.refresh()
+
+    def refresh(self) -> None:
+        self._shown = self._book.search(self.search.text(), self.trade.currentData() or "")
+        colours = {}
+        rows = []
+        for index, item in enumerate(self._shown):
+            rows.append([
+                item.code, item.name, item.unit,
+                _money(item.price) if item.priced else "לא הוזן",
+                item.source or "—", item.category,
+            ])
+            if not item.priced:
+                colours[(index, 3)] = _warning_colour(self)
+        self.table.set_rows(rows, numeric_columns=(3,), colours=colours)
+        missing = len(self._book.unpriced())
+        self.summary.setText(
+            f"⁦{len(self._book)}⁩ פריטים במחירון"
+            + (f" · ⁦{missing}⁩ עוד בלי מחיר" if missing else " · לכולם יש מחיר")
+        )
+
+    def edit_price(self) -> None:
+        row = self.table.currentRow()
+        if not 0 <= row < len(self._shown):
+            return
+        item = self._shown[row]
+        price, ok = QInputDialog.getDouble(
+            self, "מחיר", f"{item.name} — מחיר ל{item.unit} לפני מע״מ:",
+            item.price, 0, 10_000_000, 2,
+        )
+        if not ok:
+            return
+        try:
+            self._book.set_price(item.code, price)
+        except Exception as exc:  # noqa: BLE001
+            _warn(self, "המחיר לא נשמר", exc)
+        self.refresh()
+
+    def add_item(self) -> None:
+        from ..quoting.pricebook import PriceItem
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("פריט חדש במחירון")
+        layout = QVBoxLayout(dialog)
+        grid = FieldGrid()
+        name = QLineEdit()
+        name.setPlaceholderText("למשל: החלפת מצוף בניאגרה")
+        unit = QComboBox()
+        unit.setEditable(True)
+        unit.addItems(["יח׳", "מ״א", "מ״ר", "שעה", "ביקור", "קומפלט"])
+        trade = QComboBox()
+        for key, label in TRADES[1:]:
+            trade.addItem(label, key)
+        trade.addItem("שניהם", "both")
+        price = QDoubleSpinBox()
+        price.setRange(0, 10_000_000)
+        price.setSuffix(" ₪")
+        category = QLineEdit()
+        grid.add("עבודה", name)
+        grid.add("יחידה", unit)
+        grid.add("תחום", trade)
+        grid.add("מחיר", price)
+        grid.add("קטגוריה", category)
+        layout.addWidget(grid)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("הוסף")
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("ביטול")
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        if dialog.exec() != QDialog.DialogCode.Accepted or not name.text().strip():
+            return
+        try:
+            self._book.add(PriceItem(
+                code=self._book.next_code(trade.currentData()), name=name.text().strip(),
+                unit=unit.currentText().strip() or "יח׳", price=price.value(),
+                trade=trade.currentData(), category=category.text().strip(),
+                source="הוזן במחירון" if price.value() else "",
+            ))
+        except Exception as exc:  # noqa: BLE001
+            _warn(self, "הפריט לא נוסף", exc)
+        self.refresh()
+
+
+# --------------------------------------------------------------------------- #
+# One job's account
+# --------------------------------------------------------------------------- #
+class JobAccountDialog(QDialog):
+    """Work, extras, payments and invoices of one job, and what is still owed."""
+
+    def __init__(self, job_id: str, store: Any, parent: QWidget | None = None, *,
+                 cheques: Callable[[], Any] | None = None,
+                 pricebook: Callable[[], Any] | None = None) -> None:
+        super().__init__(parent)
+        self._job_id = job_id
+        self._store = store
+        self._cheques = cheques or (lambda: [])
+        self._pricebook = pricebook
+        self.setMinimumSize(860, 600)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(*(METRICS.space(5),) * 4)
+        layout.setSpacing(METRICS.space(3))
+
+        self.headline = QLabel("")
+        self.headline.setObjectName("HomeNext")
+        self.headline.setWordWrap(True)
+        layout.addWidget(self.headline)
+        self.breakdown = QLabel("")
+        self.breakdown.setObjectName("Hint")
+        self.breakdown.setWordWrap(True)
+        layout.addWidget(self.breakdown)
+
+        tabs = QTabWidget()
+        tabs.addTab(self._lines_tab(), "עבודות ותוספות")
+        tabs.addTab(self._payments_tab(), "תשלומים")
+        tabs.addTab(self._invoices_tab(), "חשבוניות")
+        layout.addWidget(tabs, 1)
+
+        close = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        close.button(QDialogButtonBox.StandardButton.Close).setText("סגור")
+        close.rejected.connect(self.reject)
+        layout.addWidget(close)
+        self.refresh()
+
+    # -- the job, always the copy on disk ------------------------------------- #
+    def job(self) -> Any:
+        return self._store.load(self._job_id)
+
+    def _change(self, change: Callable[[Any], None], what: str) -> bool:
+        try:
+            job = self.job()
+            change(job)
+            job.touch()
+            self._store.save(job)
+        except Exception as exc:  # noqa: BLE001
+            _warn(self, f"{what} — לא נשמר", exc)
+            return False
+        self.refresh()
+        return True
+
+    # -- tabs ------------------------------------------------------------------ #
+    def _lines_tab(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        row = QHBoxLayout()
+        for label, handler, primary in (
+            ("הוסף מהמחירון", self.add_from_book, True),
+            ("שורה חופשית", self.add_free_line, False),
+            ("סמן תוספת כמאושרת", self.approve_line, False),
+            ("הסר שורה", self.remove_line, False),
+        ):
+            button = QPushButton(label)
+            if primary:
+                button.setObjectName("Primary")
+            button.clicked.connect(handler)
+            row.addWidget(button)
+        self.as_extra = QCheckBox("תוספת שהתבקשה תוך כדי עבודה")
+        self.as_extra.setChecked(True)
+        row.addWidget(self.as_extra)
+        row.addStretch(1)
+        layout.addLayout(row)
+        self.lines_table = DataTable(
+            ["סוג", "עבודה", "כמות", "מחיר", "סה״כ", "אישור", "נוסף"],
+            empty_text="אין עבודות מעבר לפתחים — הוסיפו מהמחירון",
+        )
+        self.lines_table.stretch(1)
+        layout.addWidget(self.lines_table, 1)
+        return page
+
+    def _payments_tab(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        row = QHBoxLayout()
+        add = QPushButton("רישום תשלום")
+        add.setObjectName("Primary")
+        add.clicked.connect(self.add_payment)
+        row.addWidget(add)
+        hint = QLabel("צ׳קים נרשמים בעמוד ״גבייה״ עם מספר הפרויקט, ומחושבים כאן לבד.")
+        hint.setObjectName("Hint")
+        row.addWidget(hint, 1)
+        layout.addLayout(row)
+        self.payments_table = DataTable(
+            ["תאריך", "סכום", "אמצעי", "ניכוי במקור", "אסמכתה"],
+            empty_text="עוד לא נרשם תשלום",
+        )
+        layout.addWidget(self.payments_table, 1)
+        return page
+
+    def _invoices_tab(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        row = QHBoxLayout()
+        add = QPushButton("רישום חשבונית")
+        add.setObjectName("Primary")
+        add.clicked.connect(self.add_invoice)
+        row.addWidget(add)
+        hint = QLabel(
+            "החשבונית עצמה מופקת בתוכנת החשבוניות (Morning, iCount). כאן נרשמים "
+            "המספר ומספר ההקצאה, כדי לדעת מה הוצא ומה חסר."
+        )
+        hint.setObjectName("Hint")
+        hint.setWordWrap(True)
+        row.addWidget(hint, 1)
+        layout.addLayout(row)
+        self.invoices_table = DataTable(
+            ["מספר", "תאריך", "סכום לפני מע״מ", "לקוח עסקי", "מספר הקצאה"],
+            empty_text="עוד לא נרשמה חשבונית",
+        )
+        layout.addWidget(self.invoices_table, 1)
+        return page
+
+    # -- showing --------------------------------------------------------------- #
+    def refresh(self) -> None:
+        from ..projects.account import invoices_missing_allocation, job_account
+
+        try:
+            job = self.job()
+        except Exception as exc:  # noqa: BLE001
+            self.headline.setText(f"הפרויקט לא נקרא: {exc}")
+            return
+        self.setWindowTitle(f"חשבון הפרויקט — {job.job_id} · {job.name}")
+        account = job_account(job, self._cheques())
+        self.headline.setText(account.describe())
+        parts = [
+            f"הצעה ⁦{account.contract_net:,.0f} ₪⁩",
+            f"תוספות מאושרות ⁦{account.extras_net:,.0f} ₪⁩",
+            f"מע״מ ⁦{account.vat:,.0f} ₪⁩",
+            f"התקבל ⁦{account.received:,.0f} ₪⁩",
+        ]
+        if account.in_cheques:
+            parts.append(f"בצ׳קים שטרם נפרעו ⁦{account.in_cheques:,.0f} ₪⁩")
+        if account.bounced:
+            parts.append(f"צ׳קים שחזרו ⁦{account.bounced:,.0f} ₪⁩")
+        if account.pending_extras_net:
+            parts.append(f"תוספות שלא אושרו ⁦{account.pending_extras_net:,.0f} ₪⁩")
+        if account.not_invoiced_net:
+            parts.append(f"טרם הוצאה חשבונית על ⁦{account.not_invoiced_net:,.0f} ₪⁩")
+        self.breakdown.setText(" · ".join(parts))
+
+        self._lines = list(job.lines)
+        colours = {}
+        for index, line in enumerate(self._lines):
+            if line.kind.value == "extra" and not line.approved:
+                colours[(index, 5)] = _warning_colour(self)
+        self.lines_table.set_rows([
+            [line.kind.hebrew, line.description, f"⁦{line.quantity:g} {line.unit}⁩",
+             _money(line.unit_price), _money(line.total),
+             line.approved or ("לא אושרה" if line.kind.value == "extra" else "—"),
+             line.added_on]
+            for line in self._lines
+        ], numeric_columns=(3, 4), colours=colours)
+
+        self.payments_table.set_rows([
+            [payment.on, _money(payment.amount), payment.method.hebrew,
+             _money(payment.withheld), payment.reference or "—"]
+            for payment in job.payments
+        ], numeric_columns=(1, 3))
+
+        missing = {invoice.number for invoice in invoices_missing_allocation(job)}
+        self.invoices_table.set_rows([
+            [invoice.number, invoice.issued_on, _money(invoice.net),
+             "כן" if invoice.business_customer else "לא",
+             invoice.allocation_number or ("חסר!" if invoice.number in missing else "—")]
+            for invoice in job.invoices
+        ], numeric_columns=(2,))
+
+    # -- changes --------------------------------------------------------------- #
+    def _line_kind(self) -> Any:
+        from ..projects import LineKind
+
+        return LineKind.EXTRA if self.as_extra.isChecked() else LineKind.QUOTED
+
+    def add_from_book(self) -> None:
+        from ..projects import JobLine
+
+        if self._pricebook is None:
+            return
+        book = self._pricebook()
+        trade = getattr(self.job(), "trade", None)
+        picker = PriceItemPicker(book, self, trade=getattr(trade, "value", "both"))
+        if picker.exec() != QDialog.DialogCode.Accepted or picker.item() is None:
+            return
+        item = picker.item()
+        price = picker.price.value()
+        if price != item.price and price > 0:
+            try:
+                book.set_price(item.code, price)
+            except Exception:  # noqa: BLE001 - the line still carries the price
+                pass
+        line = JobLine(
+            kind=self._line_kind(), description=item.name,
+            quantity=picker.quantity.value(), unit=item.unit, unit_price=price,
+            item_code=item.code,
+        )
+        self._change(lambda job: job.lines.append(line), "השורה")
+
+    def add_free_line(self) -> None:
+        from ..projects import JobLine
+
+        text, ok = QInputDialog.getText(self, "שורה חופשית", "מה העבודה?")
+        if not ok or not text.strip():
+            return
+        price, ok = QInputDialog.getDouble(
+            self, "מחיר", "מחיר לפני מע״מ:", 0, 0, 10_000_000, 2
+        )
+        if not ok:
+            return
+        line = JobLine(kind=self._line_kind(), description=text.strip(), unit_price=price)
+        self._change(lambda job: job.lines.append(line), "השורה")
+
+    def _selected_line(self) -> Any:
+        row = self.lines_table.currentRow()
+        return self._lines[row] if 0 <= row < len(getattr(self, "_lines", [])) else None
+
+    def approve_line(self) -> None:
+        line = self._selected_line()
+        if line is None:
+            return
+        how, ok = QInputDialog.getText(
+            self, "אישור תוספת", "איך אושרה?", text="אושר בוואטסאפ"
+        )
+        if not ok:
+            return
+        from datetime import date
+
+        stamp = f"{how.strip() or 'אושר'} ⁦{date.today():%d/%m}⁩"
+
+        def change(job: Any) -> None:
+            for candidate in job.lines:
+                if candidate.line_id == line.line_id:
+                    candidate.approved = stamp
+
+        self._change(change, "האישור")
+
+    def remove_line(self) -> None:
+        line = self._selected_line()
+        if line is None:
+            return
+        self._change(
+            lambda job: setattr(job, "lines",
+                                [c for c in job.lines if c.line_id != line.line_id]),
+            "ההסרה",
+        )
+
+    def add_payment(self) -> None:
+        from ..projects import Payment, PaymentMethod
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("רישום תשלום")
+        layout = QVBoxLayout(dialog)
+        grid = FieldGrid()
+        amount = QDoubleSpinBox()
+        amount.setRange(0.01, 100_000_000)
+        amount.setSuffix(" ₪")
+        method = QComboBox()
+        for option in PaymentMethod:
+            method.addItem(option.hebrew, option.value)
+        withheld = QDoubleSpinBox()
+        withheld.setRange(0, 100_000_000)
+        withheld.setSuffix(" ₪")
+        withheld.setToolTip("מס שהלקוח ניכה במקור — נחשב כשולם")
+        reference = QLineEdit()
+        reference.setPlaceholderText("מספר אסמכתה / העברה")
+        grid.add("סכום שהתקבל", amount)
+        grid.add("אמצעי", method)
+        grid.add("ניכוי במקור", withheld)
+        grid.add("אסמכתה", reference)
+        layout.addWidget(grid)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("רשום")
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("ביטול")
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        payment = Payment(
+            amount=round(amount.value(), 2), method=PaymentMethod(method.currentData()),
+            withheld=round(withheld.value(), 2), reference=reference.text().strip(),
+        )
+        self._change(lambda job: job.payments.append(payment), "התשלום")
+
+    def add_invoice(self) -> None:
+        from ..projects import InvoiceRecord
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("רישום חשבונית")
+        layout = QVBoxLayout(dialog)
+        grid = FieldGrid()
+        number = QLineEdit()
+        net = QDoubleSpinBox()
+        net.setRange(0, 100_000_000)
+        net.setSuffix(" ₪")
+        business = QCheckBox("הלקוח עוסק (יקזז מע״מ)")
+        allocation = QLineEdit()
+        allocation.setPlaceholderText("מספר הקצאה מרשות המסים, אם נדרש")
+        grid.add("מספר חשבונית", number)
+        grid.add("סכום לפני מע״מ", net)
+        grid.add("", business)
+        grid.add("מספר הקצאה", allocation)
+        layout.addWidget(grid)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("רשום")
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("ביטול")
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        if dialog.exec() != QDialog.DialogCode.Accepted or not number.text().strip():
+            return
+        invoice = InvoiceRecord(
+            number=number.text().strip(), net=round(net.value(), 2),
+            business_customer=business.isChecked(),
+            allocation_number=allocation.text().strip(),
+        )
+        self._change(lambda job: job.invoices.append(invoice), "החשבונית")
+
+
+__all__ = ["JobAccountDialog", "PriceBookDialog", "PriceItemPicker"]

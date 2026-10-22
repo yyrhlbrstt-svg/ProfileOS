@@ -225,7 +225,8 @@ def render_quotation(
     parts.append("</div>")
 
     # -- elevations ------------------------------------------------------------ #
-    parts.append(f"<h2>{_esc(t('drawing.elevation'))}</h2>")
+    if variant.builds:
+        parts.append(f"<h2>{_esc(t('drawing.elevation'))}</h2>")
     parts.append('<div class="elevations">')
     from .editor import FINISH_RENDER_COLOUR
 
@@ -259,7 +260,8 @@ def render_quotation(
         cells = [
             f"<td class='num'>{_esc(row['code'] or '')}</td>",
             f"<td>{_esc(row['description'])}</td>",
-            f"<td class='n num'>{locale.format_number(row['quantity'])} {_esc(t('unit.pieces'))}</td>",
+            f"<td class='n num'>{locale.format_number(row['quantity'])} "
+            f"{_esc(row['unit'] if row.get('extra') else t('unit.pieces'))}</td>",
         ]
         if display.show_unit_prices:
             cells.append(f"<td class='n num'>{money(row['unit_price'])}</td>")

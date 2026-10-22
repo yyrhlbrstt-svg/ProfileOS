@@ -361,8 +361,65 @@ def _draft(context: dict[str, Any], today: date) -> list[Insight]:
     )]
 
 
+def _accounts(context: dict[str, Any], today: date) -> list[Insight]:
+    """Money a job is still owed, extras nobody agreed, invoices that will bounce."""
+    from .projects import JobStatus
+    from .projects.account import invoices_missing_allocation, job_account
+
+    jobs = context.get("jobs") or []
+    cheques = list(context.get("cheques") or [])
+    found: list[Insight] = []
+
+    owing = []
+    for job in jobs:
+        if job.status is not JobStatus.INSTALLED:
+            continue
+        account = job_account(job, cheques)
+        if account.uncovered > 1.0:
+            owing.append((job, account))
+    if owing:
+        total = sum(account.uncovered for _job, account in owing)
+        found.append(Insight(
+            "warning",
+            _count(len(owing), "פרויקט אחד הותקן ולא שולם במלואו",
+                   "פרויקטים הותקנו ולא שולמו במלואם"),
+            f"נותר לגבות ⁦{total:,.0f} ₪⁩: "
+            + _names(owing, lambda pair: f"{pair[0].customer_name or pair[0].name} "
+                     f"⁦{pair[1].uncovered:,.0f} ₪⁩"),
+            "Projects", "owing:" + ",".join(
+                sorted(f"{job.job_id}={account.uncovered:.0f}" for job, account in owing)
+            ),
+        ))
+
+    pending = [
+        (job, line) for job in jobs if job.status.is_open
+        for line in job.lines if line.kind.value == "extra" and not line.approved
+    ]
+    if pending:
+        found.append(Insight(
+            "warning",
+            _count(len(pending), "תוספת אחת לא אושרה עם הלקוח",
+                   "תוספות לא אושרו עם הלקוח"),
+            "תוספת שלא אושרה בכתב היא ויכוח בסוף העבודה — שלחו לאישור בוואטסאפ: "
+            + _names(pending, lambda pair: f"{pair[1].description} ({pair[0].name})"),
+            "Projects", "extras:" + ",".join(sorted(line.line_id for _job, line in pending)),
+        ))
+
+    missing = [(job, invoice) for job in jobs for invoice in invoices_missing_allocation(job)]
+    if missing:
+        found.append(Insight(
+            "danger",
+            _count(len(missing), "חשבונית אחת ללקוח עסקי בלי מספר הקצאה",
+                   "חשבוניות ללקוחות עסקיים בלי מספר הקצאה"),
+            "בלי מספר הקצאה הלקוח לא יכול לקזז את המע״מ, והחשבונית תחזור: "
+            + _names(missing, lambda pair: f"⁦{pair[1].number}⁩ ({pair[0].name})"),
+            "Projects", "allocation:" + ",".join(sorted(i.number for _j, i in missing)),
+        ))
+    return found
+
+
 RULES: tuple[Callable[[dict[str, Any], date], list[Insight]], ...] = (
-    _data_safety, _jobs, _customers, _money, _service, _tasks, _draft,
+    _data_safety, _jobs, _accounts, _customers, _money, _service, _tasks, _draft,
 )
 
 

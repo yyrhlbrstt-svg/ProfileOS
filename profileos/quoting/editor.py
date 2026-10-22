@@ -178,6 +178,24 @@ class JournalEntry:
 # A variant
 # --------------------------------------------------------------------------- #
 @dataclass
+class ExtraLine:
+    """A priced line that is not a designed opening: removal, a crane, a
+    boiler, a blockage cleared — from the price book or written freehand."""
+
+    code: str
+    description: str
+    quantity: float = 1.0
+    unit: str = "יח׳"
+    unit_price: float = 0.0
+    #: The price-book item it came from, if any.
+    item_code: str = ""
+
+    @property
+    def total(self) -> float:
+        return round(self.quantity * self.unit_price, 2)
+
+
+@dataclass
 class QuoteVariant:
     """One option in the quotation: a spec, and the price it works out to."""
 
@@ -256,6 +274,8 @@ class QuoteDraft:
     mass_lookup: Any = None
     #: Overrides whose base price has drifted since they were made.
     stale_overrides: list[tuple[str, str]] = field(default_factory=list)
+    #: Work beyond the openings, the same in every option.
+    extra_lines: list[ExtraLine] = field(default_factory=list)
 
     # -- construction --------------------------------------------------------
     @classmethod
@@ -671,7 +691,8 @@ class QuoteDraft:
             if override.kind is OverrideKind.HIDDEN and override.value
         }
         return round(
-            sum(line.total for line in variant.quotation.lines if line.code not in hidden), 2
+            sum(line.total for line in variant.quotation.lines if line.code not in hidden)
+            + sum(line.total for line in self.extra_lines), 2
         )
 
     def compare(self) -> list[dict[str, Any]]:
@@ -715,7 +736,8 @@ class QuoteDraft:
             if override.kind is OverrideKind.HIDDEN and override.value
         }
         rows = []
-        for line in self.quotation.lines:
+        quotation_lines = self.quotation.lines if self.quotation is not None else []
+        for line in quotation_lines:
             if line.code in hidden:
                 continue
             rows.append(
@@ -730,7 +752,64 @@ class QuoteDraft:
                     or (line.code, OverrideKind.DISCOUNT_PCT.value) in self.overrides,
                 }
             )
+        for extra in self.extra_lines:
+            rows.append(
+                {
+                    "code": extra.code,
+                    "description": extra.description,
+                    "quantity": extra.quantity,
+                    "unit": extra.unit,
+                    "unit_price": round(extra.unit_price, 2),
+                    "total": extra.total,
+                    "edited": False,
+                    "extra": True,
+                }
+            )
         return rows
+
+    # -- work lines beyond the openings -------------------------------------------
+    def add_extra_line(
+        self, description: str, *, quantity: float = 1.0, unit: str = "יח׳",
+        unit_price: float = 0.0, item_code: str = "", by: str = "",
+    ) -> ExtraLine:
+        if not description.strip():
+            raise QuoteEditError("לשורה חייב להיות תיאור")
+        if quantity <= 0:
+            raise QuoteEditError("כמות חייבת להיות חיובית")
+        if unit_price < 0:
+            raise QuoteEditError("מחיר לא יכול להיות שלילי")
+        serial = len(self.extra_lines) + 1
+        used = {line.code for line in self.extra_lines}
+        while f"X-{serial:02d}" in used:
+            serial += 1
+        line = ExtraLine(
+            code=f"X-{serial:02d}", description=description.strip(),
+            quantity=float(quantity), unit=unit, unit_price=round(float(unit_price), 2),
+            item_code=item_code,
+        )
+        self.extra_lines.append(line)
+
+        def revert() -> None:
+            if line in self.extra_lines:
+                self.extra_lines.remove(line)
+
+        self._record(f"שורה נוספה: {line.description}", None, line.total, revert, by)
+        return line
+
+    def remove_extra_line(self, code: str, *, by: str = "") -> None:
+        line = next((item for item in self.extra_lines if item.code == code), None)
+        if line is None:
+            return
+        index = self.extra_lines.index(line)
+        self.extra_lines.remove(line)
+
+        def revert() -> None:
+            self.extra_lines.insert(index, line)
+
+        self._record(f"שורה הוסרה: {line.description}", line.total, None, revert, by)
+
+    def unpriced_extras(self) -> list[ExtraLine]:
+        return [line for line in self.extra_lines if line.unit_price <= 0]
 
     def totals(self) -> dict[str, float]:
         """What the customer copy adds up to, from the visible lines.

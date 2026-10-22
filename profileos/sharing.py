@@ -130,6 +130,56 @@ def status_message(
     return "\n".join(lines)
 
 
+def material_list_message(
+    rows: Any, *, brand_name: str, job_name: str = "", site: str = "",
+    needed_by: str = "",
+) -> str:
+    """A materials order for the supplier, as one WhatsApp message.
+
+    ``rows`` are ``(kind, description, quantity, unit, note)`` — the shape a
+    quantity take-off gives. Read down a phone screen: one item a line, the
+    quantity first, because that is what the person at the counter picks by.
+    """
+    lines = ["שלום,", "", f"הזמנת חומרים מ{brand_name}" + (f" — {job_name}" if job_name else "")]
+    if site:
+        lines.append(f"לאתר: {site}")
+    if needed_by:
+        lines.append(f"נדרש עד: ⁦{needed_by}⁩")
+    lines.append("")
+    count = 0
+    for _kind, description, quantity, unit, note in rows:
+        if not str(quantity).strip() or str(quantity).strip() in ("0", "0.0"):
+            continue
+        count += 1
+        text = f"• ⁦{quantity} {unit}⁩ — {description}"
+        if note:
+            text += f" ({note})"
+        lines.append(text)
+    if not count:
+        lines.append("(אין פריטים)")
+    lines += ["", "תודה, נא לאשר זמינות ומחיר."]
+    return "\n".join(lines)
+
+
+def on_the_way_message(*, brand_name: str, customer_name: str = "", minutes: int = 0,
+                       technician: str = "") -> str:
+    """'We are on our way' — the message that saves the call asking where we are."""
+    who = f"{technician} מ{brand_name}" if technician else brand_name
+    eta = f" — נגיע בעוד כ־⁦{minutes}⁩ דקות" if minutes else ""
+    return "\n".join([_greeting(customer_name), "", f"{who} בדרך אליך{eta}.", "", brand_name])
+
+
+def visit_reminder_message(*, brand_name: str, customer_name: str = "", when: str = "",
+                           what: str = "", phone: str = "") -> str:
+    """The evening-before reminder: the visit, the time, and how to move it."""
+    lines = [_greeting(customer_name), "", f"תזכורת: מחר {what or 'אנחנו מגיעים אליך'}"
+             + (f" ב־⁦{when}⁩" if when else "") + ".",
+             "אם הזמן לא מתאים, אפשר לענות להודעה הזאת ונתאם מחדש.", "", brand_name]
+    if phone:
+        lines.append(phone)
+    return "\n".join(lines)
+
+
 def cheque_message(
     *,
     brand_name: str,
@@ -194,9 +244,12 @@ def customer_phone(job: Any) -> str:
 __all__ = [
     "cheque_message",
     "customer_phone",
+    "material_list_message",
+    "on_the_way_message",
     "phone_for",
     "quote_message",
     "status_message",
+    "visit_reminder_message",
     "whatsapp_link",
     "whatsapp_number",
 ]

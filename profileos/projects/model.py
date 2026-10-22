@@ -63,6 +63,143 @@ class JobStatus(StrEnum):
         }[self]
 
 
+class Trade(StrEnum):
+    """Which of the shop's two trades a job belongs to."""
+
+    ALUMINIUM = "aluminium"
+    PLUMBING = "plumbing"
+    BOTH = "both"
+
+    @property
+    def hebrew(self) -> str:
+        return {
+            Trade.ALUMINIUM: "אלומיניום",
+            Trade.PLUMBING: "אינסטלציה",
+            Trade.BOTH: "אלומיניום ואינסטלציה",
+        }[self]
+
+    def includes(self, other: "Trade") -> bool:
+        return self is Trade.BOTH or self is other
+
+
+class LineKind(StrEnum):
+    """Why a priced line is on the job."""
+
+    #: Part of what was quoted: removal of the old windows, a crane, a boiler.
+    QUOTED = "quoted"
+    #: Asked for during the work — "another window", "move the toilet".
+    EXTRA = "extra"
+
+    @property
+    def hebrew(self) -> str:
+        return {LineKind.QUOTED: "בהצעה", LineKind.EXTRA: "תוספת"}[self]
+
+
+class JobLine(RoundTrips):
+    """A priced line on the job that is not a designed opening.
+
+    Work items from the shop's price book, or written freehand. An extra
+    records who approved it and how, because the argument at the end of a job
+    is always about the extras nobody wrote down.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    line_id: str = Field(default_factory=lambda: f"L-{_short_id()}")
+    kind: LineKind = LineKind.QUOTED
+    description: str
+    quantity: float = 1.0
+    unit: str = "יח׳"
+    #: Net of VAT, in shekels.
+    unit_price: float = 0.0
+    #: The price-book item it came from, if any.
+    item_code: str = ""
+    added_on: str = Field(default_factory=lambda: date.today().isoformat())
+    #: "אושר בוואטסאפ 12/10", "אושר בטלפון" — empty for an extra not yet agreed.
+    approved: str = ""
+
+    @property
+    def total(self) -> float:
+        return round(self.quantity * self.unit_price, 2)
+
+    @property
+    def counts(self) -> bool:
+        """Whether it is owed: quoted lines always, extras once agreed."""
+        return self.kind is LineKind.QUOTED or bool(self.approved)
+
+
+class PaymentMethod(StrEnum):
+    TRANSFER = "transfer"
+    CASH = "cash"
+    CREDIT = "credit"
+    BIT = "bit"
+    OTHER = "other"
+
+    @property
+    def hebrew(self) -> str:
+        return {
+            PaymentMethod.TRANSFER: "העברה בנקאית", PaymentMethod.CASH: "מזומן",
+            PaymentMethod.CREDIT: "אשראי", PaymentMethod.BIT: "ביט / פייבוקס",
+            PaymentMethod.OTHER: "אחר",
+        }[self]
+
+
+class Payment(RoundTrips):
+    """Money received for the job other than a cheque (those live in the drawer).
+
+    ``withheld`` is income tax a contractor deducted at source: it is not owed
+    by them any more, it is a credit with the tax authority, and a balance
+    that ignored it would chase the customer for money they already paid.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    payment_id: str = Field(default_factory=lambda: f"P-{_short_id()}")
+    on: str = Field(default_factory=lambda: date.today().isoformat())
+    amount: float
+    method: PaymentMethod = PaymentMethod.TRANSFER
+    withheld: float = 0.0
+    reference: str = ""
+    note: str = ""
+
+
+class InvoiceRecord(RoundTrips):
+    """A tax invoice issued for the job — recorded here, issued elsewhere.
+
+    The shop issues invoices in its invoicing service (Morning, iCount); this
+    keeps the number and, for a business customer above the threshold, the
+    Tax Authority allocation number, so a missing one is noticed before the
+    customer's bookkeeper refuses the invoice.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    number: str
+    issued_on: str = Field(default_factory=lambda: date.today().isoformat())
+    net: float = 0.0
+    allocation_number: str = ""
+    #: The customer is a business that will claim the VAT.
+    business_customer: bool = False
+    issuer: str = ""
+
+
+class PlumbingSpec(RoundTrips):
+    """The plumbing side of a job: what fixtures, for how many dwellings."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    #: Fixture id → count, as on the plumbing page.
+    fixtures: dict[str, int] = Field(default_factory=dict)
+    dwellings: int = 1
+    notes: str = ""
+
+
+def _short_id() -> str:
+    from uuid import uuid4
+
+    return uuid4().hex[:6].upper()
+
+
 #: Where a job may go from where it is. Anything else is a mistake worth
 #: catching: a job cannot be installed before it is ordered, and a lost job
 #: does not quietly become a live one — it is reopened as an enquiry.
@@ -133,7 +270,13 @@ class JobFile(RoundTrips):
     reference: str = ""
     site_address: str = ""
     system_id: str = "generic"
+    trade: Trade = Trade.ALUMINIUM
     schedule: ElementSchedule | None = None
+    plumbing: PlumbingSpec | None = None
+    #: Priced work beyond the designed openings, quoted or added on site.
+    lines: list[JobLine] = Field(default_factory=list)
+    payments: list[Payment] = Field(default_factory=list)
+    invoices: list[InvoiceRecord] = Field(default_factory=list)
 
     #: A snapshot of the last quotation, so the job list can show money
     #: without repricing every job it displays.
