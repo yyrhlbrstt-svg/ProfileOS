@@ -597,6 +597,25 @@ def _accounts(context: dict[str, Any], today: date) -> list[Insight]:
             ),
         ))
 
+    # A job won, built or installed with no price on it: nothing to collect
+    # against, so every check above (deposit, balance owed) stays silent.
+    unpriced = []
+    for job in jobs:
+        if job.status not in (JobStatus.WON, JobStatus.IN_PRODUCTION, JobStatus.INSTALLED):
+            continue
+        if job_account(job, cheques).total_gross <= 0:
+            unpriced.append(job)
+    if unpriced:
+        found.append(Insight(
+            "warning",
+            _count(len(unpriced), "פרויקט אחד בעבודה בלי מחיר", "פרויקטים בעבודה בלי מחיר"),
+            "בלי מחיר אי אפשר לדעת כמה נשאר לגבות: "
+            + _names(unpriced, lambda job: job.customer_name or job.name)
+            + ". רשמו את ההצעה שהלקוח אישר (הצעת מחיר ← ״רישום בפרויקט״), "
+            "או את העבודה שסוכמה בחשבון הפרויקט ← ״שורה חופשית״.",
+            "Projects", "unpriced:" + ",".join(sorted(job.job_id for job in unpriced)),
+        ))
+
     # Work under way with not a shekel in hand and not a cheque promised:
     # a customer who changes their mind leaves the shop with the material.
     unpaid = []
@@ -920,9 +939,45 @@ def _material(context: dict[str, Any], today: date) -> list[Insight]:
     return found
 
 
+def _remeasured(context: dict[str, Any], today: date) -> list[Insight]:
+    """Openings measured bigger than they were sold, with no extra for it."""
+    from .delivery.remeasure import accepted_revision, compare, unbilled, worth_asking
+    from .projects import JobStatus
+
+    surveys = context.get("surveys")
+    revisions = context.get("revisions")
+    if surveys is None or revisions is None:
+        return []
+    owed = []
+    for job in context.get("jobs") or []:
+        if job.status not in (JobStatus.WON, JobStatus.IN_PRODUCTION, JobStatus.INSTALLED):
+            continue
+        sheets = surveys.for_job(job.job_id)
+        if not sheets:
+            continue
+        revision = accepted_revision(job, revisions.for_job(job.job_id))
+        grown = unbilled(job, compare(job, sheets[0], revision))
+        if grown and worth_asking(grown):
+            owed.append((job, sum(change.amount for change in grown)))
+    if not owed:
+        return []
+    total = sum(amount for _job, amount in owed)
+    return [Insight(
+        "warning",
+        _count(len(owed), "פרויקט אחד נמדד גדול מההצעה ולא נוספה תוספת",
+               "פרויקטים נמדדו גדולים מההצעה ולא נוספה תוספת"),
+        f"לפי מחיר ההצעה עצמה — ⁦{total:,.0f} ₪⁩: "
+        + _names(owed, lambda pair: f"{pair[0].customer_name or pair[0].name} "
+                 f"⁦{pair[1]:,.0f} ₪⁩")
+        + ". מדידה באתר ← ״השוואה להצעה״ מוסיפה תוספת לאישור הלקוח.",
+        "Survey", "remeasured:" + ",".join(
+            sorted(f"{job.job_id}={amount:.0f}" for job, amount in owed)),
+    )]
+
+
 RULES: tuple[Callable[[dict[str, Any], date], list[Insight]], ...] = (
     _data_safety, _jobs, _accounts, _field, _customers, _money, _service, _tasks,
-    _paperwork, _draft, _catalogue, _price_lists, _material,
+    _paperwork, _draft, _catalogue, _price_lists, _material, _remeasured,
 )
 
 
@@ -1060,6 +1115,18 @@ def gather_context(**given: Any) -> dict[str, Any]:
 
         return default_price_lists()
 
+    def surveys() -> Any:
+        from .delivery.survey import default_surveys
+
+        return default_surveys()
+
+    def revisions() -> Any:
+        from .quoting.revisions import default_revisions
+
+        return default_revisions()
+
+    load("surveys", surveys)
+    load("revisions", revisions)
     load("confirmations", confirmations)
     load("price_lists", price_lists)
     load("stocktakes", stocktakes)
@@ -1130,6 +1197,7 @@ _BOOK_NAMES = {
     "findings": "ממצאי מעקב הספקים", "watch": "מקורות הספקים במעקב",
     "confirmations": "נתוני היצרן שאושרו לחיתוך", "stocktakes": "ספירות המלאי",
     "price_lists": "מחירוני הספקים",
+    "surveys": "גיליונות המדידה", "revisions": "גרסאות ההצעות",
 }
 
 

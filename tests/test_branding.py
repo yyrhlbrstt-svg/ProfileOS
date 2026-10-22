@@ -39,9 +39,11 @@ class TestBrand:
             id="x", name="X Ltd", tagline="Aluminium", address_line="Street 1",
             city="Town", postcode="12345", country="Country", phone="01-234",
         )
-        assert brand.letterhead() == [
+        assert brand.letterhead("en") == [
             "X Ltd", "Aluminium", "Street 1", "Town 12345", "Country", "Tel 01-234",
         ]
+        # A Hebrew document: Hebrew labels, figures isolated.
+        assert brand.letterhead()[-1] == "טל׳ \u206601-234\u2069"
 
     def test_document_name_prefers_the_legal_name(self):
         assert Brand(id="x", name="Trading", legal_name="Legal Ltd").document_name == "Legal Ltd"

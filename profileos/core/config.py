@@ -183,6 +183,14 @@ class Settings(BaseModel):
     review_link: str = ""
     #: Printed on every quotation: "אפשר לשלם עד 12 תשלומים באשראי".
     payment_note: str = ""
+    #: The shop's own estimating rates, for a line no supplier list prices:
+    #: profile ₪/kg, glass ₪/m², hardware ₪/piece, gasket ₪/m. Empty until the
+    #: shop enters them — a quotation is never priced from figures nobody set.
+    estimate_rates: dict[str, float] = Field(default_factory=dict)
+    #: The phones' way in, served by the office window while it is open
+    #: (System ← Phones). Off until somebody turns it on.
+    phone_access: bool = False
+    phone_port: int = 8765
     withholding_certificate_until: str = ""
     books_certificate_until: str = ""
     #: A second copy of each day's backup — a USB drive or a synced cloud

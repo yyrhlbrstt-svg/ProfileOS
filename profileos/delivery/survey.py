@@ -96,6 +96,9 @@ class OpeningSurvey:
     clearance_per_side: float | None = None
     measured_by: str = ""
     measured_on: date | None = None
+    #: The moment it was measured (ISO, with its zone) — so a later
+    #: measurement the same day replaces an earlier one, and not the reverse.
+    measured_at: str = ""
     note: str = ""
     photographs: list[str] = field(default_factory=list)
 
@@ -271,6 +274,7 @@ class OpeningSurvey:
             "clearance_per_side": self.clearance_per_side,
             "measured_by": self.measured_by,
             "measured_on": self.measured_on.isoformat() if self.measured_on else None,
+            "measured_at": self.measured_at,
             "note": self.note, "photographs": list(self.photographs),
         }
 
@@ -297,6 +301,7 @@ class OpeningSurvey:
             clearance_per_side=number("clearance_per_side"),
             measured_by=str(raw.get("measured_by", "")),
             measured_on=date.fromisoformat(str(when)) if when else None,
+            measured_at=str(raw.get("measured_at", "") or ""),
             note=str(raw.get("note", "")),
             photographs=list(raw.get("photographs", [])),
         )
@@ -371,6 +376,53 @@ class Survey:
             f"מוכנים לייצור ⁦{len(self.makeable)}⁩"
         )
 
+    # -- from the phone -------------------------------------------------------- #
+    def take_from_phone(self, records: Iterable[Any]) -> list[str]:
+        """Fill the sheet from measurements typed on the phone on site.
+
+        A phone record belongs to this sheet only when it names this job:
+        "W1" is in every job, and a mark alone would fill another job's
+        opening with this one's sizes. It is taken only when it was measured
+        after what the sheet holds. Returns the openings filled.
+        """
+        by_marking = {entry.reference.strip().upper(): entry for entry in self.openings}
+        newest: dict[str, Any] = {}
+        for record in records:
+            if not record.project_id or record.project_id != self.job_id:
+                continue
+            key = record.reference.strip().upper()
+            if key not in by_marking:
+                continue
+            if key not in newest or record.measured_at > newest[key].measured_at:
+                newest[key] = record
+        filled: list[str] = []
+        for key, record in newest.items():
+            entry = by_marking[key]
+            taken_on = record.measured_at.astimezone().date()
+            if entry.measured_at:
+                # The moment, not the day: a phone correction at two o'clock
+                # replaces the figure synced at ten.
+                if record.measured_at <= datetime.fromisoformat(entry.measured_at):
+                    continue
+            elif entry.measured_on is not None and taken_on <= entry.measured_on:
+                continue
+
+            def size(value: float) -> float | None:
+                return float(value) if value and value > 0 else None
+
+            entry.width_head, entry.width_middle, entry.width_sill = (
+                size(v) for v in record.widths)
+            entry.height_left, entry.height_middle, entry.height_right = (
+                size(v) for v in record.heights)
+            if record.diagonals:
+                entry.diagonal_a, entry.diagonal_b = (size(v) for v in record.diagonals)
+            entry.measured_by = record.measured_by or "טלפון"
+            entry.measured_on = taken_on
+            entry.measured_at = record.measured_at.isoformat()
+            entry.note = " · ".join(part for part in (record.note, "נמדד בטלפון") if part)
+            filled.append(entry.reference)
+        return filled
+
     # -- the sheet that goes to the site ---------------------------------------- #
     SHEET_HEADERS = (
         "סימון", "חדר", "רוחב עליון", "רוחב אמצע", "רוחב תחתון",
@@ -438,6 +490,23 @@ class Survey:
                 OpeningSurvey.from_dict(item) for item in raw.get("openings", [])
             ],
         )
+
+
+def sheet_for_job(job: Any, book: "SurveyBook", *,
+                  clearance_per_side: float | None = None) -> Survey:
+    """The job's measurement sheet: the one already kept, with a line added
+    for any opening the job gained since — or a new one, kept at once."""
+    kept = book.for_job(str(getattr(job, "job_id", "")))
+    if not kept:
+        return book.add(survey_for_job(job, clearance_per_side=clearance_per_side))
+    survey = kept[0]
+    have = {entry.reference for entry in survey.openings}
+    fresh = survey_for_job(job, clearance_per_side=clearance_per_side)
+    added = [entry for entry in fresh.openings if entry.reference not in have]
+    if added:
+        survey.openings.extend(added)
+        book.save()
+    return survey
 
 
 def survey_for_job(job: Any, *, clearance_per_side: float | None = None) -> Survey:
@@ -537,6 +606,43 @@ def default_surveys() -> SurveyBook:
     return SurveyBook().load()
 
 
+def save_openings(survey: Survey, references: Iterable[str],
+                  path: Path | None = None) -> Survey:
+    """Write these openings of the sheet — only these — onto the sheet as it
+    is on disk now, and return that sheet.
+
+    Two computers on one sheet, each measuring a different window: saving
+    the whole sheet from either would put the other's window back to blank.
+    """
+    import copy
+
+    from ..core.storage import path_lock
+
+    book = SurveyBook(path)
+    with path_lock(book.path):
+        book.load()
+        if book.damaged is not None:
+            raise book.damaged
+        on_disk = book._surveys.get(survey.survey_id)
+        if on_disk is None:
+            book._surveys[survey.survey_id] = copy.deepcopy(survey)
+        else:
+            mine = {entry.reference: entry for entry in survey.openings}
+            for reference in set(references):
+                entry = mine.get(reference)
+                if entry is None:
+                    continue
+                fresh = copy.deepcopy(entry)
+                for index, kept in enumerate(on_disk.openings):
+                    if kept.reference == reference:
+                        on_disk.openings[index] = fresh
+                        break
+                else:
+                    on_disk.openings.append(fresh)
+        book.save()
+        return copy.deepcopy(book._surveys[survey.survey_id])
+
+
 __all__ = [
     "SPREAD_TOLERANCE_MM",
     "SQUARE_TOLERANCE_MM",
@@ -545,5 +651,7 @@ __all__ = [
     "Survey",
     "SurveyBook",
     "default_surveys",
+    "save_openings",
+    "sheet_for_job",
     "survey_for_job",
 ]

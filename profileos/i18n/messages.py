@@ -429,7 +429,7 @@ MESSAGES: dict[str, dict[str, str]] = {
     },
     "mobile.no_work_order": {
         "en": "No work order has been loaded in the office.",
-        "he": "לא נטענה פקודת עבודה במשרד.",
+        "he": "אין פקודת עבודה בייצור — שחררו אחת ב״רצפת ייצור״ במחשב במשרד.",
         "ar": "لم يُحمَّل أمر عمل في المكتب.",
         "ru": "В офисе не загружен наряд-заказ.",
         "it": "Nessun ordine di lavoro caricato in ufficio.",
@@ -446,6 +446,18 @@ MESSAGES: dict[str, dict[str, str]] = {
         "ru": "Три ширины и три высоты — проём не прямоугольник.",
         "it": "Tre larghezze e tre altezze — un vano non è un rettangolo.",
         "es": "Tres anchos y tres altos — un hueco no es un rectángulo.",
+    },
+    "mobile.project": {
+        "en": "Job", "he": "פרויקט", "ar": "المشروع",
+        "ru": "Объект", "it": "Commessa", "es": "Obra",
+    },
+    "mobile.need_project": {
+        "en": "Choose the job this opening belongs to",
+        "he": "בחרו לאיזה פרויקט שייך הפתח",
+        "ar": "اختر المشروع الذي تتبع له الفتحة",
+        "ru": "Выберите объект, к которому относится проём",
+        "it": "Scegli la commessa a cui appartiene il vano",
+        "es": "Elige la obra a la que pertenece el hueco",
     },
     "mobile.opening_ref": {
         "en": "Opening mark", "he": "סימון הפתח", "ar": "رمز الفتحة",

@@ -8,6 +8,8 @@ a measurement taken on site arrives in the office exactly once and unaltered.
 
 from __future__ import annotations
 
+import json
+import urllib.error
 from datetime import timedelta
 
 import pytest
@@ -63,6 +65,63 @@ class TestPairing:
         with pytest.raises(PairingError):
             registry.redeem(code.code)
 
+    def test_a_code_issued_at_the_desk_works_on_the_server(self, tmp_path):
+        """The desk and the server that answers the phone are two copies of
+        the registry — often two processes. A code only in the desk's memory
+        was a code the phone could never use."""
+        desk = DeviceRegistry.load(tmp_path / "devices.json")
+        server = DeviceRegistry.load(tmp_path / "devices.json")
+        code = desk.issue_code("הטלפון של יוסי")
+        assert code.code not in (tmp_path / "devices.json").read_text(encoding="utf-8")
+        device, token = server.redeem(code.code)
+        assert device.name == "הטלפון של יוסי"
+        with pytest.raises(PairingError):
+            DeviceRegistry.load(tmp_path / "devices.json").redeem(code.code)
+
+        # Revoked at the desk: the server stops answering it at once.
+        assert server.authenticate(device.device_id, token) is not None
+        import os
+        import time
+        time.sleep(0.01)
+        desk.revoke(device.device_id)
+        stat = (tmp_path / "devices.json").stat()
+        os.utime(tmp_path / "devices.json", ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000))
+        assert server.authenticate(device.device_id, token) is None
+
+    def test_a_revocation_is_not_undone_by_the_server_saving_its_old_copy(self, tmp_path):
+        """The server read the list, the desk revoked a phone, then the server
+        saved (another phone's first request of the day): still revoked."""
+        desk = DeviceRegistry.load(tmp_path / "devices.json")
+        lost, lost_token = desk.redeem(desk.issue_code("טלפון שאבד").code)
+        other, other_token = desk.redeem(desk.issue_code("טלפון של יוסי").code)
+        server = DeviceRegistry.load(tmp_path / "devices.json")
+        server.devices[other.device_id].last_seen -= timedelta(days=2)
+        DeviceRegistry.load(tmp_path / "devices.json").revoke(lost.device_id)
+        server._seen_mtime = (tmp_path / "devices.json").stat().st_mtime   # "missed" it
+        assert server.authenticate(other.device_id, other_token) is not None   # saves
+        assert DeviceRegistry.load(tmp_path / "devices.json").devices[lost.device_id].revoked
+        assert server.authenticate(lost.device_id, lost_token) is None
+        # A code issued at the desk meanwhile survives the server's save too.
+        code = DeviceRegistry.load(tmp_path / "devices.json").issue_code("טאבלט")
+        server.devices[other.device_id].last_seen -= timedelta(days=2)
+        server._seen_mtime = (tmp_path / "devices.json").stat().st_mtime
+        server.authenticate(other.device_id, other_token)
+        DeviceRegistry.load(tmp_path / "devices.json").redeem(code.code)
+
+    def test_a_phone_used_every_day_does_not_lapse(self, registry):
+        code = registry.issue_code("phone")
+        device, token = registry.redeem(code.code)
+        raw = json.loads(registry.path.read_text(encoding="utf-8"))
+        old = (device.last_seen - timedelta(days=80)).isoformat()
+        raw["devices"][0]["last_seen"] = old
+        registry.path.write_text(json.dumps(raw), encoding="utf-8")
+        device.last_seen -= timedelta(days=80)
+        again = DeviceRegistry.load(registry.path)
+        assert again.authenticate(device.device_id, token) is not None
+        later = DeviceRegistry.load(registry.path)
+        assert (later.devices[device.device_id].last_seen
+                > device.last_seen + timedelta(days=79))
+
     def test_wrong_expired_and_used_all_say_the_same_thing(self, registry):
         """Telling a phone which of the three it hit teaches it something."""
         used = registry.issue_code("a")
@@ -83,7 +142,7 @@ class TestPairing:
         assert token not in (tmp_path / "devices.json").read_text(encoding="utf-8")
 
     def test_a_device_needs_a_name_so_it_can_be_revoked_by_one(self, registry):
-        with pytest.raises(PairingError, match="name"):
+        with pytest.raises(PairingError, match="שם"):
             registry.issue_code("   ")
 
     def test_a_revoked_device_stops_working(self, registry):
@@ -277,7 +336,7 @@ class TestMeasuring:
             diagonals=(1840.0, 1866.0),
         )
         assert record.diagonal_difference == pytest.approx(26.0)
-        assert any("square" in problem for problem in record.problems())
+        assert any("לא בזווית" in problem for problem in record.problems())
 
     def test_a_measurement_without_sizes_is_refused(self, client, state):
         headers = paired(client, state)
@@ -376,3 +435,85 @@ class TestDrawings:
     def test_an_element_that_is_not_loaded_is_a_404_not_a_crash(self, client, state):
         headers = paired(client, state)
         assert client.get("/m/api/elements/NOPE/elevation.svg", headers=headers).status_code == 404
+
+
+def test_the_window_serves_the_phone_with_no_command(tmp_path, monkeypatch):
+    """A switch on the System page, not `profileos serve` in a terminal: the
+    phone opens the page, pairs with the code shown on the screen, and gets in."""
+    pytest.importorskip("uvicorn")
+    import os
+    import socket
+    import urllib.request
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication
+
+    from profileos.core.config import get_settings, reload_settings
+    from profileos.mobile.host import HOST
+    from profileos.ui.main_window import MainWindow
+    from profileos.ui.theme import LIGHT
+
+    monkeypatch.setenv("PROFILEOS_DATA_DIR", str(tmp_path / "data"))
+    reload_settings()
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    get_settings().phone_port = port
+    configure(registry_path=tmp_path / "data" / "paired-devices.json",
+              measurement_path=tmp_path / "data" / "measurements.json")
+    monkeypatch.setattr("profileos.mobile.host.lan_addresses", lambda: ["127.0.0.1"])
+
+    QApplication.instance() or QApplication([])
+    window = MainWindow(LIGHT)
+    system = window.go_to_page("System")
+    try:
+        system.toggle_phone_access()
+        assert HOST.running and f"127.0.0.1:{port}/m" in system.phone_state.text()
+        assert get_settings().phone_access is True
+
+        page = urllib.request.urlopen(f"http://127.0.0.1:{port}/m", timeout=10).read()
+        assert b"<html" in page.lower()
+
+        system.phone_name.setText("הטלפון של יוסי")
+        system.issue_phone_code()
+        code = system._issued.code
+        assert system.phone_digits.text().replace(" ", "").strip("\u2066\u2069") == code
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{port}/m/api/pair", method="POST",
+            data=json.dumps({"code": code}).encode(), headers={"Content-Type": "application/json"})
+        paired = json.loads(urllib.request.urlopen(request, timeout=10).read())
+        assert paired["name"] == "הטלפון של יוסי"
+
+        system.show_phones()
+        assert system.phone_devices.rowCount() == 1
+        system.phone_devices.selectRow(0)
+        system.revoke_phone()
+        me = urllib.request.Request(f"http://127.0.0.1:{port}/m/api/me", headers={
+            "X-Device-Id": paired["device_id"], "X-Device-Token": paired["token"]})
+        with pytest.raises(urllib.error.HTTPError):
+            urllib.request.urlopen(me, timeout=10)
+    finally:
+        HOST.stop()
+        window.close()
+        window.deleteLater()
+        monkeypatch.delenv("PROFILEOS_DATA_DIR", raising=False)
+        reload_settings()
+    assert not HOST.running
+
+
+def test_a_size_no_opening_can_have_is_sent_back(client, state):
+    """12000 for 1200, or centimetres typed as millimetres: said at once, on
+    site, while the fitter is still standing at the hole."""
+    headers = paired(client, state)
+    for widths, heights, said in (
+        ([12000, 12000, 12000], [1400, 1400, 1400], "לא נראה כמו מידת פתח"),
+        ([120, 120, 120], [140, 140, 140], "לא נראה כמו מידת פתח"),
+        ([1200, 1020, 1200], [1400, 1400, 1400], "טעות הקלדה"),
+    ):
+        answer = client.post("/m/api/measurements", headers=headers, json={
+            "reference": "W1", "widths": widths, "heights": heights})
+        assert answer.status_code == 422 and said in answer.json()["detail"]
+    assert not state.measurements.records
+    fine = client.post("/m/api/measurements", headers=headers, json={
+        "reference": "W1", "widths": [1200, 1196, 1198], "heights": [1400, 1402, 1399]})
+    assert fine.status_code == 200 and not fine.json()["problems"]

@@ -87,15 +87,34 @@ def _text_pdf(html: str, target: Path, rtl: bool) -> None:
 
 
 def html_to_pdf(
-    html: str, path: Path | str, *, rtl: bool = True, timeout_ms: int = 60_000
+    html: str, path: Path | str, *, rtl: bool = True, timeout_ms: int = 60_000,
+    plain_fallback: bool = False,
 ) -> Path:
-    """Write ``html`` to ``path`` as an A4 PDF and return the path."""
+    """Write ``html`` to ``path`` as an A4 PDF and return the path.
+
+    When the full layout cannot be rendered (the browser engine did not
+    start) this raises rather than quietly writing the plain-text fallback:
+    that one runs table cells together, and a garbled quotation must not
+    reach a customer without anybody knowing. ``plain_fallback`` asks for it
+    explicitly, for an internal copy.
+    """
+    from ..core.errors import ProfileOSError
+
+    import os
+
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
-    if target.exists():
-        target.unlink()
-    if _webengine_pdf(html, target, timeout_ms):
+    # Rendered beside it and moved into place only when it worked: an old
+    # PDF left there must never pass for this one, and a failed render must
+    # not destroy the copy that was there.
+    rendering = target.with_name(target.stem + ".rendering.pdf")
+    rendering.unlink(missing_ok=True)
+    if _webengine_pdf(html, rendering, timeout_ms):
+        os.replace(rendering, target)
         return target
+    rendering.unlink(missing_ok=True)
+    if not plain_fallback:
+        raise ProfileOSError("מנוע התצוגה לא עלה, וה־PDF המעוצב לא נוצר")
     _log.warning("Falling back to the text layout for %s", target.name)
     _text_pdf(html, target, rtl)
     return target

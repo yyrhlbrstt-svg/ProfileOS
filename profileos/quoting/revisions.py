@@ -47,17 +47,25 @@ class Line:
     unit: str
     unit_price: float
     category: str = "material"
+    #: For an opening's line: the size that was sold [mm]. Kept here because
+    #: the job's own opening is later changed to the measured size, and the
+    #: final measurement is compared with what the customer agreed to.
+    width: float = 0.0
+    height: float = 0.0
 
     @property
     def total(self) -> float:
         return round(self.quantity * self.unit_price, 2)
 
     def as_dict(self) -> dict[str, Any]:
-        return {
+        raw = {
             "key": self.key, "description": self.description,
             "quantity": self.quantity, "unit": self.unit,
             "unit_price": self.unit_price, "category": self.category,
         }
+        if self.width and self.height:
+            raw["width"], raw["height"] = self.width, self.height
+        return raw
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> "Line":
@@ -68,6 +76,8 @@ class Line:
             unit=str(raw.get("unit", "")),
             unit_price=float(raw.get("unit_price", 0.0)),
             category=str(raw.get("category", "material")),
+            width=float(raw.get("width", 0.0) or 0.0),
+            height=float(raw.get("height", 0.0) or 0.0),
         )
 
 
@@ -519,6 +529,8 @@ def lines_of_rows(rows: Iterable[dict[str, Any]]) -> list[Line]:
             unit=str(row.get("unit", "")),
             unit_price=float(row.get("unit_price", 0.0) or 0.0),
             category="extra" if row.get("extra") else "material",
+            width=float(row.get("width", 0.0) or 0.0),
+            height=float(row.get("height", 0.0) or 0.0),
         )
         for row in rows
     ]

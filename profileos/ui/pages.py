@@ -4660,11 +4660,36 @@ class QuotePage(Page):
         self.session.subscribe(self._session_changed)
 
     def _session_changed(self, what: str) -> None:
+        if what == "builds" and self.draft is not None and self._openings_changed():
+            # Said where the person will look next, not first at issue time.
+            self.header.set_subtitle(
+                "הפתחים השתנו מאז התמחור — לחצו ״תמחר את הפרויקט״ לפני שמפיקים"
+            )
+            return
+        if what == "job":
+            self._restore_spec(self.session.job)
         if what != "job" or self.draft is None:
             return
         job = self.session.job
         if (job.job_id if job is not None else "") != self._draft_job_id:
             self.drop_draft()
+
+    def _restore_spec(self, job: Any) -> None:
+        """The series, glass, finish and margin the job was last quoted with."""
+        spec = getattr(job, "quote_spec", None) or {}
+        if not spec:
+            return
+        self._loading = True
+        try:
+            for combo, key in ((self.system, "system_id"), (self.glass, "glass_id"),
+                               (self.finish, "finish_id")):
+                index = combo.findData(spec.get(key))
+                if index >= 0:
+                    combo.setCurrentIndex(index)
+            if isinstance(spec.get("margin"), (int, float)):
+                self.margin.setValue(float(spec["margin"]))
+        finally:
+            self._loading = False
 
     def drop_draft(self) -> None:
         """Forget the draft on screen — it belonged to another job."""
@@ -4696,6 +4721,7 @@ class QuotePage(Page):
                 code=f"X-{index:02d}", description=line.description,
                 quantity=line.quantity, unit=line.unit, unit_price=line.unit_price,
                 item_code=line.item_code, job_line_id=line.line_id, origin=line.origin,
+                price_typed=line.price_typed,
             ))
 
     def _pricebook(self) -> Any:
@@ -4788,6 +4814,13 @@ class QuotePage(Page):
         if not self.session.builds and not work_only:
             self.report(ProfileOSError("עדיין לא תוכננו פתחים. תכנן פתח בעמוד ״פתח״ ואז חזור לכאן."), "אין מה לתמחר")
             return
+        from ..quoting.rates import shop_labour, shop_rates
+
+        # Pricing again keeps what was typed into this quotation: lines
+        # added here and not yet issued, and prices set by hand on openings
+        # that are still in it. Throwing them away silently cost real work.
+        previous = self.draft if (self.draft is not None and job is not None
+                                  and self._draft_job_id == job.job_id) else None
         try:
             self.draft = QuoteDraft.start(
                 [build.opening for build in self.session.builds],
@@ -4796,20 +4829,60 @@ class QuotePage(Page):
                 system_id=self.system.currentData() or "generic",
                 glass_id=self.glass.currentData(),
                 finish_id=self.finish.currentData(),
-                fallback_rates={
-                    "profile": 5.5, "glass_m2": 60.0, "hardware": 12.0, "gasket_m": 1.1,
-                },
+                # Only rates the shop itself entered (System page); without
+                # them a line no price list covers stays unpriced and says so.
+                fallback_rates=shop_rates(),
+                labour=shop_labour(),
             )
             self.draft.set_margin(self.margin.value())
             self._apply_display()
             self._draft_job_id = job.job_id if job is not None else ""
             self._load_work_lines(job)
+            kept = self._carry_over(previous) if previous is not None else 0
         except Exception as exc:  # noqa: BLE001
             self.report(exc, "התמחור נכשל")
             return
+        self._priced_openings = self._openings_signature()
+        self.header.set_subtitle(self.subtitle)
         self.session.set_quote(self.draft.variant().bom, self.draft.quotation)
         self.refresh_draft()
-        self.status(f"תומחר {self.draft.quotation.quote_id}")
+        self.status(f"תומחר {self.draft.quotation.quote_id}"
+                    + (f" · נשמרו ⁦{kept}⁩ שורות ומחירים שהוזנו בהצעה" if kept else ""))
+
+    def _carry_over(self, previous: Any) -> int:
+        """Lines added in the previous draft (not yet on the job) and prices
+        set by hand on openings still in the quotation, into the new draft."""
+        from ..quoting.editor import ExtraLine
+
+        loaded = {line.job_line_id for line in self.draft.extra_lines if line.job_line_id}
+        added = [line for line in previous.extra_lines if not line.job_line_id or line.job_line_id not in loaded]
+        used = {line.code for line in self.draft.extra_lines}
+        for index, line in enumerate(added, start=len(self.draft.extra_lines) + 1):
+            code = line.code if line.code not in used else f"X-{index:02d}"
+            used.add(code)
+            self.draft.extra_lines.append(ExtraLine(
+                code=code, description=line.description, quantity=line.quantity,
+                unit=line.unit, unit_price=line.unit_price, item_code=line.item_code,
+                job_line_id=line.job_line_id, origin=line.origin,
+                price_typed=line.price_typed,
+            ))
+        present = {build.opening.element_id for build in self.session.builds}
+        overrides = {key: override for key, override in previous.overrides.items()
+                     if key[0] in present}
+        if overrides:
+            self.draft.overrides.update(overrides)
+            self.draft.recompute()
+        return len(added) + len(overrides)
+
+    def _openings_signature(self) -> str:
+        """The openings as they were priced — to notice one added or changed since."""
+        import json as _json
+
+        return _json.dumps(sorted(build.opening.model_dump_json() for build in self.session.builds))
+
+    def _openings_changed(self) -> bool:
+        priced = getattr(self, "_priced_openings", None)
+        return priced is not None and priced != self._openings_signature()
 
     def apply_spec(self, *_args: Any) -> None:
         if self.draft is None or self._loading:
@@ -4856,6 +4929,7 @@ class QuotePage(Page):
                 if value < 0:
                     raise ProfileOSError("מחיר לא יכול להיות שלילי")
                 extra.unit_price = round(value, 2)
+                extra.price_typed = True
             else:
                 self.draft.set_line_price(code.text(), value, by="desktop")
         except Exception as exc:  # noqa: BLE001
@@ -4866,6 +4940,12 @@ class QuotePage(Page):
     def refresh_draft(self) -> None:
         if self.draft is None:
             return
+        # The status bar says what the page says, not the figure it was
+        # first priced at.
+        self.session.quote_total = float(self.draft.totals()["net"])
+        window = self.window()
+        if hasattr(window, "_update_status"):
+            window._update_status()
         self._loading = True
         try:
             draft = self.draft
@@ -4957,24 +5037,49 @@ class QuotePage(Page):
             self._loading = False
 
     def _unpriced_ok(self) -> bool:
-        """A line at ⁦0 ₪⁩ in front of a customer is work given away: asked first."""
-        missing = self.draft.unpriced_extras() if self.draft is not None else []
-        if not missing:
+        """A price that leaves something out, in front of a customer, is work
+        given away: asked first — a line at ⁦0 ₪⁩, material no price list or
+        shop rate covers, labour with no hourly rate."""
+        if self.draft is None:
             return True
+        if self._openings_changed():
+            # A quotation that leaves out an opening the shop floor will make
+            # is a job sold for less than it costs.
+            self.report(ProfileOSError(
+                "הפתחים בפרויקט השתנו מאז שההצעה תומחרה (נוסף פתח או שונה אחד). "
+                "לחצו ״תמחר את הפרויקט״ — שורות ומחירים שהוזנו בהצעה יישמרו."
+            ), "ההצעה לא מעודכנת")
+            return False
+        missing = self.draft.unpriced_extras()
+        quotation = self.draft.quotation
+        material = sorted(set(getattr(quotation, "unpriced_codes", []) or []))
+        hours = sum((getattr(quotation, "labour_hours", {}) or {}).values())
+        no_labour = hours > 0 and self.draft.variant().labour.hourly_rate <= 0
+        if not missing and not material and not no_labour:
+            return True
+        parts = []
+        if missing:
+            names = ", ".join(line.description for line in missing[:4])
+            parts.append(f"⁦{len(missing)}⁩ שורות בלי מחיר ({names}) — יופיעו ללקוח ב־⁦0 ₪⁩. "
+                         "לחיצה כפולה על המחיר בשורה מזינה אותו.")
+        if material:
+            parts.append(f"ל־⁦{len(material)}⁩ פריטי חומר אין מחיר — לא במחירון ספק ולא בתעריף "
+                         "הערכה של העסק — והם לא נכללו במחיר.")
+        if no_labour:
+            parts.append(f"לא הוזן תעריף לשעת עבודה, ו־⁦{hours:.1f}⁩ שעות העבודה לא נכללו במחיר.")
+        if material or no_labour:
+            parts.append("מחירונים: קטלוג ← מחירוני ספקים. תעריפים: מערכת ← מפעיל ← תעריפי הערכה.")
         box = QMessageBox(self)
         box.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
         box.setIcon(QMessageBox.Icon.Warning)
-        box.setWindowTitle("יש שורות בלי מחיר")
-        names = ", ".join(line.description for line in missing[:4])
-        box.setText(
-            f"⁦{len(missing)}⁩ שורות בהצעה בלי מחיר ({names}) — הן יופיעו ללקוח ב־⁦0 ₪⁩.\n\n"
-            "לחצו פעמיים על המחיר בשורה כדי להזין אותו."
-        )
-        fix = box.addButton("חזרה להזנת מחירים", QMessageBox.ButtonRole.RejectRole)
-        box.addButton("להפיק בכל זאת", QMessageBox.ButtonRole.AcceptRole)
+        box.setWindowTitle("המחיר לא שלם")
+        box.setText("\n\n".join(parts))
+        fix = box.addButton("חזרה להשלמה", QMessageBox.ButtonRole.RejectRole)
+        anyway = box.addButton("להפיק בכל זאת", QMessageBox.ButtonRole.AcceptRole)
         box.setDefaultButton(fix)
         box.exec()
-        return box.clickedButton() is not fix
+        # Only an explicit "issue anyway" issues; closing the box does not.
+        return box.clickedButton() is anyway
 
     def save_documents(self) -> None:
         if self.draft is None:
@@ -4987,15 +5092,20 @@ class QuotePage(Page):
         directory = QFileDialog.getExistingDirectory(self, "לאן לשמור את מסמכי ההצעה?", str(documents_dir()))
         if not directory:
             return
+        from ..core.storage import atomic_write_text
+
         base = Path(directory) / self.draft.quotation.quote_id
         customer = base.with_suffix(".customer.html")
         internal = base.with_suffix(".internal.html")
-        customer_html = render_quotation(self.draft, language=self.session.language)
-        customer.write_text(customer_html, encoding="utf-8")
-        internal.write_text(
-            render_quotation(self.draft, language=self.session.language, internal=True),
-            encoding="utf-8",
-        )
+        try:
+            customer_html = render_quotation(self.draft, language=self.session.language)
+            atomic_write_text(customer, customer_html)
+            atomic_write_text(
+                internal, render_quotation(self.draft, language=self.session.language, internal=True)
+            )
+        except Exception as exc:  # noqa: BLE001 - said, and nothing is recorded on the job
+            self.report(exc, "מסמכי ההצעה לא נשמרו — שום דבר לא נרשם בפרויקט")
+            return
         written = [customer.name, internal.name]
         try:
             from .pdf import html_to_pdf
@@ -5003,6 +5113,10 @@ class QuotePage(Page):
             written.append(html_to_pdf(customer_html, base.with_suffix(".pdf")).name)
         except Exception as exc:  # noqa: BLE001 - the HTML copies already exist
             _log.warning("Quotation PDF not written: %s", exc)
+            self.report(ProfileOSError(
+                f"ה־PDF לא נוצר ({exc}). קובצי ה־HTML נשמרו — אפשר לפתוח את עותק הלקוח "
+                "בדפדפן ולהדפיס ל־PDF משם."
+            ), "ה־PDF לא נוצר")
         self.status("נשמרו " + ", ".join(written))
         self._record_in_job()
 
@@ -5129,6 +5243,11 @@ class QuotePage(Page):
                     )
                 return
             job.record_quote(float(totals["net"]), self.draft.quotation.currency)
+            variant = self.draft.variant()
+            job.quote_spec = {
+                "system_id": variant.system_id, "glass_id": variant.glass_id,
+                "finish_id": variant.finish_id, "margin": float(variant.policy.margin_pct),
+            }
             # The draft's work lines replace exactly the lines it was started
             # with. A quoted line added to the job since (in its account) is
             # kept, unmarked, and counted on top of this quotation; extras
@@ -5149,7 +5268,7 @@ class QuotePage(Page):
                     kind=LineKind.QUOTED, description=extra.description,
                     quantity=extra.quantity, unit=extra.unit,
                     unit_price=extra.unit_price, item_code=extra.item_code,
-                    in_quote=quote_id, origin=extra.origin,
+                    in_quote=quote_id, origin=extra.origin, price_typed=extra.price_typed,
                 )
                 if extra.job_line_id:
                     values["line_id"] = extra.job_line_id
@@ -5405,19 +5524,102 @@ class ShopFloorPage(Page):
         if not self.session.builds:
             self.report(ProfileOSError("עדיין לא תוכננו פתחים. תכנן פתח בעמוד ״פתח״ ואז חזור לכאן."), "אין מה לשחרר")
             return
+        from ..mes.store import save_work_order, scans
+
         job = self.session.job
+        if job is not None:
+            try:
+                earlier = self._saved_order(job.job_id)
+            except Exception as exc:  # noqa: BLE001
+                self.report(exc, "פקודת העבודה השמורה לא נקראה — לא שוחררה חדשה")
+                return
+            if earlier is not None and scans(earlier):
+                answer = QMessageBox.question(
+                    self, "לשחרר מחדש?",
+                    f"פקודת העבודה ⁦{earlier.work_order_id}⁩ כבר בייצור "
+                    f"(⁦{scans(earlier)}⁩ סריקות). פקודה חדשה תתחיל מאפס — "
+                    "הישנה נשמרת בתיקיית הפרויקט.",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No,
+                )
+                if answer != QMessageBox.StandardButton.Yes:
+                    return
         order = work_order_from_builds(
             self.session.builds,
             project_id=job.job_id if job else "PRJ",
             name=job.name if job else "פרויקט",
         )
-        self.session.set_work_order(order)
+        if job is not None:
+            try:
+                order = save_work_order(order, job.job_id, self._store(), replace=True)
+            except Exception as exc:  # noqa: BLE001
+                self.report(exc, "פקודת העבודה לא נשמרה — לא שוחררה")
+                return
+            self._job_in_production(job.job_id)
+        self._show_order(order)
+        self.status(f"שוחררו ⁦{len(order)}⁩ פריטים כ־⁦{order.work_order_id}⁩"
+                    + ("" if job is not None else " — בלי פרויקט פתוח, לא נשמרו"))
 
+    # -- the order on disk ----------------------------------------------------- #
+    def _store(self) -> Any:
+        from ..projects import default_store
+
+        return default_store()
+
+    def _saved_order(self, job_id: str) -> Any:
+        from ..mes.store import load_work_order
+
+        return load_work_order(job_id, self._store())
+
+    def _show_order(self, order: Any) -> None:
+        self.session.set_work_order(order)
+        chosen = self.item.currentData()
         self.item.clear()
         for entry in order.items:
             self.item.addItem(f"{entry.item_id} — {entry.description[:40]}", entry.item_id)
+        if chosen is not None:
+            index = self.item.findData(chosen)
+            if index >= 0:
+                self.item.setCurrentIndex(index)
         self._refresh_items()
-        self.status(f"שוחררו {len(order)} פריטים כ-{order.work_order_id}")
+
+    def _job_in_production(self, job_id: str) -> None:
+        """A released order means the job is being built — the order book
+        says so, instead of still showing it as merely won."""
+        from ..projects import JobStatus
+
+        store = self._store()
+        try:
+            job = store.load(job_id)
+            if job.status is JobStatus.WON:
+                job.advance(JobStatus.IN_PRODUCTION, "שוחררה פקודת עבודה")
+                store.save(job)
+                if self.session.job is not None and self.session.job.job_id == job_id:
+                    self.session.job.status = job.status
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "הפרויקט לא סומן ״בייצור״")
+
+    def refresh(self) -> None:
+        """Show the job's order as it stands on disk — with the scans the
+        tablet or the other computer recorded meanwhile."""
+        job = self.session.job
+        if job is None:
+            return
+        try:
+            order = self._saved_order(job.job_id)
+        except Exception as exc:  # noqa: BLE001
+            self.scan_result.setText(f"פקודת העבודה לא נקראה: {exc}")
+            self.scan_result.setStyleSheet(f"color: {self.colours.danger};")
+            return
+        if order is not None:
+            self._show_order(order)
+        elif self.session.work_order is not None \
+                and self.session.work_order.project_id != job.job_id:
+            # Another job's order must not stay on screen to be scanned into.
+            self.session.set_work_order(None)
+            self.item.clear()
+            self.items.set_rows([])
+            self.scan_result.setText("")
 
     def scan(self) -> None:
         from ..mes import Stage
@@ -5426,12 +5628,29 @@ class ShopFloorPage(Page):
         if order is None:
             self.report(ProfileOSError("שחרר פקודת עבודה קודם"), "אין מה לסרוק")
             return
+        job = self.session.job
+        if job is not None and order.project_id != job.job_id:
+            self.report(ProfileOSError(
+                f"פקודת העבודה שעל המסך שייכת לפרויקט ⁦{order.project_id}⁩ — "
+                "פתחו אותו, או שחררו פקודה לפרויקט הפתוח"), "הסריקה לא נרשמה")
+            return
 
         item_id = self.item.currentData()
         ok, message = order.scan(
             item_id or "", Stage(self.stage.currentData()),
             operator=self.operator.currentText(), station="UI",
         )
+        if ok and job is not None:
+            from ..mes.store import save_work_order
+
+            try:
+                order = save_work_order(order, job.job_id, self._store())
+            except Exception as exc:  # noqa: BLE001
+                # What is on screen must be what is on disk: the scan is undone.
+                self.report(exc, "הסריקה לא נשמרה")
+                self.refresh()
+                return
+            self._show_order(order)
         colour = self.colours.success if ok else self.colours.danger
         self.scan_result.setText(message)
         self.scan_result.setStyleSheet(f"color: {colour};")
@@ -8833,6 +9052,7 @@ class SystemPage(Page):
         tabs.addTab(self._updates_tab(), "עדכונים")
         tabs.addTab(self._licence_tab(), "רישיון")
         tabs.addTab(self._brand_tab(), "מפעיל")
+        tabs.addTab(self._phones_tab(), "טלפונים")
         tabs.addTab(self._plugins_tab(), "תוספים")
         tabs.addTab(self._backup_tab(), "גיבוי ושחזור")
         tabs.addTab(self._audit_tab(), "יומן שינויים")
@@ -9167,6 +9387,231 @@ class SystemPage(Page):
         self._refresh_installed()
 
     # -- licence -------------------------------------------------------------- #
+    # -- phones ---------------------------------------------------------------- #
+    def _phones_tab(self) -> QWidget:
+        """The phones and tablets: turn their way in on, pair one, cut one off.
+
+        A fitter measuring on site and the tablet by the saw talk to this
+        window over the shop's own network. Nothing is put on the internet,
+        and a phone gets in only with a code shown here, on this screen.
+        """
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, METRICS.space(3), 0, 0)
+        layout.setSpacing(METRICS.space(3))
+
+        access = Card("גישה מהטלפון")
+        row = QHBoxLayout()
+        self.phone_switch = QPushButton("")
+        self.phone_switch.setObjectName("Primary")
+        self.phone_switch.clicked.connect(self.toggle_phone_access)
+        row.addWidget(self.phone_switch)
+        self.phone_state = QLabel("")
+        self.phone_state.setObjectName("FieldValue")
+        self.phone_state.setWordWrap(True)
+        self.phone_state.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        row.addWidget(self.phone_state, 1)
+        access.add_layout(row)
+        hint = QLabel(
+            "הטלפון צריך להיות מחובר לאותה רשת Wi‑Fi כמו המחשב הזה. בפעם הראשונה "
+            "Windows עשוי לשאול אם לאפשר גישה ברשת — אשרו ״רשת פרטית״."
+        )
+        hint.setObjectName("Hint")
+        hint.setWordWrap(True)
+        access.add(hint)
+        layout.addWidget(access)
+
+        pair = Card("חיבור טלפון חדש")
+        row = QHBoxLayout()
+        caption = QLabel("של מי")
+        caption.setObjectName("FieldLabel")
+        row.addWidget(caption)
+        self.phone_name = QLineEdit()
+        self.phone_name.setPlaceholderText("למשל: הטלפון של יוסי")
+        row.addWidget(self.phone_name, 1)
+        self.phone_measure = QCheckBox("מדידות")
+        self.phone_measure.setChecked(True)
+        self.phone_floor = QCheckBox("רצפת ייצור")
+        self.phone_floor.setChecked(True)
+        self.phone_drawings = QCheckBox("שרטוטים")
+        self.phone_drawings.setChecked(True)
+        for box in (self.phone_measure, self.phone_floor, self.phone_drawings):
+            row.addWidget(box)
+        issue = QPushButton("קוד חיבור")
+        issue.clicked.connect(self.issue_phone_code)
+        row.addWidget(issue)
+        pair.add_layout(row)
+        shown = QHBoxLayout()
+        shown.setSpacing(METRICS.space(4))
+        self.phone_qr = QLabel("")
+        shown.addWidget(self.phone_qr)
+        told = QVBoxLayout()
+        self.phone_digits = QLabel("")
+        self.phone_digits.setObjectName("HomeGreeting")
+        # Digits alone read as left-to-right text; the code sits where the
+        # Hebrew line under it starts.
+        self.phone_digits.setAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignAbsolute)
+        self.phone_digits.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        told.addWidget(self.phone_digits)
+        self.phone_code = QLabel("")
+        self.phone_code.setObjectName("Hint")
+        self.phone_code.setWordWrap(True)
+        told.addWidget(self.phone_code)
+        told.addStretch(1)
+        shown.addLayout(told, 1)
+        pair.add_layout(shown)
+        layout.addWidget(pair)
+
+        self.phone_devices = DataTable(
+            ["מכשיר", "מותר", "חובר", "נראה לאחרונה", "מצב"],
+            empty_text="עוד לא חובר טלפון — צרו קוד חיבור למעלה",
+        )
+        self.phone_devices.stretch(0)
+        layout.addWidget(self.phone_devices, 1)
+        row = QHBoxLayout()
+        revoke = QPushButton("ניתוק המכשיר הנבחר")
+        revoke.setToolTip("טלפון שאבד או עובד שעזב — המכשיר מפסיק לעבוד מיד")
+        revoke.clicked.connect(self.revoke_phone)
+        row.addWidget(revoke)
+        row.addStretch(1)
+        layout.addLayout(row)
+
+        from PySide6.QtCore import QTimer
+
+        self._code_timer = QTimer(page)
+        self._code_timer.setInterval(1000)
+        self._code_timer.timeout.connect(self._tick_code)
+        self._issued = None
+        self._show_phone_access()
+        self.show_phones()
+        return page
+
+    def _registry(self) -> Any:
+        from ..mobile.pairing import DeviceRegistry, default_registry_path
+
+        return DeviceRegistry.load(default_registry_path())
+
+    def _show_phone_access(self) -> None:
+        from ..mobile.host import HOST
+
+        if HOST.running:
+            self.phone_switch.setText("הפסקת הגישה")
+            urls = HOST.urls()
+            self.phone_state.setText(
+                "פועל. בטלפון פותחים: " + " או ".join(f"⁦{url}⁩" for url in urls)
+            )
+        else:
+            self.phone_switch.setText("הפעלת גישה מהטלפון")
+            self.phone_state.setText(
+                "כבוי — טלפונים לא יכולים להתחבר" + (f" ({HOST.problem})" if HOST.problem else "")
+            )
+
+    def toggle_phone_access(self) -> None:
+        from ..core.config import get_settings, save_settings
+        from ..mobile.host import HOST
+
+        settings = get_settings()
+        try:
+            if HOST.running:
+                HOST.stop()
+                settings.phone_access = False
+            else:
+                HOST.start(settings.phone_port)
+                settings.phone_access = True
+            save_settings(settings)
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "הגישה מהטלפון לא הופעלה")
+        self._show_phone_access()
+
+    def issue_phone_code(self) -> None:
+        from ..mobile.host import HOST
+
+        scopes = [scope for scope, box in (
+            ("measure", self.phone_measure), ("jobs", self.phone_floor),
+            ("drawings", self.phone_drawings)) if box.isChecked()]
+        if not scopes:
+            self.report(ProfileOSError("סמנו לפחות דבר אחד שהמכשיר יוכל לעשות"), "אין הרשאות")
+            return
+        if not HOST.running:
+            self.toggle_phone_access()
+            if not HOST.running:
+                return
+        try:
+            self._issued = self._registry().issue_code(self.phone_name.text(), scopes=scopes)
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "לא נוצר קוד")
+            return
+        url = (HOST.urls() or [""])[0]
+        self.phone_qr.clear()
+        try:
+            import io
+
+            import segno
+            from PySide6.QtGui import QPixmap
+
+            buffer = io.BytesIO()
+            segno.make(url, error="m").save(buffer, kind="png", scale=5, border=2)
+            pixmap = QPixmap()
+            pixmap.loadFromData(buffer.getvalue(), "PNG")
+            self.phone_qr.setPixmap(pixmap)
+        except Exception:  # noqa: BLE001 - the address is written out anyway
+            pass
+        self._tick_code()
+        self._code_timer.start()
+
+    def _tick_code(self) -> None:
+        from ..mobile.host import HOST
+
+        code = self._issued
+        if code is None or not code.valid:
+            self._code_timer.stop()
+            self.phone_digits.setText("")
+            self.phone_code.setText("הקוד פג — צרו חדש" if code is not None else "")
+            self.phone_qr.clear()
+            self._issued = None
+            self.show_phones()
+            return
+        url = (HOST.urls() or [""])[0]
+        self.phone_digits.setText(f"⁦{code.code[:3]} {code.code[3:]}⁩")
+        self.phone_code.setText(
+            f"סרקו את הריבוע במצלמת הטלפון (או פתחו ⁦{url}⁩), והקלידו את הקוד. "
+            f"תקף עוד ⁦{code.seconds_left // 60}:{code.seconds_left % 60:02d}⁩ דקות, פעם אחת."
+        )
+
+    def show_phones(self) -> None:
+        names = {"measure": "מדידות", "jobs": "רצפת ייצור", "drawings": "שרטוטים"}
+        try:
+            registry = self._registry()
+        except Exception as exc:  # noqa: BLE001
+            self.phone_devices.set_rows([[f"רשימת המכשירים לא נקראה: {exc}", "", "", "", ""]])
+            return
+        rows = []
+        self._device_ids: list[str] = []
+        for device in sorted(registry.devices.values(), key=lambda d: d.paired_at, reverse=True):
+            state = "מנותק" if device.revoked else ("פג תוקף" if device.expired else "פעיל")
+            rows.append([
+                device.name, ", ".join(names.get(s, s) for s in device.scopes),
+                device.paired_at.astimezone().strftime("%d/%m/%Y"),
+                device.last_seen.astimezone().strftime("%d/%m/%Y %H:%M"), state,
+            ])
+            self._device_ids.append(device.device_id)
+        self.phone_devices.set_rows(rows)
+
+    def revoke_phone(self) -> None:
+        row = self.phone_devices.currentRow()
+        ids = getattr(self, "_device_ids", [])
+        if row < 0 or row >= len(ids):
+            self.report(ProfileOSError("בחרו מכשיר מהרשימה"), "לא נבחר מכשיר")
+            return
+        try:
+            device = self._registry().revoke(ids[row])
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "המכשיר לא נותק")
+            return
+        self.status(f"{device.name} נותק — הוא לא יכול יותר להתחבר")
+        self.show_phones()
+
     def _licence_tab(self) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
@@ -9224,6 +9669,22 @@ class SystemPage(Page):
         ("דוא\"ל", "email"),
         ("אתר", "website"),
     )
+
+    def save_rates(self) -> None:
+        from ..core.config import get_settings, save_settings
+
+        settings = get_settings()
+        settings.estimate_rates = {
+            key: round(box.value(), 2) for key, box in self._rate_fields.items() if box.value() > 0
+        }
+        try:
+            save_settings(settings)
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "התעריפים לא נשמרו")
+            return
+        count = len(settings.estimate_rates)
+        self.status(f"נשמרו ⁦{count}⁩ תעריפים" if count
+                    else "אין תעריפים — שורה בלי מחירון תישאר בלי מחיר")
 
     def save_certificates(self) -> None:
         from datetime import datetime
@@ -9353,6 +9814,35 @@ class SystemPage(Page):
         save_certs.clicked.connect(self.save_certificates)
         certificates.add(save_certs)
         layout.addWidget(certificates)
+
+        # The only stand-in for a supplier price: rates the shop sets itself.
+        rates_card = Card("תעריפי הערכה של העסק")
+        rates_hint = QLabel(
+            "לשורת חומר שאין לה מחיר באף מחירון ספק. בלי תעריף — השורה נשארת בלי מחיר "
+            "וההצעה אומרת את זה. שורה שתומחרה לפי תעריף מסומנת בהצעה כהערכה."
+        )
+        rates_hint.setObjectName("Hint")
+        rates_hint.setWordWrap(True)
+        rates_card.add(rates_hint)
+        rates_grid = FieldGrid()
+        from ..quoting.rates import RATE_FIELDS
+
+        entered = dict(getattr(settings, "estimate_rates", {}) or {})
+        self._rate_fields: dict[str, QDoubleSpinBox] = {}
+        for key, label, unit in RATE_FIELDS:
+            box = QDoubleSpinBox()
+            box.setRange(0, 100_000)
+            box.setDecimals(2)
+            box.setSuffix(f" {unit}")
+            box.setSpecialValueText("לא הוזן")
+            box.setValue(float(entered.get(key, 0) or 0))
+            self._rate_fields[key] = box
+            rates_grid.add(label, box)
+        rates_card.add(rates_grid)
+        save_rates = QPushButton("שמור תעריפים")
+        save_rates.clicked.connect(self.save_rates)
+        rates_card.add(save_rates)
+        layout.addWidget(rates_card)
 
         note = QLabel(
             "הפרטים האלה מופיעים על הצעות מחיר, כרטיסי עבודה ובכותרת של כל "
@@ -9883,6 +10373,11 @@ class SurveyPage(Page):
         apply_sizes.clicked.connect(self.apply_to_elements)
         self.header.add_action(apply_sizes)
 
+        against = QPushButton("השוואה להצעה")
+        against.setToolTip("המידות שנמדדו מול מה שהלקוח אישר — וההפרש לפי מחיר ההצעה")
+        against.clicked.connect(self.compare_to_quote)
+        self.header.add_action(against)
+
         self.stats = StatRow([
             ("openings", "פתחים"), ("measured", "נמדדו"),
             ("makeable", "מוכנים לייצור"), ("square", "מחוץ לזווית"),
@@ -9972,8 +10467,9 @@ class SurveyPage(Page):
 
     # -- the sheet -------------------------------------------------------------- #
     def open_sheet(self) -> None:
-        """Open a blank sheet with a line per opening the job already has."""
-        from ..delivery.survey import survey_for_job
+        """Open the job's sheet — the one kept from last time, or a new one
+        with a line per opening — with what was measured on the phone."""
+        from ..delivery.survey import SurveyBook, sheet_for_job
 
         job = getattr(self.session, "job", None)
         if job is None or getattr(job, "schedule", None) is None:
@@ -9986,12 +10482,138 @@ class SurveyPage(Page):
             return
 
         clearance = self.survey_clearance.value() or None
-        self._survey = survey_for_job(job, clearance_per_side=clearance)
+        try:
+            book = self.checked_book(SurveyBook().load(), "גיליונות המדידה")
+            if book.damaged is not None:
+                self._survey = None
+                return
+            self._survey = sheet_for_job(job, book, clearance_per_side=clearance)
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "גיליון המדידה לא נפתח")
+            return
         self.survey_opening.clear()
         for entry in self._survey:
             self.survey_opening.addItem(entry.reference or "—", entry.reference)
+        filled = self.take_from_phone()
         self.show_survey()
-        self.status(self._survey.describe())
+        self.status(self._survey.describe()
+                    + (f" · ⁦{len(filled)}⁩ מדידות הגיעו מהטלפון" if filled else ""))
+
+    def compare_to_quote(self) -> list[Any]:
+        """The measured frames against the sizes the customer agreed to, and
+        what the growth costs at the price that version sold them at."""
+        from ..delivery.remeasure import accepted_revision, compare, unbilled
+        from ..projects import default_store
+        from ..quoting.revisions import RevisionBook
+
+        job = getattr(self.session, "job", None)
+        if job is None or self._survey is None:
+            self.report(ProfileOSError("פתחו קודם את גיליון המדידה של הפרויקט"), "אין מה להשוות")
+            return []
+        try:
+            job = default_store().load(job.job_id)
+            book = RevisionBook().load()
+            if book.damaged is not None:
+                raise book.damaged
+            revision = accepted_revision(job, book.for_job(job.job_id))
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "ההצעה של הפרויקט לא נקראה")
+            return []
+        if revision is None:
+            self.report(ProfileOSError(
+                "לפרויקט אין גרסת הצעה רשומה — ההשוואה היא מול ההצעה שהלקוח קיבל"),
+                "אין הצעה להשוות אליה")
+            return []
+        changes = compare(job, self._survey, revision)
+        if not changes:
+            self.status(f"כל הפתחים שנמדדו תואמים להצעה (גרסה ⁦{revision.number}⁩)")
+            return []
+        fresh = unbilled(job, changes)
+        grown = sum(change.amount for change in fresh)
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Information)
+        box.setWindowTitle("המידות מול ההצעה")
+        box.setText(
+            f"מול גרסה ⁦{revision.number}⁩ של ההצעה:\n\n"
+            + "\n".join(change.describe() for change in changes)
+        )
+        add = None
+        if fresh and grown > 0:
+            add = box.addButton(f"הוספת תוספת של ⁦{grown:,.0f} ₪⁩ לאישור הלקוח",
+                                QMessageBox.ButtonRole.AcceptRole)
+            box.setInformativeText(
+                "התוספת נכנסת לחשבון הפרויקט כ״לא אושרה״ — נגבית רק אחרי שהלקוח מאשר.")
+        box.addButton("סגור", QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+        if add is not None and box.clickedButton() is add:
+            self._add_growth(job.job_id, fresh)
+        return changes
+
+    def _add_growth(self, job_id: str, changes: list[Any]) -> None:
+        from ..projects import JobLine, LineKind, default_store
+
+        store = default_store()
+        try:
+            job = store.load(job_id)
+            origins = {line.origin for line in job.lines}
+            added = 0
+            for change in changes:
+                values = change.extra_line()
+                if values["origin"] in origins or values["unit_price"] <= 0:
+                    continue
+                job.lines.append(JobLine(kind=LineKind.EXTRA, **values))
+                added += 1
+            store.save(job)
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "התוספת לא נשמרה בפרויקט")
+            return
+        self.status(f"נוספו ⁦{added}⁩ תוספות לחשבון הפרויקט — שלחו ללקוח לאישור")
+
+    def take_from_phone(self) -> list[str]:
+        """What the fitter typed on the phone on site, onto the sheet —
+        nobody copies a number from a phone screen by hand."""
+        from ..mobile.measure import MeasurementStore, default_store_path
+
+        if self._survey is None:
+            return []
+        try:
+            records = MeasurementStore.load(default_store_path()).records
+        except Exception as exc:  # noqa: BLE001
+            self.survey_problems.setText(f"המדידות מהטלפון לא נקראו: {exc}")
+            return []
+        filled = self._survey.take_from_phone(records)
+        if filled:
+            self._save_sheet(filled)
+        return filled
+
+    def _save_sheet(self, references: list[str]) -> bool:
+        """Only the openings measured here go to disk, onto the sheet as the
+        other computer left it — and the screen then shows that sheet."""
+        from ..delivery.survey import save_openings
+
+        if self._survey is None:
+            return False
+        try:
+            self._survey = save_openings(self._survey, references)
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "המדידה לא נשמרה")
+            return False
+        return True
+
+    def refresh(self) -> None:
+        """The sheet as it is on disk now, with what came from the phone."""
+        from ..delivery.survey import SurveyBook
+
+        if self._survey is None:
+            return
+        try:
+            book = SurveyBook().load()
+            if book.damaged is None:
+                self._survey = book.get(self._survey.survey_id)
+        except Exception:  # noqa: BLE001 - the screen keeps what it shows
+            _log.exception("Could not re-read the measurement sheet")
+        self.take_from_phone()
+        self.show_survey()
 
     def record_measurement(self) -> None:
         from datetime import date as _date
@@ -10012,14 +10634,19 @@ class SurveyPage(Page):
             setattr(entry, key, value if value > 0 else None)
         entry.measured_by = self.survey_by.currentText()
         entry.measured_on = _date.today()
+        from datetime import datetime as _datetime
+
+        entry.measured_at = _datetime.now().astimezone().isoformat()
         entry.floor_is_finished = self.floor_finished.isChecked()
         clearance = self.survey_clearance.value()
         if clearance > 0:
             entry.clearance_per_side = clearance
 
+        saved = self._save_sheet([entry.reference])
         problems = entry.problems()
         self.survey_result.setText(
             entry.describe() + (" · " + " · ".join(problems) if problems else "")
+            + ("" if saved else " · לא נשמר")
         )
         self.survey_result.setStyleSheet(
             f"color: {self.colours.danger if problems else self.colours.success};"

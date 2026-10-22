@@ -138,6 +138,8 @@ class JobLine(RoundTrips):
     in_quote: str = ""
     #: What put it here, e.g. "plumbing-fixtures", so a repeat replaces it.
     origin: str = ""
+    #: The price was typed by a person rather than taken from the price book.
+    price_typed: bool = False
 
     @property
     def total(self) -> float:
@@ -469,6 +471,10 @@ class JobFile(RoundTrips):
     quote_total: float = 0.0
     currency: str = "ILS"
     quoted_on: str = ""
+    #: How the last quotation was priced — series, glass, finish, margin — so
+    #: printing it again after a restart gives the same price, not today's
+    #: defaults.
+    quote_spec: dict[str, Any] = Field(default_factory=dict)
     #: The version of the quotation the customer said yes to (0: not recorded),
     #: so "what did we agree?" has one answer however often it is reprinted.
     accepted_revision: int = 0

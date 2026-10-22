@@ -77,6 +77,13 @@ class ElementKind(StrEnum):
     SHOPFRONT = "shopfront"
     SLIDING_UNIT = "sliding_unit"
 
+    @property
+    def hebrew(self) -> str:
+        return {
+            "window": "חלון", "door": "דלת", "curtain_wall": "קיר מסך",
+            "shopfront": "חזית מסחרית", "sliding_unit": "מערכת הזזה",
+        }[self.value]
+
 
 class Sash(BaseModel):
     """An opening leaf inside a cell."""

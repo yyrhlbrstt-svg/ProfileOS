@@ -679,6 +679,10 @@ class MainWindow(QMainWindow):
             archive = backup_if_due()
         if archive is not None:
             self.statusBar().showMessage(f"גיבוי יומי נשמר: {archive.name}")
+        if self.self_update_enabled:      # the real program, not a test's window
+            from ..mobile.host import HOST
+
+            HOST.stop()
         super().closeEvent(event)
 
     def _hourly_backup(self) -> None:
@@ -734,6 +738,23 @@ class MainWindow(QMainWindow):
     #: Off for windows built by tests and scripts: only the real program goes
     #: to look for a newer version of itself.
     self_update_enabled = False
+
+    def start_phone_access(self) -> None:
+        """Serve the phones, when the shop turned that on (System ← Phones).
+        A failure is said in the status bar, not in a box at start-up."""
+        from ..core.config import get_settings
+        from ..mobile.host import HOST
+
+        settings = get_settings()
+        if not settings.phone_access or HOST.running:
+            return
+        try:
+            HOST.start(settings.phone_port)
+        except Exception as exc:  # noqa: BLE001
+            self.statusBar().showMessage(f"הגישה מהטלפון לא הופעלה: {exc}", 30000)
+        system = next((p for p in self.pages if p.title == "System"), None)
+        if system is not None and hasattr(system, "_show_phone_access"):
+            system._show_phone_access()
 
     def check_for_update(self) -> None:
         """Look for a newer version, download and check it, off the screen's thread."""

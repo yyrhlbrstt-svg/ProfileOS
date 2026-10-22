@@ -285,6 +285,7 @@ def price_bom(
     fallback_rates = fallback_rates or {}
     total = 0.0
     unpriced: list[str] = []
+    at_shop_rate = 0
 
     for line in bom.lines:
         supplier_price: float | None = None
@@ -328,12 +329,14 @@ def price_bom(
 
         if supplier_price is None and line.code in fallback_rates:
             supplier_price = fallback_rates[line.code] * line.quantity
-            supplier_id = "fallback"
+            supplier_id = "shop-rate"
+            at_shop_rate += 1
 
         if supplier_price is None:
             supplier_price = _category_fallback(line, fallback_rates)
             if supplier_price is not None:
-                supplier_id = "fallback"
+                supplier_id = "shop-rate"
+                at_shop_rate += 1
 
         if supplier_price is None:
             unpriced.append(line.code)
@@ -344,6 +347,11 @@ def price_bom(
         line.currency = bom.currency
         total += supplier_price
 
+    if at_shop_rate:
+        bom.warnings.append(
+            f"⁦{at_shop_rate}⁩ שורות חומר תומחרו לפי תעריף הערכה של העסק, לא לפי "
+            "מחירון ספק — כדאי לבדוק מול מחירון לפני שהמחיר סופי"
+        )
     return total, unpriced
 
 
@@ -383,6 +391,11 @@ def build_quotation(
     hours = labour.hours_for(builds)
     quote.labour_hours = hours
     quote.labour_cost = sum(hours.values()) * labour.hourly_rate
+    if labour.hourly_rate <= 0 and sum(hours.values()) > 0:
+        quote.warnings.append(
+            f"לא הוזן תעריף לשעת עבודה (מערכת ← מפעיל ← תעריפי הערכה) — "
+            f"⁦{sum(hours.values()):.1f}⁩ שעות העבודה לא נכללו במחיר"
+        )
 
     # Customer-facing lines: one per element, priced pro rata by area.
     total_area = sum(b.opening.area * b.opening.quantity for b in builds)
@@ -392,9 +405,11 @@ def build_quotation(
             opening = build.opening
             quote.lines.append(
                 QuoteLine(
+                    # What the customer reads: Hebrew, the size isolated so
+                    # the bidi algorithm cannot turn 1200×1500 around.
                     description=(
-                        f"{opening.name} - {opening.kind.value.replace('_', ' ')} "
-                        f"{opening.width:.0f} x {opening.height:.0f} mm"
+                        f"{opening.name} — {opening.kind.hebrew} "
+                        f"⁦{opening.width:.0f}×{opening.height:.0f}⁩ מ״מ"
                     ),
                     quantity=float(opening.quantity),
                     unit="pc",

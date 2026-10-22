@@ -142,6 +142,8 @@ def run(argv: Sequence[str] | None = None, *, theme: str | None = None) -> int:
     from ..core.selfupdate import CHECK_EVERY_S
 
     QTimer.singleShot(60_000, window.check_for_update)
+    # The phones' way in, if the shop turned it on: open with the window.
+    QTimer.singleShot(3_000, window.start_phone_access)
     update_timer = QTimer(window)
     update_timer.setInterval(CHECK_EVERY_S * 1000)
     update_timer.timeout.connect(window.check_for_update)

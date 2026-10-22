@@ -94,28 +94,33 @@ class Brand(BaseModel):
             lines.append(self.country)
         return lines
 
-    def contact_lines(self) -> list[str]:
-        """Contact details as printable lines, labelled."""
+    def contact_lines(self, language: str = "he") -> list[str]:
+        """Contact details as printable lines, labelled in the document's
+        language; figures isolated so a Hebrew line cannot turn them round."""
+        hebrew = str(language).lower().startswith("he")
+        phone, fax = ("טל׳", "פקס") if hebrew else ("Tel", "Fax")
         lines: list[str] = []
         if self.phone:
-            lines.append(f"Tel {self.phone}")
+            lines.append(f"{phone} \u2066{self.phone}\u2069" if hebrew else f"{phone} {self.phone}")
         if self.fax:
-            lines.append(f"Fax {self.fax}")
+            lines.append(f"{fax} \u2066{self.fax}\u2069" if hebrew else f"{fax} {self.fax}")
         if self.email:
             lines.append(self.email)
         if self.website:
             lines.append(self.website)
         return lines
 
-    def letterhead(self) -> list[str]:
-        """Every line of a document letterhead, in order."""
+    def letterhead(self, language: str = "he") -> list[str]:
+        """Every line of a document letterhead, in order, in its language."""
+        hebrew = str(language).lower().startswith("he")
         lines = [self.document_name]
         if self.tagline:
             lines.append(self.tagline)
         lines.extend(self.address_lines())
-        lines.extend(self.contact_lines())
+        lines.extend(self.contact_lines(language))
         if self.registration_number:
-            lines.append(f"Reg. {self.registration_number}")
+            lines.append(f"ח.פ. \u2066{self.registration_number}\u2069" if hebrew
+                         else f"Reg. {self.registration_number}")
         return lines
 
     def nc_header(self) -> str:

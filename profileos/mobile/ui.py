@@ -151,8 +151,11 @@ svg.dwg{width:100%;height:auto;background:#fff;border-radius:10px}
       <h2 data-t="mobile.site_measure"></h2>
       <p class="note" data-t="mobile.measure_help"></p>
       <div id="m-outbox" class="msg"></div>
+      <label for="mjob" data-t="mobile.project"></label>
+      <select id="mjob" onchange="chooseJob()"></select>
       <label for="mref" data-t="mobile.opening_ref"></label>
-      <input id="mref" autocapitalize="characters" placeholder="W-01">
+      <input id="mref" autocapitalize="characters" placeholder="W-01" list="mrefs">
+      <datalist id="mrefs"></datalist>
       <label data-t="mobile.widths"></label>
       <div class="row">
         <input id="w1" class="num" inputmode="numeric" data-tp="mobile.top">
@@ -257,7 +260,7 @@ function show(id){
   document.querySelectorAll("section").forEach(s => s.classList.toggle("on", s.id === "s"+"-"+id));
   document.querySelectorAll("nav button").forEach(b => b.classList.toggle("on", b.dataset.tab === id));
   if(id === "jobs") loadJobs();
-  if(id === "measure") loadMeasurements();
+  if(id === "measure"){ loadProjects(); loadMeasurements(); }
   if(id === "draw") loadDrawings();
 }
 
@@ -470,8 +473,33 @@ function dropRefused(id){
   showOutbox(); paintWaiting();
 }
 
+// The office's open jobs, so a measurement lands on the right job's sheet:
+// "W1" is in every job, and a mark alone would fill the wrong one.
+let PROJECTS = [];
+async function loadProjects(){
+  let data;
+  try{ data = await api("/api/projects"); }catch(err){ return; }
+  PROJECTS = data.projects || [];
+  const select = document.getElementById("mjob");
+  let kept = "";
+  try{ kept = localStorage.getItem("profileos.mjob") || ""; }catch(err){}
+  select.innerHTML = '<option value="">—</option>' + PROJECTS.map(p =>
+    `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join("");
+  if(PROJECTS.some(p => p.id === kept)) select.value = kept;
+  chooseJob();
+}
+
+function chooseJob(){
+  const id = document.getElementById("mjob").value;
+  try{ localStorage.setItem("profileos.mjob", id); }catch(err){}
+  const job = PROJECTS.find(p => p.id === id);
+  document.getElementById("mrefs").innerHTML = (job ? job.openings : [])
+    .map(ref => `<option value="${esc(ref)}"></option>`).join("");
+}
+
 function measurementForm(){
   return {
+    project_id: document.getElementById("mjob").value,
     reference: document.getElementById("mref").value.trim(),
     widths: [num("w1"), num("w2"), num("w3")],
     heights: [num("h1"), num("h2"), num("h3")],
@@ -490,6 +518,7 @@ async function sendMeasurement(){
   const body = measurementForm();
   // What the office would refuse is said now, while the opening is in front
   // of you — not hours later when the phone finds a signal.
+  if(PROJECTS.length && !body.project_id){ say("m-msg", t("mobile.need_project"), false); return; }
   if(!body.reference){ say("m-msg", t("mobile.need_reference"), false); return; }
   if(!body.widths.some(v => v > 0) || !body.heights.some(v => v > 0)){
     say("m-msg", t("mobile.need_sizes"), false); return;

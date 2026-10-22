@@ -116,6 +116,24 @@ def _no_price_lists_left_behind():
 
 
 @pytest.fixture(autouse=True)
+def _no_message_box_waits_for_a_click(monkeypatch):
+    """A message box nobody will click would hang the run: it fails the test
+    at once, with what it said. A test that expects one patches it itself."""
+    import sys
+
+    if "PySide6.QtWidgets" not in sys.modules:
+        yield
+        return
+    from PySide6.QtWidgets import QMessageBox
+
+    def refuse(box, *args, **kwargs):
+        raise AssertionError(f"a message box would wait for a click: {box.windowTitle()} — {box.text()}")
+
+    monkeypatch.setattr(QMessageBox, "exec", refuse)
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _windows_are_really_destroyed():
     """Every window a test opened is destroyed when it ends.
 

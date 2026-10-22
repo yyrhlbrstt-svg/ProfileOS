@@ -206,7 +206,7 @@ def render_quotation(
     )
 
     # -- letterhead ---------------------------------------------------------- #
-    letterhead = "<br>".join(_esc(line) for line in brand.letterhead())
+    letterhead = "<br>".join(_esc(line) for line in brand.letterhead(locale.code))
     parts.append(
         f"<header><div><h1>{_esc(t('quote.quotation'))}</h1>"
         f'<div class="num" style="color:var(--muted);font-size:13px">{_esc(quote.quote_id)}</div></div>'

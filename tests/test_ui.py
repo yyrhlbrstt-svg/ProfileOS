@@ -893,6 +893,15 @@ class TestSessionSchedule:
         assert isinstance(problems, list)
 
 
+def _shop_has_rates() -> None:
+    """A shop that entered its estimating rates (System page) — the only
+    figures a line no price list covers may be priced from."""
+    from profileos.core.config import get_settings
+
+    get_settings().estimate_rates = {"profile": 5.5, "glass_m2": 60.0, "hardware": 12.0,
+                                     "gasket_m": 1.1, "labour_hour": 45.0}
+
+
 class TestQuoteReachesTheJob:
     def test_issuing_a_quotation_records_it_on_the_open_job(
         self, window, job_dir, tmp_path, monkeypatch
@@ -901,6 +910,7 @@ class TestQuoteReachesTheJob:
 
         from profileos.projects import JobStatus, default_store
 
+        _shop_has_rates()
         job = default_store().create("עבודה מתומחרת")
         window.session.set_job(job)
 
@@ -913,6 +923,8 @@ class TestQuoteReachesTheJob:
             QFileDialog, "getExistingDirectory",
             staticmethod(lambda *args, **kwargs: str(tmp_path)),
         )
+        # Sills have no rate category: the person is told, and issues anyway.
+        monkeypatch.setattr(page, "_unpriced_ok", lambda: True)
         page.save_documents()
         pump()
 
@@ -927,6 +939,7 @@ class TestQuoteReachesTheJob:
 
         from profileos.projects import JobStatus, default_store
 
+        _shop_has_rates()
         store = default_store()
         job = store.create("כבר הוזמן")
         job.advance(JobStatus.QUOTED)
@@ -941,9 +954,32 @@ class TestQuoteReachesTheJob:
             QFileDialog, "getExistingDirectory",
             staticmethod(lambda *args, **kwargs: str(tmp_path)),
         )
+        monkeypatch.setattr(page, "_unpriced_ok", lambda: True)
         page.save_documents()
         pump()
         assert store.load(job.job_id).status is JobStatus.WON
+
+    def test_a_price_that_leaves_something_out_is_said_before_it_goes_out(
+        self, window, job_dir, monkeypatch
+    ):
+        """No rate nobody entered: without the shop's rates the material and
+        the labour are not in the price — and the person is told so."""
+        from PySide6.QtWidgets import QMessageBox
+
+        window.page("Element").build_element()
+        page = window.go_to_page("Quotation")
+        page.start_draft()
+        said: list[str] = []
+
+        def answer(box):
+            said.append(box.text())
+            return 0
+
+        monkeypatch.setattr(QMessageBox, "exec", answer)
+        assert page._unpriced_ok() is False           # "back to complete it" is the default
+        assert "פריטי חומר אין מחיר" in said[0] and "שעות העבודה לא נכללו" in said[0]
+        sheet = page.draft.internal_sheet()
+        assert any("תעריף לשעת עבודה" in warning for warning in sheet["warnings"])
 
 
 class TestDroppedFiles:

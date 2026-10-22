@@ -159,3 +159,20 @@ def test_a_date_reads_day_month_year_in_a_right_to_left_program():
         assert field.date().toPython() == date(2026, 12, 15)
     finally:
         app.setLayoutDirection(before)
+
+
+def test_a_won_job_with_no_price_is_said(shop):
+    """Deposit and balance checks are silent on a job worth ₪0 — say why."""
+    from profileos.insights import scan
+    from profileos.projects import JobFile, JobStatus
+
+    job = JobFile(job_id="J-1", name="מטבח", customer_name="לוי")
+    job.status = JobStatus.WON
+    found = scan(date(2026, 10, 22), jobs=[job], customers=[], tasks=None,
+                 cheques=ChequeBook(), service=None, store=None, agenda=None)
+    lines = [i for i in found if i.key.startswith("unpriced:")]
+    assert lines and "לוי" in lines[0].detail
+    job.record_quote(10_000)
+    found = scan(date(2026, 10, 22), jobs=[job], customers=[], tasks=None,
+                 cheques=ChequeBook(), service=None, store=None, agenda=None)
+    assert not [i for i in found if i.key.startswith("unpriced:")]

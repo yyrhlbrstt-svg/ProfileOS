@@ -138,6 +138,16 @@ class OverrideKind(StrEnum):
     DISCOUNT_PCT = "discount_pct"
     HIDDEN = "hidden"
 
+    @property
+    def hebrew(self) -> str:
+        return {"unit_price": "מחיר", "description": "תיאור", "discount_pct": "הנחה",
+                "hidden": "הסתרה"}[self.value]
+
+
+def _option(variant: "QuoteVariant") -> str:
+    """How an option is named to the person: its name, or its letter."""
+    return variant.name if variant.name and variant.name != variant.variant_id else f"חלופה ⁦{variant.variant_id}⁩"
+
 
 @dataclass
 class LineOverride:
@@ -194,6 +204,9 @@ class ExtraLine:
     job_line_id: str = ""
     #: What added it ("plumbing-fixtures"), so adding again replaces it.
     origin: str = ""
+    #: The price was typed in by a person, not taken from the price book —
+    #: the one kind of price that adding the same items again must keep.
+    price_typed: bool = False
 
     @property
     def total(self) -> float:
@@ -296,6 +309,7 @@ class QuoteDraft:
         policy: PricingPolicy | None = None,
         supplier: Supplier | None = None,
         fallback_rates: dict[str, float] | None = None,
+        labour: LabourRates | None = None,
     ) -> "QuoteDraft":
         draft = cls(
             project_name=project_name,
@@ -316,11 +330,13 @@ class QuoteDraft:
         draft.variants.append(
             QuoteVariant(
                 variant_id="A",
-                name="A",
+                # What the customer and the office read in the options table.
+                name="ההצעה",
                 system_id=system_id,
                 glass_id=glass_id,
                 finish_id=finish_id,
                 policy=policy,
+                labour=labour or LabourRates(),
             )
         )
         draft.recompute()
@@ -506,7 +522,7 @@ class QuoteDraft:
             variant.policy.margin_pct = before
 
         variant.policy.margin_pct = margin_pct
-        self._record(f"margin ({variant.variant_id})", before, margin_pct, revert, by)
+        self._record(f"רווח ({_option(variant)})", before, margin_pct, revert, by)
         self.recompute()
 
     def set_system(self, system_id: str, *, variant_id: str | None = None, by: str = "") -> None:
@@ -518,7 +534,7 @@ class QuoteDraft:
             variant.system_id = before
 
         variant.system_id = system_id
-        self._record(f"system ({variant.variant_id})", before, system_id, revert, by)
+        self._record(f"סדרה ({_option(variant)})", before, system_id, revert, by)
         self.recompute()
 
     def set_glass(self, glass_id: str, *, variant_id: str | None = None, by: str = "") -> None:
@@ -533,7 +549,7 @@ class QuoteDraft:
             variant.glass_id = before
 
         variant.glass_id = glass_id
-        self._record(f"glass ({variant.variant_id})", before, glass_id, revert, by)
+        self._record(f"זכוכית ({_option(variant)})", before, glass_id, revert, by)
         self.recompute()
 
     def set_finish(self, finish_id: str, *, variant_id: str | None = None, by: str = "") -> None:
@@ -548,7 +564,7 @@ class QuoteDraft:
             variant.finish_id = before
 
         variant.finish_id = finish_id
-        self._record(f"finish ({variant.variant_id})", before, finish_id, revert, by)
+        self._record(f"גמר ({_option(variant)})", before, finish_id, revert, by)
         self.recompute()
 
     # -- opening edits ---------------------------------------------------------
@@ -576,7 +592,7 @@ class QuoteDraft:
 
             self.openings[index] = updated
             after = (updated.width, updated.height, updated.quantity)
-            self._record(f"opening {element_id}", before, after, revert, by)
+            self._record(f"פתח ⁦{element_id}⁩", before, after, revert, by)
             self.recompute()
             return
         raise QuoteEditError(f"No opening {element_id!r} in this draft")
@@ -593,7 +609,7 @@ class QuoteDraft:
 
         self.overrides[override.key] = override
         self._record(
-            f"{override.kind.value} on {override.element_id}",
+            f"{override.kind.hebrew} בשורה ⁦{override.element_id}⁩",
             before.value if before else None,
             override.value,
             revert,
@@ -657,7 +673,7 @@ class QuoteDraft:
             self.overrides[key] = before
 
         del self.overrides[key]
-        self._record(f"cleared {kind.value} on {element_id}", before.value, None, revert, by)
+        self._record(f"ביטול {kind.hebrew} בשורה ⁦{element_id}⁩", before.value, None, revert, by)
         self.recompute()
 
     # -- options -------------------------------------------------------------------
@@ -683,7 +699,7 @@ class QuoteDraft:
             self.variants.remove(variant)
 
         self.variants.append(variant)
-        self._record("added option", None, f"{next_id}: {name}", revert, by)
+        self._record("נוספה חלופה", None, f"{next_id}: {name}", revert, by)
         self.recompute()
         return variant
 
@@ -742,11 +758,14 @@ class QuoteDraft:
         }
         rows = []
         quotation_lines = self.quotation.lines if self.quotation is not None else []
+        sizes = {opening.element_id: (opening.width, opening.height) for opening in self.openings}
         for line in quotation_lines:
             if line.code in hidden:
                 continue
+            width, height = sizes.get(line.code or "", (0.0, 0.0))
             rows.append(
                 {
+                    "width": width, "height": height,
                     "code": line.code,
                     "description": line.description,
                     "quantity": line.quantity,
@@ -814,11 +833,25 @@ class QuoteDraft:
         self._record(f"שורה הוסרה: {line.description}", line.total, None, revert, by)
 
     def replace_origin(self, origin: str, lines: list[dict[str, Any]], *, by: str = "") -> None:
-        """Drop the lines an earlier pass added, and add these instead."""
-        for old in [line for line in self.extra_lines if line.origin == origin]:
+        """Drop the lines an earlier pass added, and add these instead —
+        keeping a price the person typed on the same item: sending the counts
+        again (one more basin) must not wipe the prices typed in. A price that
+        came from the price book is taken fresh, so a new price list counts."""
+        def key(item_code: str, description: str, unit: str) -> tuple[str, ...]:
+            return (item_code,) if item_code else ("", description, unit)
+
+        previous = [line for line in self.extra_lines if line.origin == origin]
+        typed = {key(line.item_code, line.description, line.unit): line.unit_price
+                 for line in previous if line.price_typed}
+        for old in previous:
             self.remove_extra_line(old.code, by=by)
         for values in lines:
-            self.add_extra_line(**values, origin=origin, by=by)
+            kept = typed.get(key(values.get("item_code", ""), values.get("description", ""),
+                                 values.get("unit", "יח׳")))
+            line = self.add_extra_line(
+                **{**values, **({"unit_price": kept} if kept is not None else {})},
+                origin=origin, by=by)
+            line.price_typed = kept is not None
 
     def unpriced_extras(self) -> list[ExtraLine]:
         return [line for line in self.extra_lines if line.unit_price <= 0]

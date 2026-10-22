@@ -192,6 +192,43 @@ def build_router(state: MobileState | None = None) -> Any:
         }
 
     # -- the floor ---------------------------------------------------------- #
+    def _saved_orders() -> list[tuple[str, Any]]:
+        from ..mes.store import open_work_orders
+
+        try:
+            return open_work_orders()
+        except Exception:  # noqa: BLE001 - the phone shows an empty floor
+            _log.exception("Could not read the jobs' work orders")
+            return []
+
+    def _floor_order() -> Any:
+        """What the floor is building: an order set on this server, or every
+        order released in the jobs being built, as one list."""
+        if current().work_order is not None:
+            return current().work_order
+        saved = _saved_orders()
+        if not saved:
+            return None
+        if len(saved) == 1:
+            return saved[0][1]
+        from ..mes.tracking import WorkOrder
+
+        combined = WorkOrder(work_order_id="", name=f"⁦{len(saved)}⁩ פרויקטים בייצור")
+        for _job_id, order in saved:
+            combined.items.extend(order.items)
+        return combined
+
+    def _order_holding(payload: str) -> tuple[Any, str]:
+        """The order a scanned code belongs to, and its job (empty when the
+        order lives only on this server)."""
+        if current().work_order is not None:
+            return current().work_order, ""
+        for job_id, order in _saved_orders():
+            if order.by_barcode(payload) or order.find(payload):
+                return order, job_id
+        saved = _saved_orders()
+        return (saved[0][1], saved[0][0]) if saved else (None, "")
+
     @router.get("/api/jobs")
     def jobs(
         lang: str | None = None,
@@ -203,7 +240,7 @@ def build_router(state: MobileState | None = None) -> Any:
 
         language = (get_locale(lang) if lang else negotiate(accept_language)).code
         device_for(x_device_id, x_device_token, "jobs", language)
-        order = current().work_order
+        order = _floor_order()
         stages = [{"id": s, "label": _stage_label(s, language)} for s in FLOOR_STAGES]
         if order is None:
             return {"name": "", "items": [], "total": 0, "done": 0,
@@ -250,7 +287,7 @@ def build_router(state: MobileState | None = None) -> Any:
 
         language = (get_locale(lang) if lang else negotiate(accept_language)).code
         device = device_for(x_device_id, x_device_token, "jobs", language)
-        order = current().work_order
+        order, job_id = _order_holding(request.payload)
         if order is None:
             raise HTTPException(
                 status_code=409,
@@ -272,6 +309,17 @@ def build_router(state: MobileState | None = None) -> Any:
         )
         if not ok:
             raise HTTPException(status_code=400, detail=message)
+        if job_id:
+            # Kept in the job, merged with the office's own scans — the
+            # desktop's shop-floor page shows it the next time it looks.
+            from ..mes.store import save_work_order
+
+            try:
+                order = save_work_order(order, job_id)
+            except Exception as exc:  # noqa: BLE001
+                raise HTTPException(
+                    status_code=409, detail=f"הסריקה לא נשמרה: {exc}"
+                ) from exc
         item = order.by_barcode(request.payload) or order.find(request.payload)
         return {
             "ref": item.item_id if item else request.payload,
@@ -356,6 +404,11 @@ def build_router(state: MobileState | None = None) -> Any:
                 status_code=422,
                 detail=_t("mobile.need_sizes"),
             )
+        from .measure import impossible
+
+        wrong = impossible(record.widths, record.heights)
+        if wrong:
+            raise HTTPException(status_code=422, detail=wrong)
         current().measurements.add(record)
         return {
             "reference": record.reference,
@@ -363,6 +416,32 @@ def build_router(state: MobileState | None = None) -> Any:
             "height": round(record.height),
             "problems": record.problems(),
         }
+
+    @router.get("/api/projects")
+    def projects(
+        x_device_id: str | None = Header(default=None),
+        x_device_token: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        """The jobs still to be measured or made, with their openings' marks."""
+        from ..projects import JobStatus, default_store
+
+        device_for(x_device_id, x_device_token, "measure")
+        try:
+            jobs = default_store().all()
+        except Exception:  # noqa: BLE001 - the phone measures without a list
+            _log.exception("Could not list the jobs for the phone")
+            jobs = []
+        listed = []
+        for job in jobs:
+            if job.status in (JobStatus.INSTALLED, JobStatus.LOST):
+                continue
+            openings = [
+                str(opening.reference or opening.name)
+                for opening in (job.schedule.openings if job.schedule else [])
+            ]
+            name = " · ".join(part for part in (job.customer_name, job.name) if part)
+            listed.append({"id": job.job_id, "name": name or job.job_id, "openings": openings})
+        return {"projects": listed[:80]}
 
     @router.get("/api/measurements")
     def list_measurements(
@@ -403,6 +482,11 @@ def build_router(state: MobileState | None = None) -> Any:
                 status_code=422,
                 detail=_t("mobile.need_sizes"),
             )
+        from .measure import impossible
+
+        wrong = impossible([request.width], [request.height])
+        if wrong:
+            raise HTTPException(status_code=422, detail=wrong)
         try:
             opening_type = OpeningType(request.opening_type)
         except ValueError as exc:

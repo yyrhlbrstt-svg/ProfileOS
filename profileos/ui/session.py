@@ -163,7 +163,12 @@ class Session:
     def set_quote(self, bom: Any, quote: Any) -> None:
         self.bom = bom
         self.quote = quote
+        self.quote_total = None
         self._notify("quote")
+
+    #: What the quotation on screen adds up to now — its printed lines, edits
+    #: and added work included — once the quotation page has said so.
+    quote_total: float | None = None
 
     def set_work_order(self, order: Any) -> None:
         self.work_order = order
@@ -286,7 +291,8 @@ class Session:
             )
         if self.quote:
             symbol = "₪" if self.quote.currency == "ILS" else self.quote.currency
-            parts.append(f"⁦{self.quote.net_price:,.0f} {symbol}⁩")
+            net = self.quote_total if self.quote_total is not None else self.quote.net_price
+            parts.append(f"הצעה ⁦{net:,.0f} {symbol}⁩ לפני מע״מ")
         if self.work_order:
             parts.append(f"{len(self.work_order)} פריטים שוחררו")
         return "  ·  ".join(parts) or "מוכן"

@@ -152,8 +152,8 @@ class TestUndo:
         draft.set_margin(30.0, by="דאדי")
         draft.set_line_price("W-01", 5000.0, by="דאדי", reason="סגירה")
         entries = [entry.describe() for entry in draft.journal]
-        assert any("margin" in entry for entry in entries)
-        assert any("unit_price" in entry for entry in entries)
+        assert any("רווח" in entry for entry in entries)
+        assert any("מחיר בשורה" in entry for entry in entries)
 
 
 class TestOptions:
@@ -313,3 +313,31 @@ class TestApi:
         )
         assert "Margin" not in customer.text
         assert "Margin after edits" in internal.text
+
+
+def test_sending_the_fixtures_again_keeps_the_prices_typed_in(draft):
+    """One more basin sent from the plumbing page must not wipe the prices."""
+    draft.replace_origin("plumbing-fixtures", [
+        {"description": "כיור", "quantity": 2, "item_code": "SINK", "unit_price": 0},
+        {"description": "ברז", "quantity": 1, "item_code": "TAP", "unit_price": 0},
+    ])
+    sink = next(line for line in draft.extra_lines if line.item_code == "SINK")
+    sink.unit_price = 700.0          # typed into the table, as the page does
+    sink.price_typed = True
+
+    draft.replace_origin("plumbing-fixtures", [
+        {"description": "כיור", "quantity": 3, "item_code": "SINK", "unit_price": 0},
+        {"description": "ברז", "quantity": 1, "item_code": "TAP", "unit_price": 0},
+    ])
+    lines = {line.item_code: line for line in draft.extra_lines if line.origin == "plumbing-fixtures"}
+    assert lines["SINK"].quantity == 3 and lines["SINK"].unit_price == 700
+    assert lines["TAP"].unit_price == 0
+
+
+def test_a_price_book_price_is_taken_fresh_when_the_fixtures_are_sent_again(draft):
+    """A new price list in force: re-sending takes its price, not the old one."""
+    draft.replace_origin("plumbing-fixtures", [
+        {"description": "כיור", "quantity": 1, "item_code": "SINK", "unit_price": 500}])
+    draft.replace_origin("plumbing-fixtures", [
+        {"description": "כיור", "quantity": 1, "item_code": "SINK", "unit_price": 560}])
+    assert [line.unit_price for line in draft.extra_lines] == [560]

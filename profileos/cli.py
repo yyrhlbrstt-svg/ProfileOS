@@ -850,6 +850,8 @@ def quote_build(
     if not openings:
         _fail("The schedule has no elements to quote.")
 
+    from .quoting.rates import shop_labour, shop_rates
+
     try:
         draft = QuoteDraft.start(
             openings,
@@ -858,8 +860,8 @@ def quote_build(
             system_id=system or parsed.system_id,
             glass_id=glass,
             finish_id=finish,
-            fallback_rates={"profile": 42.0, "glass_m2": 260.0, "hardware": 60.0,
-                            "gasket_m": 4.0},
+            fallback_rates=shop_rates(),
+            labour=shop_labour(),
         )
         draft.set_margin(margin)
         if thermal_option:
@@ -898,36 +900,10 @@ def quote_build(
 
 
 def _lan_addresses() -> list[str]:
-    """The addresses a phone on the shop's own network can actually reach.
+    """The addresses a phone on the shop's own network can actually reach."""
+    from .mobile.host import lan_addresses
 
-    ``localhost`` is useless to a phone, and the hostname often is too, so the
-    address is worked out rather than guessed — by asking the routing table
-    which interface would be used to reach the outside, without sending
-    anything.
-    """
-    import socket
-
-    found: list[str] = []
-    probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    try:
-        probe.connect(("192.0.2.1", 9))  # a documentation address; nothing is sent
-        address = probe.getsockname()[0]
-        # A container that routes the probe address to itself hands back an
-        # address from the documentation block, which no phone can reach.
-        if not address.startswith(("127.", "192.0.2.")):
-            found.append(address)
-    except OSError:
-        pass
-    finally:
-        probe.close()
-    try:
-        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
-            address = info[4][0]
-            if not address.startswith(("127.", "192.0.2.")) and address not in found:
-                found.append(address)
-    except OSError:
-        pass
-    return found
+    return lan_addresses()
 
 
 @mobile_app.command("pair")

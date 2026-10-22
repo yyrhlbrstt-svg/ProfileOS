@@ -17,14 +17,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-#: The stand-in rates a quotation falls back on where the shop has no price
-#: list yet — the same ones the quotation page uses, so the phone figure and
-#: the written quote agree.
-FALLBACK_RATES: dict[str, float] = {
-    "profile": 5.5, "glass_m2": 60.0, "hardware": 12.0, "gasket_m": 1.1,
-}
-
-
 @dataclass
 class Estimate:
     """What the phone answer rests on."""
@@ -91,6 +83,7 @@ def estimate(text: str) -> Estimate | None:
     """
     from ..library import search_openings
     from .editor import QuoteDraft
+    from .rates import shop_labour, shop_rates
 
     found = search_openings(text, limit=1)
     if not found:
@@ -101,14 +94,14 @@ def estimate(text: str) -> Estimate | None:
     try:
         draft = QuoteDraft.start(
             [opening], project_name="הערכה טלפונית", system_id=system,
-            glass_id=preset.glass, fallback_rates=FALLBACK_RATES,
+            glass_id=preset.glass, fallback_rates=shop_rates(), labour=shop_labour(),
         )
     except Exception:  # noqa: BLE001 - an unclassified series: price it generic
         system = "generic"
         opening.system_id = system
         draft = QuoteDraft.start(
             [opening], project_name="הערכה טלפונית", system_id=system,
-            glass_id=preset.glass, fallback_rates=FALLBACK_RATES,
+            glass_id=preset.glass, fallback_rates=shop_rates(), labour=shop_labour(),
         )
     totals = draft.totals()
     return Estimate(
@@ -123,4 +116,4 @@ def estimate(text: str) -> Estimate | None:
     )
 
 
-__all__ = ["Estimate", "FALLBACK_RATES", "estimate", "opening_from_preset"]
+__all__ = ["Estimate", "estimate", "opening_from_preset"]

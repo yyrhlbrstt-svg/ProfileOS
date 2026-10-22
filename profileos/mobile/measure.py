@@ -35,6 +35,31 @@ _log = get_logger("mobile.measure")
 
 #: Out-of-square beyond this needs somebody to look before anything is cut [mm].
 SQUARENESS_LIMIT = 10.0
+#: What a window or door opening in a building can be [mm]. Outside this the
+#: number was mistyped — 1200 typed as 12000, or centimetres typed as mm.
+SMALLEST_MM = 150.0
+LARGEST_MM = 8000.0
+#: Three widths of one hole further apart than this are a typing slip, not a
+#: crooked wall [mm].
+TYPO_SPREAD_MM = 150.0
+
+
+def impossible(widths: Iterable[float], heights: Iterable[float]) -> str:
+    """Why these sizes cannot be a real opening, or ``""``."""
+    for label, values in (("רוחב", list(widths)), ("גובה", list(heights))):
+        given = [v for v in values if v]
+        for value in given:
+            if value < 0 or value < SMALLEST_MM or value > LARGEST_MM:
+                return (
+                    f"{label} ⁦{value:g}⁩ מ״מ לא נראה כמו מידת פתח — "
+                    f"מידות במילימטרים, בין ⁦{SMALLEST_MM:g}⁩ ל־⁦{LARGEST_MM:g}⁩"
+                )
+        if len(given) > 1 and max(given) - min(given) > TYPO_SPREAD_MM:
+            return (
+                f"ה{label} נמדד ⁦{min(given):g}⁩ וגם ⁦{max(given):g}⁩ — "
+                "כנראה טעות הקלדה. בדקו ושלחו שוב"
+            )
+    return ""
 
 
 @dataclass
@@ -90,22 +115,21 @@ class SiteMeasurement:
         """What is wrong with this measurement, in the fitter's own terms."""
         found: list[str] = []
         if self.width <= 0 or self.height <= 0:
-            found.append("חסרה מידה — a width and a height are both needed")
+            found.append("חסרה מידה — צריך גם רוחב וגם גובה")
         if self.width_range > SQUARENESS_LIMIT:
             found.append(
-                f"הפתח מתרחב ב-{self.width_range:.0f} מ\"מ — the opening tapers by "
-                f"{self.width_range:.0f} mm across its height"
+                f"הרוחב משתנה לאורך הגובה ב־⁦{self.width_range:.0f}⁩ מ״מ — "
+                "לבדוק לפני חיתוך"
             )
         if self.height_range > SQUARENESS_LIMIT:
             found.append(
-                f"הפתח משתנה בגובה ב-{self.height_range:.0f} מ\"מ — the opening varies "
-                f"by {self.height_range:.0f} mm across its width"
+                f"הגובה משתנה לאורך הרוחב ב־⁦{self.height_range:.0f}⁩ מ״מ — "
+                "לבדוק לפני חיתוך"
             )
         difference = self.diagonal_difference
         if difference is not None and difference > SQUARENESS_LIMIT:
             found.append(
-                f"האלכסונים נבדלים ב-{difference:.0f} מ\"מ — the opening is out of "
-                f"square by {difference:.0f} mm"
+                f"האלכסונים נבדלים ב־⁦{difference:.0f}⁩ מ״מ — הפתח לא בזווית"
             )
         return found
 
@@ -177,7 +201,7 @@ class MeasurementStore:
         try:
             data = read_json(target, default={})
         except Exception as exc:  # noqa: BLE001
-            raise ProfileOSError(f"The measurement file is damaged: {exc}") from exc
+            raise ProfileOSError(f"קובץ המדידות מהטלפון פגום: {exc}") from exc
         store.records = [SiteMeasurement.from_dict(entry) for entry in data.get("records", [])]
         return store
 
@@ -243,7 +267,10 @@ def default_store_path() -> Path:
 
 
 __all__ = [
+    "LARGEST_MM",
     "MeasurementStore",
+    "SMALLEST_MM",
+    "impossible",
     "SQUARENESS_LIMIT",
     "SiteMeasurement",
     "default_store_path",
