@@ -1049,7 +1049,123 @@ class MaterialOrdersDialog(QDialog):
         self._fill()
 
 
+class SnagListDialog(QDialog):
+    """What is left to put right after installation, and what was.
+
+    Works on copies: nothing is real until the page saves it on the job.
+    """
+
+    def __init__(self, job: Any, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle(f"רשימת תיקונים — {job.name}")
+        self.setMinimumSize(720, 420)
+        self.snags = [snag.model_copy(deep=True) for snag in job.snags]
+        #: Whether the person asked to send the list to the customer.
+        self.send_requested = False
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(*(METRICS.space(5),) * 4)
+        layout.setSpacing(METRICS.space(3))
+        hint = QLabel("מה שנשאר לתקן אחרי ההתקנה. התשלום האחרון בדרך כלל מחכה לרשימה הזאת — "
+                      "כשהיא ריקה, שולחים ללקוח ״הכול תוקן״ ואת היתרה.")
+        hint.setObjectName("Hint")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+        row = QHBoxLayout()
+        self.description = QLineEdit()
+        self.description.setPlaceholderText("מה לתקן — למשל: ידית תקועה, שריטה במסגרת")
+        self.description.returnPressed.connect(self.add)
+        row.addWidget(self.description, 3)
+        self.where = QLineEdit()
+        self.where.setPlaceholderText("איפה — פתח או חדר")
+        self.where.returnPressed.connect(self.add)
+        row.addWidget(self.where, 1)
+        add = QPushButton("הוספה")
+        add.setObjectName("Primary")
+        add.clicked.connect(self.add)
+        row.addWidget(add)
+        layout.addLayout(row)
+        self.table = DataTable(["מה", "איפה", "נרשם", "תוקן"],
+                               empty_text="אין תיקונים — כל הכבוד")
+        self.table.stretch(0)
+        layout.addWidget(self.table, 1)
+        buttons = QHBoxLayout()
+        fixed = QPushButton("תוקן")
+        fixed.clicked.connect(self.mark_fixed)
+        buttons.addWidget(fixed)
+        reopen = QPushButton("עוד לא תוקן")
+        reopen.clicked.connect(self.reopen)
+        buttons.addWidget(reopen)
+        buttons.addStretch(1)
+        send = QPushButton("שליחה ללקוח בוואטסאפ")
+        send.setObjectName("WhatsApp")
+        send.clicked.connect(self._send)
+        buttons.addWidget(send)
+        close = QPushButton("סגירה")
+        close.clicked.connect(self.accept)
+        buttons.addWidget(close)
+        layout.addLayout(buttons)
+        self._fill()
+
+    def _fill(self) -> None:
+        from datetime import date
+
+        def day(text: str) -> str:
+            try:
+                return f"⁦{date.fromisoformat(text[:10]):%d/%m}⁩"
+            except ValueError:
+                return text or ""
+
+        # Open first, oldest first: the order they should be done in.
+        self.snags.sort(key=lambda snag: (not snag.is_open, snag.raised_on))
+        self.table.set_rows([
+            [snag.description, f"⁦{snag.where}⁩" if snag.where else "", day(snag.raised_on),
+             day(snag.fixed_on) if snag.fixed_on else "—"]
+            for snag in self.snags
+        ])
+
+    def add(self) -> None:
+        from ..projects import Snag
+
+        text = self.description.text().strip()
+        if not text:
+            _warn(self, "חסר תיאור", ValueError("כתבו מה צריך לתקן"))
+            return
+        self.snags.append(Snag(description=text, where=self.where.text().strip()))
+        self.description.clear()
+        self.where.clear()
+        self.description.setFocus()
+        self._fill()
+
+    def _chosen(self) -> Any:
+        rows = self.table.selectionModel()
+        if rows is None or not rows.selectedRows():
+            _warn(self, "לא נבחר תיקון", ValueError("בחרו שורה מהרשימה"))
+            return None
+        return self.snags[rows.selectedRows()[0].row()]
+
+    def mark_fixed(self) -> None:
+        from datetime import date
+
+        snag = self._chosen()
+        if snag is not None and snag.is_open:
+            snag.fixed_on = date.today().isoformat()
+            self._fill()
+
+    def reopen(self) -> None:
+        snag = self._chosen()
+        if snag is not None and not snag.is_open:
+            snag.fixed_on = ""
+            self._fill()
+
+    def _send(self) -> None:
+        if not self.snags:
+            _warn(self, "אין מה לשלוח", ValueError("הרשימה ריקה"))
+            return
+        self.send_requested = True
+        self.accept()
+
+
 __all__ = [
     "JobAccountDialog", "MaterialOrderDialog", "MaterialOrdersDialog", "PriceBookDialog",
-    "PriceItemPicker",
+    "PriceItemPicker", "SnagListDialog",
 ]

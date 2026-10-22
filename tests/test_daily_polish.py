@@ -213,3 +213,85 @@ def test_the_customer_list_shows_what_each_one_still_owes(shop):
     window.close()
     window.deleteLater()
     QCoreApplication.processEvents()
+
+
+class TestThePunchList:
+    def test_it_is_kept_on_the_job(self, shop):
+        from profileos.projects import Snag, default_store
+
+        job = JobFile(job_id="J-2026-0001", name="וילה", status=JobStatus.INSTALLED)
+        job.snags = [Snag(description="ידית תקועה", where="W3"),
+                     Snag(description="שריטה", fixed_on="2026-10-20")]
+        default_store().save(job)
+        again = default_store().load("J-2026-0001")
+        assert [s.description for s in again.open_snags] == ["ידית תקועה"]
+
+    def test_the_message_lists_what_is_left_and_what_was_done(self):
+        from profileos.projects import Snag
+        from profileos.sharing import snag_message
+
+        left = [Snag(description="ידית תקועה", where="W3")]
+        done = [Snag(description="שריטה", fixed_on="2026-10-20")]
+        text = snag_message(brand_name="דאדי", customer_name="לוי", job_name="וילה",
+                            open_snags=left, fixed_snags=done, visit="27/10")
+        assert "• ידית תקועה (⁦W3⁩)" in text and "✓ שריטה" in text and "⁦27/10⁩" in text
+        finished = snag_message(brand_name="דאדי", open_snags=[], fixed_snags=left + done)
+        assert "כל התיקונים" in finished and "בוצעו" in finished
+
+    def test_a_repair_waiting_a_week_is_on_the_home_page(self, shop):
+        from profileos.insights import scan
+        from profileos.projects import Payment, Snag
+
+        today = date(2026, 10, 22)
+        job = JobFile(job_id="J-1", name="וילה", customer_name="לוי",
+                      status=JobStatus.INSTALLED, quote_total=10_000)
+        job.payments = [Payment(amount=9_000)]
+        job.snags = [Snag(description="ידית תקועה", raised_on="2026-10-12")]
+        found = scan(today, jobs=[job], customers=[], tasks=None, cheques=None,
+                     service=None, store=None, agenda=None)
+        snags = [i for i in found if i.key.startswith("snags:")]
+        assert snags and "ידית תקועה" in snags[0].detail
+        owing = [i for i in found if i.key.startswith("owing:")][0]
+        assert "תיקון אחד פתוח" in owing.detail
+        job.snags[0].fixed_on = "2026-10-21"
+        found = scan(today, jobs=[job], customers=[], tasks=None, cheques=None,
+                     service=None, store=None, agenda=None)
+        assert not [i for i in found if i.key.startswith("snags:")]
+
+    def test_from_the_projects_page(self, shop, monkeypatch):
+        pytest.importorskip("PySide6")
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PySide6.QtCore import QCoreApplication
+        from PySide6.QtWidgets import QApplication, QDialog
+
+        from profileos.projects import default_store
+        from profileos.ui import money_dialogs
+        from profileos.ui.main_window import MainWindow
+        from profileos.ui.theme import LIGHT
+
+        QApplication.instance() or QApplication([])
+        default_store().save(JobFile(job_id="J-2026-0001", name="וילה",
+                                     status=JobStatus.INSTALLED))
+
+        def work(dialog):
+            dialog.description.setText("ידית תקועה")
+            dialog.where.setText("W3")
+            dialog.add()
+            dialog.description.setText("שריטה")
+            dialog.add()
+            dialog.table.selectRow(1)
+            dialog.mark_fixed()
+            return QDialog.DialogCode.Accepted
+
+        monkeypatch.setattr(money_dialogs.SnagListDialog, "exec", work)
+        window = MainWindow(LIGHT)
+        page = window.go_to_page("Projects")
+        page.refresh()
+        page.jobs_table.selectRow(0)
+        page.manage_snags()
+        saved = default_store().load("J-2026-0001")
+        assert len(saved.snags) == 2
+        assert [s.description for s in saved.open_snags] == ["ידית תקועה"]
+        window.close()
+        window.deleteLater()
+        QCoreApplication.processEvents()

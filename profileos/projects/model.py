@@ -184,6 +184,25 @@ class Payment(RoundTrips):
     note: str = ""
 
 
+class Snag(RoundTrips):
+    """Something to put right after installation — a handle that sticks, a
+    scratch, a seal. The last payment usually waits on this list, so it is
+    written down, dated, and closed when it is done."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    snag_id: str = Field(default_factory=lambda: f"S-{_short_id()}")
+    description: str
+    #: The opening or the room, in the shop's words ("W3", "חדר שינה").
+    where: str = ""
+    raised_on: str = Field(default_factory=lambda: date.today().isoformat())
+    fixed_on: str = ""
+
+    @property
+    def is_open(self) -> bool:
+        return not self.fixed_on
+
+
 class InvoiceRecord(RoundTrips):
     """A tax invoice issued for the job — recorded here, issued elsewhere.
 
@@ -402,6 +421,8 @@ class JobFile(RoundTrips):
     #: Days the balance was sent to the customer, so the next one knows it is
     #: a second reminder and the home page knows it was asked for.
     balance_reminders: list[str] = Field(default_factory=list)
+    #: What is left to put right after installation (the punch list).
+    snags: list[Snag] = Field(default_factory=list)
 
     #: A snapshot of the last quotation, so the job list can show money
     #: without repricing every job it displays.
@@ -436,6 +457,10 @@ class JobFile(RoundTrips):
         if self.schedule is None:
             return 0.0
         return sum(o.area * max(1, o.quantity) for o in self.schedule.openings)
+
+    @property
+    def open_snags(self) -> list[Snag]:
+        return [snag for snag in self.snags if snag.is_open]
 
     @property
     def material_ordered(self) -> bool:

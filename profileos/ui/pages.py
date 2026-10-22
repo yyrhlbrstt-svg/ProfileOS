@@ -1352,6 +1352,7 @@ class ProjectsPage(Page):
         menu.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
         for label, handler in (
             ("שליחת היתרה ללקוח בוואטסאפ", self.send_balance),
+            ("רשימת תיקונים…", self.manage_snags),
             ("הזמנת חומר מהספק…", self.order_material),
             ("הזמנות חומר — אישור והגעה…", self.manage_material_orders),
             ("קבע ביקור ביומן", self.plan_visit_for_job),
@@ -1462,6 +1463,18 @@ class ProjectsPage(Page):
         if account.uncovered <= 0.5:
             self.status(f"{job.job_id}: אין יתרה פתוחה — " + account.describe())
             return
+        if job.open_snags:
+            from PySide6.QtWidgets import QMessageBox
+
+            left = len(job.open_snags)
+            answer = QMessageBox.question(
+                self, "יש תיקונים פתוחים",
+                ("נשאר תיקון אחד פתוח" if left == 1 else f"נשארו ⁦{left}⁩ תיקונים פתוחים")
+                + " בעבודה הזאת. לקוח שמחכה לתיקון בדרך כלל מחכה איתו גם עם התשלום. "
+                "לשלוח את היתרה בכל זאת?",
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
         message = balance_message(
             brand_name=active_brand().display_name, customer_name=job.customer_name,
             job_name=job.name, account=account, reminders=len(job.balance_reminders),
@@ -1477,6 +1490,51 @@ class ProjectsPage(Page):
         QDesktopServices.openUrl(QUrl(whatsapp_link(customer_phone(job), message)))
         self.status(f"נפתח וואטסאפ עם היתרה של {job.job_id} — בדקו ושלחו")
         self.refresh()
+
+    def manage_snags(self) -> None:
+        """The punch list: what is left to put right, closed one by one, and
+        sent to the customer — the list the last payment waits on."""
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+
+        from ..branding import active_brand
+        from ..sharing import customer_phone, snag_message, whatsapp_link
+        from .money_dialogs import SnagListDialog
+
+        job = self._selected_job()
+        if job is None:
+            self.status("בחר פרויקט מהרשימה")
+            return
+        dialog = SnagListDialog(job, self)
+        dialog.exec()
+        before = [snag.model_dump() for snag in job.snags]
+        if [snag.model_dump() for snag in dialog.snags] != before:
+            try:
+                store = self._store()
+                fresh = store.load(job.job_id)
+                ours = {snag.snag_id for snag in dialog.snags}
+                # Anything added to the job meanwhile is kept, never dropped.
+                fresh.snags = list(dialog.snags) + [
+                    snag for snag in fresh.snags if snag.snag_id not in ours
+                ]
+                fresh.touch()
+                store.save(fresh)
+                job = fresh
+            except Exception as exc:  # noqa: BLE001
+                self.report(exc, "רשימת התיקונים לא נשמרה")
+                return
+            left = len(job.open_snags)
+            self.status(f"{job.job_id}: " + (f"נשארו ⁦{left}⁩ תיקונים" if left
+                                            else "כל התיקונים בוצעו"))
+            self.refresh()
+        if dialog.send_requested:
+            message = snag_message(
+                brand_name=active_brand().display_name, customer_name=job.customer_name,
+                job_name=job.name, open_snags=job.open_snags,
+                fixed_snags=[snag for snag in job.snags if not snag.is_open],
+            )
+            QDesktopServices.openUrl(QUrl(whatsapp_link(customer_phone(job), message)))
+            self.status("נפתח וואטסאפ עם רשימת התיקונים — בדקו ושלחו")
 
     # -- material ------------------------------------------------------------- #
     def order_material(self) -> None:

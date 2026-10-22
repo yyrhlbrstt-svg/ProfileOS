@@ -28,6 +28,8 @@ QUOTE_STALE_DAYS = 7
 WON_STALE_DAYS = 14
 #: Days after a job is won before a missing deposit is worth a word.
 DEPOSIT_GRACE_DAYS = 3
+#: Days a repair after installation may wait before it is worth a word.
+SNAG_STALE_DAYS = 7
 #: How long a job may sit in production before somebody asks why.
 PRODUCTION_STALE_DAYS = 30
 #: Days without a backup before it is worth a line on the home page.
@@ -508,6 +510,14 @@ def _last_reminder(job: Any, today: date) -> str:
     return " (תזכורת נשלחה היום)" if days == 0 else f" (תזכורת לפני ⁦{days}⁩ ימים)"
 
 
+def _open_snags(job: Any) -> str:
+    """Said beside a balance: the customer is probably waiting for these first."""
+    left = len(getattr(job, "open_snags", []) or [])
+    if not left:
+        return ""
+    return " (תיקון אחד פתוח)" if left == 1 else f" (⁦{left}⁩ תיקונים פתוחים)"
+
+
 def _accounts(context: dict[str, Any], today: date) -> list[Insight]:
     """Money a job is still owed, extras nobody agreed, invoices that will bounce."""
     from .projects import JobStatus
@@ -532,7 +542,8 @@ def _accounts(context: dict[str, Any], today: date) -> list[Insight]:
                    "פרויקטים הותקנו ולא שולמו במלואם"),
             f"נותר לגבות ⁦{total:,.0f} ₪⁩: "
             + _names(owing, lambda pair: f"{pair[0].customer_name or pair[0].name} "
-                     f"⁦{pair[1].uncovered:,.0f} ₪⁩" + _last_reminder(pair[0], today))
+                     f"⁦{pair[1].uncovered:,.0f} ₪⁩" + _open_snags(pair[0])
+                     + _last_reminder(pair[0], today))
             + ". בפרויקטים ← עוד פעולות ← שליחת היתרה ללקוח.",
             "Projects", "owing:" + ",".join(
                 sorted(f"{job.job_id}={account.uncovered:.0f}" for job, account in owing)
@@ -564,6 +575,29 @@ def _accounts(context: dict[str, Any], today: date) -> list[Insight]:
             + ". מקדמה לפני הזמנת חומר שומרת עליכם אם הלקוח מתחרט. "
             "תשלום שהתקבל נרשם בפרויקט ← חשבון הפרויקט ← רישום תשלום.",
             "Projects", "deposit:" + ",".join(sorted(job.job_id for job, _a, _o in unpaid)),
+        ))
+
+    # The punch list: a customer waiting on a repair is a customer waiting
+    # to pay the last of it.
+    waiting_fix = [
+        (job, [snag for snag in job.open_snags
+               if (_days_since(snag.raised_on, today) or 0) >= SNAG_STALE_DAYS])
+        for job in jobs if job.status is not JobStatus.LOST
+    ]
+    waiting_fix = [(job, snags) for job, snags in waiting_fix if snags]
+    if waiting_fix:
+        count = sum(len(snags) for _job, snags in waiting_fix)
+        found.append(Insight(
+            "warning",
+            _count(count, "תיקון אחד אחרי התקנה מחכה יותר משבוע",
+                   "תיקונים אחרי התקנה מחכים יותר משבוע"),
+            "הלקוח מחכה — ובדרך כלל גם התשלום האחרון: "
+            + _names(waiting_fix, lambda pair: f"{pair[0].customer_name or pair[0].name}: "
+                     + ", ".join(snag.description for snag in pair[1][:2])
+                     + ("…" if len(pair[1]) > 2 else ""))
+            + ". בפרויקטים ← עוד פעולות ← רשימת תיקונים.",
+            "Projects", "snags:" + ",".join(sorted(
+                snag.snag_id for _job, snags in waiting_fix for snag in snags)),
         ))
 
     pending = [

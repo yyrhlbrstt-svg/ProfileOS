@@ -319,6 +319,37 @@ def balance_message(*, brand_name: str, customer_name: str = "", job_name: str =
     return "\n".join(lines)
 
 
+def snag_message(*, brand_name: str, customer_name: str = "", job_name: str = "",
+                 open_snags: list[Any] = (), fixed_snags: list[Any] = (),
+                 visit: str = "") -> str:
+    """The punch list, to the customer: what is left and when it will be put
+    right — or that everything was. Written down, it stops being a feeling
+    that "something is still not right" and becomes a list that gets shorter."""
+    def item(snag: Any) -> str:
+        where = f" (⁦{snag.where}⁩)" if getattr(snag, "where", "") else ""
+        return f"{snag.description}{where}"
+
+    work = f"בעבודה ״{job_name}״" if job_name else "בעבודה"
+    lines = [_greeting(customer_name), ""]
+    if open_snags:
+        lines.append(f"רשמנו את מה שנשאר לתקן {work}:")
+        lines += [f"• {item(snag)}" for snag in open_snags]
+        lines.append("")
+        lines.append(f"נגיע לטפל בזה ב־⁦{visit}⁩." if visit
+                     else "נתאם איתכם מועד להגיע ולטפל בזה.")
+        if fixed_snags:
+            lines.append("")
+            lines.append("כבר תוקן:")
+            lines += [f"✓ {item(snag)}" for snag in fixed_snags]
+    else:
+        lines.append(f"כל התיקונים {work} בוצעו:")
+        lines += [f"✓ {item(snag)}" for snag in fixed_snags]
+        lines.append("")
+        lines.append("תודה על הסבלנות. אם משהו עדיין לא תקין — רק תגידו.")
+    lines += ["", brand_name]
+    return "\n".join(lines)
+
+
 def cheque_message(
     *,
     brand_name: str,
@@ -383,6 +414,7 @@ def customer_phone(job: Any) -> str:
 __all__ = [
     "cheque_message",
     "balance_message",
+    "snag_message",
     "catalogue_change_message",
     "checkup_message",
     "crew_plan_message",
