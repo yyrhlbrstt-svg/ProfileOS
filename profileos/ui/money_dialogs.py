@@ -1049,6 +1049,116 @@ class MaterialOrdersDialog(QDialog):
         self._fill()
 
 
+class NeedsDialog(QDialog):
+    """What the shop is waiting for from the customer before it can make the
+    job — ticked off as it arrives. Works on copies; the page saves them."""
+
+    def __init__(self, job: Any, *, deposit_missing: bool = False,
+                 parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        from ..erp.order_confirmation import Need
+
+        self.setWindowTitle(f"ממתינים מהלקוח — {job.name}")
+        self.setMinimumSize(720, 420)
+        self.needs = [need.model_copy(deep=True) for need in job.waiting_for]
+        self.send_requested = False
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(*(METRICS.space(5),) * 4)
+        layout.setSpacing(METRICS.space(3))
+        hint = QLabel(
+            "מה צריך מהלקוח לפני שמתחילים לייצר. כל עוד משהו כאן פתוח, תאריך המסירה אינו סופי."
+            + (" גם מקדמה עוד לא התקבלה — היא נבדקת לבד מהתשלומים שנרשמו." if deposit_missing
+               else "")
+        )
+        hint.setObjectName("Hint")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+        row = QHBoxLayout()
+        self.kind = QComboBox()
+        for need in Need:
+            if need is Need.DEPOSIT:
+                continue  # read from the payments, never ticked by hand
+            self.kind.addItem(need.hebrew, need.value)
+        row.addWidget(self.kind, 1)
+        self.detail = QLineEdit()
+        self.detail.setPlaceholderText("פירוט (לא חובה) — למשל: גוון לפרופילים ולתריסים")
+        self.detail.returnPressed.connect(self.add)
+        row.addWidget(self.detail, 2)
+        add = QPushButton("הוספה")
+        add.setObjectName("Primary")
+        add.clicked.connect(self.add)
+        row.addWidget(add)
+        layout.addLayout(row)
+        self.table = DataTable(["מה", "התבקש", "התקבל"], empty_text="לא מחכים לשום דבר מהלקוח")
+        self.table.stretch(0)
+        layout.addWidget(self.table, 1)
+        buttons = QHBoxLayout()
+        got = QPushButton("התקבל")
+        got.clicked.connect(self.mark_received)
+        buttons.addWidget(got)
+        reopen = QPushButton("עוד לא התקבל")
+        reopen.clicked.connect(self.reopen)
+        buttons.addWidget(reopen)
+        buttons.addStretch(1)
+        send = QPushButton("שליחה ללקוח בוואטסאפ")
+        send.setObjectName("WhatsApp")
+        send.clicked.connect(self._send)
+        buttons.addWidget(send)
+        close = QPushButton("סגירה")
+        close.clicked.connect(self.accept)
+        buttons.addWidget(close)
+        layout.addLayout(buttons)
+        self._fill()
+
+    def _fill(self) -> None:
+        from datetime import date
+
+        def day(text: str) -> str:
+            try:
+                return f"⁦{date.fromisoformat(text[:10]):%d/%m}⁩"
+            except ValueError:
+                return text or ""
+
+        self.needs.sort(key=lambda need: (not need.is_open, need.requested_on))
+        self.table.set_rows([
+            [need.label, day(need.requested_on), day(need.received_on) if need.received_on else "—"]
+            for need in self.needs
+        ])
+
+    def add(self) -> None:
+        from ..projects import CustomerNeed
+
+        self.needs.append(CustomerNeed(need=str(self.kind.currentData()),
+                                       detail=self.detail.text().strip()))
+        self.detail.clear()
+        self._fill()
+
+    def _chosen(self) -> Any:
+        rows = self.table.selectionModel()
+        if rows is None or not rows.selectedRows():
+            _warn(self, "לא נבחרה שורה", ValueError("בחרו שורה מהרשימה"))
+            return None
+        return self.needs[rows.selectedRows()[0].row()]
+
+    def mark_received(self) -> None:
+        from datetime import date
+
+        need = self._chosen()
+        if need is not None and need.is_open:
+            need.received_on = date.today().isoformat()
+            self._fill()
+
+    def reopen(self) -> None:
+        need = self._chosen()
+        if need is not None and not need.is_open:
+            need.received_on = ""
+            self._fill()
+
+    def _send(self) -> None:
+        self.send_requested = True
+        self.accept()
+
+
 class SnagListDialog(QDialog):
     """What is left to put right after installation, and what was.
 
@@ -1269,5 +1379,5 @@ class RevisionsDialog(QDialog):
 
 __all__ = [
     "JobAccountDialog", "MaterialOrderDialog", "MaterialOrdersDialog", "PriceBookDialog",
-    "PriceItemPicker", "RevisionsDialog", "SnagListDialog",
+    "NeedsDialog", "PriceItemPicker", "RevisionsDialog", "SnagListDialog",
 ]

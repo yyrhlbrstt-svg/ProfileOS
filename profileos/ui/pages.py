@@ -1352,6 +1352,7 @@ class ProjectsPage(Page):
         menu.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
         for label, handler in (
             ("שליחת היתרה ללקוח בוואטסאפ", self.send_balance),
+            ("ממתינים מהלקוח…", self.manage_needs),
             ("רשימת תיקונים…", self.manage_snags),
             ("גרסאות ההצעה — מה השתנה…", self.show_revisions),
             ("הזמנת חומר מהספק…", self.order_material),
@@ -1491,6 +1492,61 @@ class ProjectsPage(Page):
         QDesktopServices.openUrl(QUrl(whatsapp_link(customer_phone(job), message)))
         self.status(f"נפתח וואטסאפ עם היתרה של {job.job_id} — בדקו ושלחו")
         self.refresh()
+
+    def _deposit_missing(self, job: Any) -> bool:
+        from ..projects.account import job_account
+
+        try:
+            account = job_account(job, self._cheques_for_accounts())
+        except Exception:  # noqa: BLE001 - not knowing is not "missing"
+            return False
+        return account.total_gross > 0 and account.received + account.in_cheques <= 0.5
+
+    def manage_needs(self) -> None:
+        """What the shop is waiting for from the customer before it can make
+        the job — ticked off as it arrives, and asked for in one message."""
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+
+        from ..branding import active_brand
+        from ..sharing import customer_phone, needs_message, whatsapp_link
+        from .money_dialogs import NeedsDialog
+
+        job = self._selected_job()
+        if job is None:
+            self.status("בחר פרויקט מהרשימה")
+            return
+        deposit = self._deposit_missing(job)
+        dialog = NeedsDialog(job, deposit_missing=deposit, parent=self)
+        dialog.exec()
+        if [n.model_dump() for n in dialog.needs] != [n.model_dump() for n in job.waiting_for]:
+            try:
+                store = self._store()
+                fresh = store.load(job.job_id)
+                ours = {need.need_id for need in dialog.needs}
+                fresh.waiting_for = list(dialog.needs) + [
+                    need for need in fresh.waiting_for if need.need_id not in ours
+                ]
+                fresh.touch()
+                store.save(fresh)
+                job = fresh
+            except Exception as exc:  # noqa: BLE001
+                self.report(exc, "הרשימה לא נשמרה")
+                return
+            self.refresh()
+            left = len(job.open_needs)
+            self.status(f"{job.job_id}: " + (f"מחכים ללקוח ל־⁦{left}⁩ דברים" if left
+                                            else "קיבלנו מהלקוח את כל מה שצריך"))
+        if dialog.send_requested:
+            if not job.open_needs and not deposit:
+                self.status("אין מה לבקש — הכול התקבל")
+                return
+            message = needs_message(
+                brand_name=active_brand().display_name, customer_name=job.customer_name,
+                job_name=job.name, needs=job.open_needs, deposit_missing=deposit,
+            )
+            QDesktopServices.openUrl(QUrl(whatsapp_link(customer_phone(job), message)))
+            self.status("נפתח וואטסאפ עם מה שצריך מהלקוח — בדקו ושלחו")
 
     def manage_snags(self) -> None:
         """The punch list: what is left to put right, closed one by one, and
@@ -1941,6 +1997,13 @@ class ProjectsPage(Page):
                 accepted = self._last_sent_revision(job.job_id)
                 if accepted:
                     job.accepted_revision = accepted
+                # What a window cannot be made without: asked for now, in
+                # one list, not discovered when the bars are on the saw.
+                if not job.waiting_for and job.trade.value == "aluminium":
+                    from ..projects import CustomerNeed
+
+                    job.waiting_for = [CustomerNeed(need=kind)
+                                       for kind in ("measurement", "colour", "glass_choice")]
             store.save(job)
         except Exception as exc:  # noqa: BLE001
             self.report(exc, "לא ניתן לעדכן את הסטטוס")

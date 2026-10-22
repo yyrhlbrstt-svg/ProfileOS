@@ -8,6 +8,7 @@ from datetime import date, timedelta
 import pytest
 
 from profileos.projects import JobFile, JobStatus
+from profileos.projects.model import StatusEvent
 
 
 @pytest.fixture
@@ -390,3 +391,79 @@ def test_a_row_chosen_before_the_table_is_shown_stays_chosen():
         assert table.currentRow() == 2
     finally:
         app.setLayoutDirection(before)
+
+
+class TestWaitingForTheCustomer:
+    def test_the_message_asks_for_everything_at_once(self):
+        from profileos.projects import CustomerNeed
+        from profileos.sharing import needs_message
+
+        text = needs_message(brand_name="דאדי", customer_name="לוי", job_name="וילה",
+                             needs=[CustomerNeed(need="colour"),
+                                    CustomerNeed(need="measurement")],
+                             deposit_missing=True)
+        assert "• בחירת גוון" in text and "• מדידה סופית באתר" in text and "• מקדמה" in text
+        assert "₪" not in text                    # no amount the shop never set
+
+    def test_the_home_page_says_what_a_job_waits_for(self, shop):
+        from profileos.insights import scan
+        from profileos.projects import CustomerNeed
+
+        today = date(2026, 10, 22)
+        job = JobFile(job_id="J-1", name="וילה", customer_name="לוי", status=JobStatus.WON)
+        job.history = [StatusEvent(status=JobStatus.WON, at="2026-09-01")]
+        job.waiting_for = [CustomerNeed(need="colour", requested_on="2026-10-10"),
+                           CustomerNeed(need="site_access", requested_on="2026-10-10")]
+        found = scan(today, jobs=[job], customers=[], tasks=None, cheques=None,
+                     service=None, store=None, agenda=None)
+        needs = [i for i in found if i.key.startswith("needs:")]
+        assert needs and "בחירת גוון" in needs[0].detail and "⁦12⁩ ימים" in needs[0].detail
+        assert "גישה לאתר" not in needs[0].detail          # does not stop production
+        # Said once: not also as "won and never reached the floor".
+        assert not [i for i in found if i.key.startswith("won:")]
+        job.waiting_for[0].received_on = "2026-10-20"
+        found = scan(today, jobs=[job], customers=[], tasks=None, cheques=None,
+                     service=None, store=None, agenda=None)
+        assert not [i for i in found if i.key.startswith("needs:")]
+        assert [i for i in found if i.key.startswith("won:")]
+
+    def test_winning_asks_for_what_a_window_needs(self, shop, monkeypatch):
+        pytest.importorskip("PySide6")
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PySide6.QtCore import QCoreApplication
+        from PySide6.QtWidgets import QApplication
+
+        from profileos.projects import default_store
+        from profileos.ui import money_dialogs
+        from profileos.ui.main_window import MainWindow
+        from profileos.ui.theme import LIGHT
+
+        QApplication.instance() or QApplication([])
+        default_store().save(JobFile(job_id="J-2026-0001", name="וילה", status=JobStatus.QUOTED,
+                                     quote_total=20_000))
+        window = MainWindow(LIGHT)
+        page = window.go_to_page("Projects")
+        page.refresh()
+        page.jobs_table.selectRow(0)
+        page.status_combo.setCurrentIndex(page.status_combo.findData("won"))
+        page.advance_status()
+        saved = default_store().load("J-2026-0001")
+        assert [n.need for n in saved.waiting_for] == ["measurement", "colour", "glass_choice"]
+
+        seen = {}
+
+        def work(dialog):
+            seen["hint"] = dialog.findChildren(money_dialogs.QLabel)[0].text()
+            dialog.table.selectRow(1)
+            dialog.mark_received()
+            return 0
+
+        monkeypatch.setattr(money_dialogs.NeedsDialog, "exec", work)
+        page.refresh()
+        page.jobs_table.selectRow(0)
+        page.manage_needs()
+        saved = default_store().load("J-2026-0001")
+        assert len(saved.open_needs) == 2 and "מקדמה" in seen["hint"]
+        window.close()
+        window.deleteLater()
+        QCoreApplication.processEvents()

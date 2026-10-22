@@ -319,6 +319,20 @@ def balance_message(*, brand_name: str, customer_name: str = "", job_name: str =
     return "\n".join(lines)
 
 
+def needs_message(*, brand_name: str, customer_name: str = "", job_name: str = "",
+                  needs: list[Any] = (), deposit_missing: bool = False) -> str:
+    """What the shop needs from the customer to start making the job — one
+    list, so the customer can answer it in one go instead of the shop
+    finding out four weeks later that it never asked."""
+    work = f"את ״{job_name}״" if job_name else "את העבודה"
+    lines = [_greeting(customer_name), "", f"כדי שנוכל להתחיל לייצר {work}, אנחנו צריכים מכם:"]
+    lines += [f"• {need.label}" for need in needs]
+    if deposit_missing:
+        lines.append("• מקדמה, כפי שסוכם בהצעה")
+    lines += ["", "ברגע שהכול אצלנו — נקבע תאריך ונעדכן אתכם.", "", brand_name]
+    return "\n".join(lines)
+
+
 def snag_message(*, brand_name: str, customer_name: str = "", job_name: str = "",
                  open_snags: list[Any] = (), fixed_snags: list[Any] = (),
                  visit: str = "") -> str:
@@ -414,6 +428,7 @@ def customer_phone(job: Any) -> str:
 __all__ = [
     "cheque_message",
     "balance_message",
+    "needs_message",
     "snag_message",
     "catalogue_change_message",
     "checkup_message",

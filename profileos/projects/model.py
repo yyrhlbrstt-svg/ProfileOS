@@ -203,6 +203,44 @@ class Snag(RoundTrips):
         return not self.fixed_on
 
 
+class CustomerNeed(RoundTrips):
+    """Something the shop needs from the customer before it can make the job:
+    the final measurement, the colour, the glass, an approved drawing. The
+    kinds are :class:`profileos.erp.order_confirmation.Need`; the deposit is
+    not here — it is read from the payments themselves."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    need_id: str = Field(default_factory=lambda: f"N-{_short_id()}")
+    need: str = "other"
+    detail: str = ""
+    requested_on: str = Field(default_factory=lambda: date.today().isoformat())
+    received_on: str = ""
+
+    @property
+    def is_open(self) -> bool:
+        return not self.received_on
+
+    @property
+    def label(self) -> str:
+        from ..erp.order_confirmation import Need
+
+        try:
+            kind = Need(self.need).hebrew
+        except ValueError:
+            kind = self.need
+        return self.detail or kind
+
+    @property
+    def blocks_production(self) -> bool:
+        from ..erp.order_confirmation import Need
+
+        try:
+            return Need(self.need).blocks_production
+        except ValueError:
+            return False
+
+
 class InvoiceRecord(RoundTrips):
     """A tax invoice issued for the job — recorded here, issued elsewhere.
 
@@ -423,6 +461,8 @@ class JobFile(RoundTrips):
     balance_reminders: list[str] = Field(default_factory=list)
     #: What is left to put right after installation (the punch list).
     snags: list[Snag] = Field(default_factory=list)
+    #: What the shop is waiting for from the customer before it can make it.
+    waiting_for: list[CustomerNeed] = Field(default_factory=list)
 
     #: A snapshot of the last quotation, so the job list can show money
     #: without repricing every job it displays.
@@ -460,6 +500,10 @@ class JobFile(RoundTrips):
         if self.schedule is None:
             return 0.0
         return sum(o.area * max(1, o.quantity) for o in self.schedule.openings)
+
+    @property
+    def open_needs(self) -> list[CustomerNeed]:
+        return [need for need in self.waiting_for if need.is_open]
 
     @property
     def open_snags(self) -> list[Snag]:

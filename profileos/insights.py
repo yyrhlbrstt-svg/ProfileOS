@@ -28,6 +28,8 @@ QUOTE_STALE_DAYS = 7
 WON_STALE_DAYS = 14
 #: Days after a job is won before a missing deposit is worth a word.
 DEPOSIT_GRACE_DAYS = 3
+#: Days something asked of the customer may wait before it is worth a word.
+NEED_STALE_DAYS = 5
 #: Days a repair after installation may wait before it is worth a word.
 SNAG_STALE_DAYS = 7
 #: How long a job may sit in production before somebody asks why.
@@ -235,10 +237,37 @@ def _jobs(context: dict[str, Any], today: date) -> list[Insight]:
             "Projects", "quotes:" + ",".join(sorted(job.job_id for job in unchased)),
         ))
 
+    # Waiting on the customer: the colour, the measurement, the glass. A job
+    # that cannot start is said with what it waits for, so the call to make
+    # is obvious.
+    blocked = []
+    for job in jobs:
+        if job.status not in (JobStatus.WON, JobStatus.IN_PRODUCTION):
+            continue
+        late = [need for need in getattr(job, "open_needs", []) or []
+                if need.blocks_production
+                and (_days_since(need.requested_on, today) or 0) >= NEED_STALE_DAYS]
+        if late:
+            blocked.append((job, late))
+    if blocked:
+        found.append(Insight(
+            "warning",
+            _count(len(blocked), "פרויקט אחד מחכה ללקוח כדי להתחיל לייצר",
+                   "פרויקטים מחכים ללקוח כדי להתחיל לייצר"),
+            "בלי אלה אי אפשר להתחיל: "
+            + _names(blocked, lambda pair: f"{pair[0].customer_name or pair[0].name} — "
+                     + ", ".join(need.label for need in pair[1])
+                     + f" (⁦{max(_days_since(n.requested_on, today) or 0 for n in pair[1])}⁩ ימים)")
+            + ". בפרויקטים ← עוד פעולות ← ממתינים מהלקוח ← שליחה ללקוח.",
+            "Projects", "needs:" + ",".join(sorted(
+                need.need_id for _job, needs in blocked for need in needs)),
+        ))
+
     won = [
         job for job in jobs
         if job.status is JobStatus.WON
         and (_days_since(_status_since(job), today) or 0) >= WON_STALE_DAYS
+        and not any(need.blocks_production for need in getattr(job, "open_needs", []) or [])
     ]
     if won:
         found.append(Insight(

@@ -7,6 +7,7 @@ from the first phone call to the finished installation.
 
 from .model import (
     Customer,
+    CustomerNeed,
     InvoiceRecord,
     JobError,
     JobFile,
@@ -31,6 +32,7 @@ from .store import CustomerBook, JobStore, default_customers, default_store
 __all__ = [
     "Customer",
     "CustomerBook",
+    "CustomerNeed",
     "InvoiceRecord",
     "JobLine",
     "LineKind",
