@@ -49,7 +49,10 @@ from .views import (
     SectionView,
     SheetView,
 )
-from .widgets import Badge, Card, DataTable, FieldGrid, PageHeader, StatRow, page_layout
+from .widgets import (
+    Badge, Card, DataTable, FieldGrid, PageHeader, StatRow, documents_dir, page_layout,
+    suggested_path,
+)
 
 _log = get_logger("ui.pages")
 
@@ -1954,7 +1957,7 @@ class ProjectsPage(Page):
                         _log.warning("Dossier skipped %s", opening.element_id)
 
         path, _ = QFileDialog.getSaveFileName(
-            self, "שמירת תיק העבודה", f"{job.job_id}.html", "דפי HTML (*.html)"
+            self, "שמירת תיק העבודה", suggested_path(f"{job.job_id}.html"), "דפי HTML (*.html)"
         )
         if not path:
             return
@@ -2074,7 +2077,7 @@ class ProjectsPage(Page):
             self.report(ProfileOSError("בחר פרויקט מהרשימה"), "לא נבחר פרויקט")
             return
         path, _ = QFileDialog.getOpenFileName(
-            self, "צירוף מסמך לתיק", "",
+            self, "צירוף מסמך לתיק", str(documents_dir()),
             "מסמכים וצילומים (*.jpg *.jpeg *.png *.heic *.pdf *.dxf *.dwg);;כל הקבצים (*)",
         )
         if not path:
@@ -2475,7 +2478,7 @@ class ProfilePage(Page):
         path, _ = QFileDialog.getOpenFileName(
             self,
             "פתיחת שרטוט פרופיל",
-            "",
+            str(documents_dir()),
             "שרטוטים (*.dxf *.dwg);;DXF (*.dxf);;DWG (*.dwg);;כל הקבצים (*)",
         )
         if path:
@@ -3814,7 +3817,7 @@ class DrawingsPage(Page):
         if self._package is None:
             self.report(ProfileOSError("הפק את הסט קודם"), "אין מה לייצא")
             return
-        folder = QFileDialog.getExistingDirectory(self, "לאן לשמור את סט השרטוטים?")
+        folder = QFileDialog.getExistingDirectory(self, "לאן לשמור את סט השרטוטים?", str(documents_dir()))
         if not folder:
             return
         try:
@@ -4174,7 +4177,7 @@ class MachiningPage(Page):
         if not self._results:
             self.report(ProfileOSError("הפק תוכנית קודם"), "אין מה לשמור")
             return
-        directory = QFileDialog.getExistingDirectory(self, "שמירת קוד מכונה אל")
+        directory = QFileDialog.getExistingDirectory(self, "שמירת קוד מכונה אל", str(documents_dir()))
         if not directory:
             return
         for result in self._results:
@@ -4664,7 +4667,7 @@ class QuotePage(Page):
             return
         from ..quoting.document import render_quotation
 
-        directory = QFileDialog.getExistingDirectory(self, "לאן לשמור את מסמכי ההצעה?")
+        directory = QFileDialog.getExistingDirectory(self, "לאן לשמור את מסמכי ההצעה?", str(documents_dir()))
         if not directory:
             return
         base = Path(directory) / self.draft.quotation.quote_id
@@ -5119,7 +5122,7 @@ class ShopFloorPage(Page):
         if order is None:
             self.report(ProfileOSError("שחרר פקודת עבודה קודם"), "אין מה לייצא")
             return
-        path, _ = QFileDialog.getSaveFileName(self, "שמירת כרטיס עבודה", "job-card.html", "HTML (*.html)")
+        path, _ = QFileDialog.getSaveFileName(self, "שמירת כרטיס עבודה", suggested_path("job-card.html"), "HTML (*.html)")
         if not path:
             return
         write_job_card(order, path, self.session.builds)
@@ -5149,7 +5152,7 @@ class ShopFloorPage(Page):
             return
 
         path, _ = QFileDialog.getSaveFileName(
-            self, "שמירת גיליון מדבקות", "labels.html", "HTML (*.html)"
+            self, "שמירת גיליון מדבקות", suggested_path("labels.html"), "HTML (*.html)"
         )
         if not path:
             return
@@ -5396,7 +5399,7 @@ class GlassPage(Page):
                 ProfileOSError("שבץ את הזכוכית קודם"), "אין מה לייצא"
             )
             return
-        folder = QFileDialog.getExistingDirectory(self, "לאן לשמור את מפות החיתוך?")
+        folder = QFileDialog.getExistingDirectory(self, "לאן לשמור את מפות החיתוך?", str(documents_dir()))
         if not folder:
             return
         target = Path(folder)
@@ -5456,7 +5459,7 @@ class GlassPage(Page):
                 return
 
         path, _ = QFileDialog.getSaveFileName(
-            self, "שמירת הזמנת זכוכית", "glass-order.html", "HTML (*.html)"
+            self, "שמירת הזמנת זכוכית", suggested_path("glass-order.html"), "HTML (*.html)"
         )
         if not path:
             return
@@ -6000,7 +6003,7 @@ class PlumbingPage(Page):
             self.report(ProfileOSError("חשב קודם"), "אין מה לייצא")
             return
         path, _ = QFileDialog.getSaveFileName(
-            self, "שמירת כתב הכמויות", "plumbing-takeoff.csv", "CSV (*.csv)"
+            self, "שמירת כתב הכמויות", suggested_path("plumbing-takeoff.csv"), "CSV (*.csv)"
         )
         if not path:
             return
@@ -6891,7 +6894,7 @@ class DeliveryPage(Page):
             self.status(" · ".join(problems[:3]))
 
         path, _ = QFileDialog.getSaveFileName(
-            self, "שמירת תיק מסירה", "handover.html", "HTML (*.html)"
+            self, "שמירת תיק מסירה", suggested_path("handover.html"), "HTML (*.html)"
         )
         if not path:
             return
@@ -7123,7 +7126,7 @@ class CataloguePage(Page):
 
         if path is None:
             chosen, _ = QFileDialog.getOpenFileName(
-                self, "מחירון ספק", "", "מחירונים (*.xlsx *.xlsm *.csv *.tsv *.txt)"
+                self, "מחירון ספק", str(documents_dir()), "מחירונים (*.xlsx *.xlsm *.csv *.tsv *.txt)"
             )
             if not chosen:
                 return
@@ -8169,7 +8172,7 @@ class CataloguePage(Page):
         )
 
     def _pick_drawings(self) -> None:
-        folder = QFileDialog.getExistingDirectory(self, "תיקיית DXF של היצרן")
+        folder = QFileDialog.getExistingDirectory(self, "תיקיית DXF של היצרן", str(documents_dir()))
         if folder:
             self._drawings = Path(folder)
             self.drawings_label.setText(str(self._drawings))
@@ -8177,7 +8180,7 @@ class CataloguePage(Page):
 
     def _pick_table(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
-            self, "קטלוג יצרן", "", "קטלוגים (*.pdf *.csv *.tsv *.txt)"
+            self, "קטלוג יצרן", str(documents_dir()), "קטלוגים (*.pdf *.csv *.tsv *.txt)"
         )
         if path:
             self._table = Path(path)
@@ -8294,7 +8297,7 @@ class CataloguePage(Page):
             self.report(ProfileOSError("קלוט קטלוג קודם"), "אין מה לשמור")
             return
         path, _ = QFileDialog.getSaveFileName(
-            self, "שמירת ספריית פרופילים", "profile-library.json", "JSON (*.json)"
+            self, "שמירת ספריית פרופילים", suggested_path("profile-library.json"), "JSON (*.json)"
         )
         if not path:
             return
@@ -8344,11 +8347,18 @@ class SystemPage(Page):
             text += f" · נבדק ⁦{datetime.fromtimestamp(state.checked_at):%d/%m %H:%M}⁩"
         last = state.last or {}
         if last.get("outcome") == "rolled_back":
-            text += f"\nגרסה {last.get('version')} לא נפתחה והוחזרה הגרסה הקודמת — היא לא תנוסה שוב."
+            text += f"\nגרסה ⁦{last.get('version')}⁩ לא נפתחה והוחזרה הגרסה הקודמת — היא לא תנוסה שוב."
+        elif not state.ready and state.problem() and state.problem() != state.error:
+            text += f"\n{state.problem()}"
         self.program_state.setText(text)
+        # A restart that the launcher would refuse (another window open)
+        # only closes the program for nothing.
+        waiting = (last.get("outcome") == "waiting" and last.get("reason") == "running"
+                   and last.get("version") == state.ready)
         self.program_restart.setEnabled(bool(state.ready))
         self.program_restart.setToolTip(
-            "" if selfupdate.launched_by_launcher()
+            "סגרו קודם את שאר חלונות ProfileOS ואת טרמינל הטלפון" if waiting
+            else "" if selfupdate.launched_by_launcher()
             else "התוכנה לא הופעלה דרך ProfileOS.bat — סגרו ופתחו אותה מחדש כדי להתקין"
         )
         self.program_check.setEnabled(state.managed)
@@ -8625,7 +8635,7 @@ class SystemPage(Page):
 
     def _pick_update_key(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
-            self, "מפתח ציבורי של המנפיק", "", "מפתחות PEM (*.pem *.pub);;כל הקבצים (*)"
+            self, "מפתח ציבורי של המנפיק", str(documents_dir()), "מפתחות PEM (*.pem *.pub);;כל הקבצים (*)"
         )
         if path:
             self._update_key = Path(path)
@@ -9687,7 +9697,7 @@ class SurveyPage(Page):
             return
 
         path, _ = QFileDialog.getSaveFileName(
-            self, "שמירת גיליון מדידה", "measurements.csv", "CSV (*.csv)"
+            self, "שמירת גיליון מדידה", suggested_path("measurements.csv"), "CSV (*.csv)"
         )
         if not path:
             return
@@ -10455,7 +10465,7 @@ class ViewPage(Page):
             return
 
         path, _ = QFileDialog.getSaveFileName(
-            self, "שמירת מודל IFC", "model.ifc", "IFC (*.ifc)"
+            self, "שמירת מודל IFC", suggested_path("model.ifc"), "IFC (*.ifc)"
         )
         if not path:
             return
@@ -10477,7 +10487,7 @@ class ViewPage(Page):
         if self._scene is None:
             self.report(ProfileOSError("הצג את הפתח קודם"), "אין מה לייצא")
             return
-        folder = QFileDialog.getExistingDirectory(self, "לאן לייצא את המבטים?")
+        folder = QFileDialog.getExistingDirectory(self, "לאן לייצא את המבטים?", str(documents_dir()))
         if not folder:
             return
         target = Path(folder)

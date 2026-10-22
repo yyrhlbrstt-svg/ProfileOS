@@ -7,6 +7,7 @@ different pages looking like one application.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Iterable, Sequence
 
 from PySide6.QtCore import QEvent, QObject, QRectF, Qt, QTimer
@@ -344,6 +345,25 @@ class DataTable(QTableWidget):
             self._empty_text,
         )
         painter.end()
+
+
+def documents_dir() -> Path:
+    """Where a saved or chosen file starts: the person's Documents.
+
+    A file dialog left to itself opens in the program's own folder — which an
+    update replaces and the backup does not cover. A job card saved there
+    would be gone with the next version.
+    """
+    home = Path.home()
+    for candidate in (home / "Documents", home / "OneDrive" / "Documents", home / "מסמכים"):
+        if candidate.is_dir():
+            return candidate
+    return home
+
+
+def suggested_path(name: str) -> str:
+    """A file name to save, placed in :func:`documents_dir`."""
+    return str(documents_dir() / name)
 
 
 def divider(parent: QWidget | None = None) -> QFrame:

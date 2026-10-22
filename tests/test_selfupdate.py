@@ -43,11 +43,14 @@ def a_build(version: str, *, extra: dict[str, str] | None = None) -> bytes:
     """A published zip as the release workflow makes one."""
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w") as pack:
-        pack.writestr("profileos/__init__.py", "__version__ = '0.1.0'\n")
-        pack.writestr("profileos/_release.json", json.dumps({"version": version}))
-        pack.writestr("launcher.py", "# new launcher\n")
-        pack.writestr("requirements.txt", "pydantic\n")
-        for name, text in (extra or {}).items():
+        files = {
+            "profileos/__init__.py": "__version__ = '0.1.0'\n",
+            "profileos/_release.json": json.dumps({"version": version}),
+            "launcher.py": "# new launcher\n",
+            "requirements.txt": "pydantic\n",
+            **(extra or {}),
+        }
+        for name, text in files.items():
             pack.writestr(name, text)
     return buffer.getvalue()
 
@@ -185,6 +188,8 @@ class TestTheLauncher:
             "PREVIOUS": updates / "previous", "RESULT": updates / "last_result.json",
             "BAD": updates / "bad_versions.json", "STARTED": updates / "started.json",
             "PREVIOUS_COMMIT": updates / "previous_commit.json",
+            "LOCK": updates / "launcher.lock",
+            "COMPONENTS_BEFORE": updates / "components_before.json",
         }.items():
             monkeypatch.setattr(launcher, name, value)
         monkeypatch.setattr(launcher, "_backup", lambda: True)
@@ -279,6 +284,10 @@ class TestTheLauncher:
         ready = json.loads((root / ".updates" / "ready.json").read_text())
         assert Path(ready["path"], "profileos", "_release.json").is_file()   # still waiting, whole
         monkeypatch.setattr(launcher, "_install_requirements", lambda: True)
+        # Not retried at every start: a computer without internet would spend
+        # each morning on it.
+        assert launcher.apply_pending() == ""
+        monkeypatch.setattr(launcher, "RETRY_AFTER_S", 0)
         assert launcher.apply_pending() == "2026.10.22.5"
 
 
@@ -366,6 +375,10 @@ def test_the_release_build(tmp_path):
     assert "profileos/__init__.py" in names
     assert not [n for n in names if n.startswith(("tests/", ".github/", ".claude/"))]
     assert manifest["notes"] and (tmp_path / "notes.md").is_file()
+    # Never a number that sorts before what is already out there.
+    with pytest.raises(SystemExit):
+        build_release.build(tmp_path / "again", run=3, commit="old", after="2026.10.22.7",
+                            now=datetime(2026, 10, 22, tzinfo=timezone.utc))
 
 
 def test_the_system_page_shows_the_version(tmp_path):
@@ -422,3 +435,319 @@ def test_data_inside_the_program_folder_is_never_moved(tmp_path, monkeypatch):
     with pytest.raises(OSError):
         launcher.swap_in(staged, root, tmp_path / "previous", protected=[str(data)])
     assert data.is_dir() and (root / "profileos" / "__init__.py").is_file()
+
+
+# --------------------------------------------------------------------------- #
+# What the audit found: every way an update could break the program
+# --------------------------------------------------------------------------- #
+
+class TestNothingIsEverHalfInstalled:
+    staged = TestTheLauncher.staged
+    point = TestTheLauncher.point
+
+    def test_a_swap_that_fails_half_way_puts_everything_back(self, tmp_path, monkeypatch):
+        root, launcher = self.staged(tmp_path, monkeypatch)
+        real = os.replace
+        calls = {"n": 0}
+
+        def flaky(source, target):
+            calls["n"] += not str(source).endswith(".tmp")     # file moves only
+            if calls["n"] == 4:   # the second item's new copy cannot go in
+                raise PermissionError("locked by antivirus")
+            return real(source, target)
+
+        monkeypatch.setattr(launcher.os, "replace", flaky)
+        assert launcher.apply_pending() == ""
+        assert calls["n"] >= 4
+        monkeypatch.setattr(launcher.os, "replace", real)
+        assert selfupdate.installed(root)["version"] == "2026.10.20.1"
+        assert (root / "launcher.py").read_text() == "# old launcher\n"
+        assert (root / "profileos" / "__init__.py").is_file()
+        # The update is whole again where it waits, and tried at the next start.
+        assert launcher.apply_pending() == "2026.10.22.5"
+
+    def test_a_power_cut_in_the_middle_is_undone_at_the_next_start(self, tmp_path, monkeypatch):
+        root, launcher = self.staged(tmp_path, monkeypatch)
+        real = os.replace
+        calls = {"n": 0}
+
+        def cut(source, target):
+            calls["n"] += not str(source).endswith(".tmp")     # file moves only
+            # The second item is aside, its new copy not yet in: the worst moment.
+            if calls["n"] == 4:
+                raise SystemExit("power cut")   # nothing in the launcher catches this
+            return real(source, target)
+
+        monkeypatch.setattr(launcher.os, "replace", cut)
+        with pytest.raises(SystemExit):
+            launcher._apply_pending()
+        monkeypatch.setattr(launcher.os, "replace", real)
+        assert not (root / "launcher.py").exists() or not (root / "profileos").exists()
+        assert launcher.apply_pending() == ""        # recovers; does not install half a thing
+        assert selfupdate.installed(root)["version"] == "2026.10.20.1"
+        assert (root / "launcher.py").read_text() == "# old launcher\n"
+        assert (root / "profileos" / "__init__.py").is_file()
+        assert not (root / ".updates" / "ready.json").exists()
+        assert json.loads((root / ".updates" / "last_result.json").read_text())["reason"] == "interrupted"
+
+    def test_closing_the_window_while_components_install_keeps_the_old_copy(self, tmp_path, monkeypatch):
+        root = an_install(tmp_path, "2026.10.20.1")
+        body = a_build("2026.10.22.5", extra={"requirements.txt": "pydantic\nnewthing\n"})
+        selfupdate.check_and_stage(fetch=FakeGitHub("2026.10.22.5", body), root=root,
+                                   check=lambda s: "")
+        launcher = load_launcher()
+        self.point(launcher, root, monkeypatch)
+        monkeypatch.setattr(launcher, "_freeze", lambda: "")
+
+        def closed():
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(launcher, "_install_requirements", closed)
+        with pytest.raises(KeyboardInterrupt):
+            launcher._apply_pending()
+        # Next start: the old version is back, not deleted.
+        assert launcher.apply_pending() == ""
+        assert selfupdate.installed(root)["version"] == "2026.10.20.1"
+        assert (root / "launcher.py").read_text() == "# old launcher\n"
+
+    def test_a_staged_folder_changed_since_its_check_is_not_installed(self, tmp_path, monkeypatch):
+        root, launcher = self.staged(tmp_path, monkeypatch)
+        ready = json.loads((root / ".updates" / "ready.json").read_text())
+        (Path(ready["path"]) / "launcher.py").unlink()        # antivirus, OneDrive…
+        assert launcher.apply_pending() == ""
+        assert (root / "launcher.py").read_text() == "# old launcher\n"
+        assert not (root / ".updates" / "ready.json").exists()
+        assert selfupdate.status(root).last["reason"] == "damaged"
+
+    def test_ready_pointing_outside_the_updates_folder_is_ignored(self, tmp_path, monkeypatch):
+        root, launcher = self.staged(tmp_path, monkeypatch)
+        ready_path = root / ".updates" / "ready.json"
+        ready = json.loads(ready_path.read_text())
+        for bad in ("", ".", str(root), str(tmp_path)):
+            ready["path"] = bad
+            ready_path.write_text(json.dumps(ready))
+            assert launcher.apply_pending() == ""
+            assert (root / "launcher.py").read_text() == "# old launcher\n"
+            assert (root / "profileos" / "__init__.py").is_file()
+
+    def test_a_staged_folder_without_the_program_is_never_swapped_in(self, tmp_path):
+        launcher = load_launcher()
+        root = an_install(tmp_path)
+        staged = tmp_path / "staged"
+        (staged / "launcher.py").parent.mkdir(parents=True)
+        (staged / "launcher.py").write_text("# only this\n")
+        with pytest.raises(OSError):
+            launcher.swap_in(staged, root, tmp_path / "previous")
+        assert (root / "launcher.py").read_text() == "# old launcher\n"
+
+
+def a_live_process():
+    return subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+
+
+class TestOneAtATime:
+    staged = TestTheLauncher.staged
+    point = TestTheLauncher.point
+
+    def test_a_second_launcher_waits_for_the_first(self, tmp_path, monkeypatch):
+        root, launcher = self.staged(tmp_path, monkeypatch)
+        other = a_live_process()
+        try:
+            (root / ".updates" / "launcher.lock").write_text(str(other.pid))
+            monkeypatch.setattr(launcher, "LOCK_WAIT_S", 0.5)
+            assert launcher.apply_pending() == ""
+            assert (root / "launcher.py").read_text() == "# old launcher\n"
+        finally:
+            other.kill()
+            other.wait()
+        # The first launcher is gone: its lock no longer holds anything.
+        assert launcher.apply_pending() == "2026.10.22.5"
+
+    def test_nothing_is_swapped_under_a_running_copy(self, tmp_path, monkeypatch):
+        root, launcher = self.staged(tmp_path, monkeypatch)
+        terminal = a_live_process()     # the phone terminal, open all day
+        try:
+            (root / ".updates" / f"instance-{terminal.pid}.lock").write_text(str(terminal.pid))
+            assert launcher.running_copies() == 1
+            assert launcher.apply_pending() == ""
+            assert (root / "launcher.py").read_text() == "# old launcher\n"
+            state = selfupdate.status(root)
+            assert "טרמינל הטלפון" in state.describe()
+        finally:
+            terminal.kill()
+            terminal.wait()
+        assert launcher.running_copies() == 0
+        assert launcher.apply_pending() == "2026.10.22.5"
+
+    def test_the_program_says_it_is_running(self, tmp_path, monkeypatch):
+        root = an_install(tmp_path)
+        monkeypatch.setattr(selfupdate, "_INSTANCE", None)
+        launcher = load_launcher()
+        selfupdate.hold_instance(root)
+        try:
+            assert launcher.running_copies(root / ".updates") == 1
+        finally:
+            handle, path = selfupdate._INSTANCE
+            handle.close()
+            path.unlink()
+
+    def test_two_checks_at_once_do_not_trip_over_each_other(self, tmp_path):
+        root = an_install(tmp_path, "2026.10.20.1")
+        github = FakeGitHub("2026.10.22.5", a_build("2026.10.22.5"))
+        with selfupdate._CHECKING:
+            selfupdate.check_and_stage(fetch=github, root=root, check=lambda s: "")
+        assert github.asked == []
+        assert selfupdate.check_and_stage(fetch=github, root=root, check=lambda s: "").ready
+
+
+class TestTheRightVerdict:
+    staged = TestTheLauncher.staged
+    point = TestTheLauncher.point
+
+    def test_a_cancelled_sign_in_is_not_a_broken_version(self, tmp_path, monkeypatch):
+        root, launcher = self.staged(tmp_path, monkeypatch)
+        monkeypatch.setattr(launcher, "run_program", lambda: launcher.CANCELLED_CODE)
+        assert launcher.main() == 0
+        assert selfupdate.installed(root)["version"] == "2026.10.22.5"
+        assert not (root / ".updates" / "bad_versions.json").exists()
+        assert launcher.CANCELLED_CODE == selfupdate.CANCELLED_CODE
+
+    def test_when_the_old_version_fails_too_the_update_is_not_blamed(self, tmp_path, monkeypatch):
+        root, launcher = self.staged(tmp_path, monkeypatch)
+        monkeypatch.setattr(launcher, "run_program", lambda: 1)
+        assert launcher.main() == 1
+        bad = json.loads((root / ".updates" / "bad_versions.json").read_text())
+        assert "2026.10.22.5" not in bad
+        assert selfupdate.status(root).last["reason"] == "not_the_update"
+
+    def test_a_version_that_failed_its_check_is_not_downloaded_again(self, tmp_path):
+        root = an_install(tmp_path, "2026.10.20.1")
+        github = FakeGitHub("2026.10.22.5", a_build("2026.10.22.5"))
+        selfupdate.check_and_stage(fetch=github, root=root, check=lambda s: "boom")
+        github.asked.clear()
+        state = selfupdate.check_and_stage(fetch=github, root=root, check=lambda s: "")
+        assert "https://x/zip" not in github.asked
+        assert "לא נפתחה בבדיקה" in state.describe() and "המתוקנת" in state.describe()
+        # The next version is taken as usual.
+        newer = FakeGitHub("2026.10.22.6", a_build("2026.10.22.6"))
+        assert selfupdate.check_and_stage(fetch=newer, root=root, check=lambda s: "").ready
+
+    def test_github_answers_are_said_in_words(self, tmp_path):
+        import urllib.error
+
+        root = an_install(tmp_path, "2026.10.20.1")
+
+        def answer(code):
+            def fetch(url, limit=0):
+                raise urllib.error.HTTPError(url, code, "x", {}, None)
+            return fetch
+
+        assert selfupdate.check_and_stage(fetch=answer(404), root=root).error == ""
+        assert "הגביל" in selfupdate.check_and_stage(fetch=answer(403), root=root).error
+        assert "502" in selfupdate.check_and_stage(fetch=answer(502), root=root).error
+
+    def test_a_version_number_that_is_not_one_is_refused(self, tmp_path):
+        root = an_install(tmp_path, "2026.10.20.1")
+        github = FakeGitHub("..\\..\\x", a_build("..\\..\\x"))
+        state = selfupdate.check_and_stage(fetch=github, root=root, check=lambda s: "")
+        assert not state.ready and "מספר גרסה" in state.error
+
+
+class TestTheStartCheck:
+    def test_a_broken_launcher_fails_it(self, tmp_path):
+        staged = tmp_path / "staged"
+        shutil.copytree(REPO / "profileos", staged / "profileos",
+                        ignore=shutil.ignore_patterns("__pycache__"))
+        (staged / "launcher.py").write_text("def main(:\n")
+        assert "launcher.py" in selfupdate.self_check(staged)
+
+    def test_a_new_component_is_found(self, tmp_path):
+        (tmp_path / "requirements.txt").write_text(
+            "# comment\npydantic>=2.6\nsurely-not-installed-xyz>=1.0  # new\n-e .\n")
+        assert selfupdate.missing_components(tmp_path) == ["surely-not-installed-xyz>=1.0"]
+
+    def test_no_internet_for_a_new_component_waits_rather_than_condemns(self, tmp_path, monkeypatch):
+        staged = tmp_path / "staged"
+        (staged / "profileos").mkdir(parents=True)
+        (staged / "requirements.txt").write_text("surely-not-installed-xyz\n")
+        real = subprocess.run
+
+        def no_internet(args, **kw):
+            if "pip" in args:
+                return subprocess.CompletedProcess(args, 1, "", "no network")
+            return real(args, **kw)
+
+        monkeypatch.setattr(selfupdate.subprocess, "run", no_internet)
+        with pytest.raises(ProfileOSError, match="רכיב חדש"):
+            selfupdate.self_check(staged)
+        root = an_install(tmp_path, "2026.10.20.1")
+        github = FakeGitHub("2026.10.22.5", a_build("2026.10.22.5"))
+
+        def check(s):
+            raise ProfileOSError("הגרסה החדשה צריכה רכיב חדש")
+
+        selfupdate.check_and_stage(fetch=github, root=root, check=check)
+        state = json.loads((root / ".updates" / "state.json").read_text())
+        assert not state["failed"]       # tried again later, not written off
+
+
+def test_what_is_new_includes_the_same_day(tmp_path):
+    (tmp_path / "profileos" / "data").mkdir(parents=True)
+    (tmp_path / "profileos" / "data" / "whats_new.json").write_text(json.dumps([
+        {"date": "2026-10-22", "title": "ערב"}, {"date": "2026-10-21", "title": "אתמול"}]))
+    assert [e["title"] for e in selfupdate.whats_new("2026-10-22", root=tmp_path)] == ["ערב"]
+
+
+OLD_SCRIPT = """@echo off
+cd /d %USERPROFILE%\\Desktop
+echo Checking for updates...
+curl -L -o profileos_update.zip https://github.com/yyrhlbrstt-svg/ProfileOS/archive/refs/heads/claude/aluminum-cad-cam-system-dxfni8.zip
+if exist profileos_update.zip (
+    if exist ProfileOS-claude-aluminum-cad-cam-system-dxfni8 rmdir /s /q ProfileOS-claude-aluminum-cad-cam-system-dxfni8
+    tar -xf profileos_update.zip
+    del profileos_update.zip
+)
+cd ProfileOS-claude-aluminum-cad-cam-system-dxfni8
+pip install -e . --quiet
+python -m profileos.cli ui
+""".replace("\n", "\r\n")
+
+
+class TestTheOldDesktopShortcut:
+    def test_it_is_found_and_replaced_keeping_the_old_one(self, tmp_path):
+        desktop = tmp_path / "Desktop"
+        desktop.mkdir()
+        (desktop / "ProfileOS.bat").write_bytes(OLD_SCRIPT.encode())
+        (desktop / "other.bat").write_text("@echo hello\n")
+        found = selfupdate.old_desktop_scripts(tmp_path)
+        assert found == [desktop / "ProfileOS.bat"]
+        selfupdate.replace_old_script(found[0], root=REPO)
+        new = (desktop / "ProfileOS.bat").read_bytes()
+        assert b"releases/latest" in new and b"Get-FileHash" in new
+        assert b"\r\n" in new and b"\n" not in new.replace(b"\r\n", b"")
+        assert list(desktop.glob("ProfileOS.bat*.bak")) or list(desktop.glob("*.bak"))
+        assert not selfupdate.old_desktop_scripts(tmp_path)
+
+    def test_the_old_copy_still_running_reads_on_into_nothing_but_exit(self):
+        """cmd resumes the running script at the byte where the old one ended."""
+        new = (REPO / "scripts" / "launch_windows.bat").read_bytes().replace(b"\r\n", b"\n")
+        new = new.replace(b"\n", b"\r\n")
+        for old_length in (len(OLD_SCRIPT.encode()), len(OLD_SCRIPT.replace("\r\n", "\n").encode()),
+                           len(OLD_SCRIPT.encode()) * 4):
+            rest = new[old_length:]
+            before_exit = rest[:rest.index(b"\r\nexit /b\r\n")]
+            assert set(before_exit) <= set(b": \r\n"), old_length
+
+    def test_a_fresh_run_skips_the_padding(self):
+        text = (REPO / "scripts" / "launch_windows.bat").read_text(encoding="utf-8")
+        lines = [line.strip() for line in text.splitlines()]
+        assert lines[:2] == ["@echo off", "goto start"] and ":start" in lines
+
+
+def test_files_are_saved_in_documents_not_in_the_program(monkeypatch, tmp_path):
+    from profileos.ui import widgets
+
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    assert widgets.documents_dir() == tmp_path
+    (tmp_path / "Documents").mkdir()
+    assert widgets.suggested_path("job-card.html") == str(tmp_path / "Documents" / "job-card.html")

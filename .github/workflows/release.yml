@@ -39,20 +39,44 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install -e .
+          # The test tools too: the newest starlette's test client needs httpx2.
+          pip install -e ".[dev]"
 
       - name: The whole test suite
         env:
           QT_QPA_PLATFORM: offscreen
         run: python -m pytest tests/ -q -p no:cacheprovider
 
+      # Only the newest tested commit becomes a version: a re-run of an old
+      # run, or a run overtaken by a newer push, would publish old code
+      # under a newer number — and every shop would "update" backwards.
+      - name: Is this still the newest commit?
+        id: guard
+        if: github.ref_name == env.RELEASE_BRANCH
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tip=$(git ls-remote origin "refs/heads/${RELEASE_BRANCH}" | cut -f1)
+          if [ "${{ github.run_attempt }}" != "1" ]; then
+            echo "A re-run: not published." ; echo "publish=no" >> "$GITHUB_OUTPUT"
+          elif [ "$tip" != "${{ github.sha }}" ]; then
+            echo "The branch moved on ($tip): not published." ; echo "publish=no" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish=yes" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Build the version
         id: build
-        if: github.ref_name == env.RELEASE_BRANCH
-        run: python tools/build_release.py --out dist --run ${{ github.run_number }} --commit ${{ github.sha }} --branch ${{ github.ref_name }}
+        if: steps.guard.outputs.publish == 'yes'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          latest=$(gh release view --json tagName --jq .tagName 2>/dev/null || true)
+          python tools/build_release.py --out dist --run ${{ github.run_number }} \
+            --commit ${{ github.sha }} --branch ${{ github.ref_name }} --after "${latest#v}"
 
       - name: Publish it
-        if: github.ref_name == env.RELEASE_BRANCH
+        if: steps.guard.outputs.publish == 'yes'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

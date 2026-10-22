@@ -38,10 +38,21 @@ def tracked_files(root: Path = ROOT) -> list[str]:
             and (root / name).is_file()]
 
 
+def _key(version: str) -> tuple[int, ...]:
+    try:
+        return tuple(int(part) for part in version.strip().lstrip("v").split("."))
+    except ValueError:
+        return ()
+
+
 def build(out: Path, *, run: int, commit: str, branch: str = "", root: Path = ROOT,
-          now: datetime | None = None) -> dict:
+          now: datetime | None = None, after: str = "") -> dict:
+    """Build the version. ``after`` is the newest one published: a version
+    that would not sort after it is refused, never published as "newer"."""
     now = now or datetime.now(timezone.utc)
     version = f"{now:%Y.%m.%d}.{run}"
+    if after and _key(after) and _key(version) <= _key(after):
+        raise SystemExit(f"{version} is not newer than the published {after}: not built")
     out.mkdir(parents=True, exist_ok=True)
     stamp = {"version": version, "commit": commit, "date": now.date().isoformat(),
              "branch": branch}
@@ -85,8 +96,10 @@ def main() -> int:
     parser.add_argument("--run", type=int, required=True)
     parser.add_argument("--commit", default="")
     parser.add_argument("--branch", default="")
+    parser.add_argument("--after", default="", help="the newest published version")
     args = parser.parse_args()
-    manifest = build(args.out, run=args.run, commit=args.commit, branch=args.branch)
+    manifest = build(args.out, run=args.run, commit=args.commit, branch=args.branch,
+                     after=args.after)
     print(f"{manifest['version']}  {manifest['size']} bytes  {manifest['sha256']}")
     return 0
 

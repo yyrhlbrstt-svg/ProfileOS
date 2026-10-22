@@ -113,3 +113,25 @@ def _no_price_lists_left_behind():
     from profileos.core.registry import SUPPLIERS
 
     SUPPLIERS.remove_by_source("shop")
+
+
+# Qt can crash in its own tear-down at interpreter exit, after every test has
+# passed and the summary is printed — and the crash becomes the run's exit
+# code, failing CI for nothing. Once the results are in, the process leaves
+# with them, before Qt's destructors run.
+_RESULT: dict[str, int] = {}
+
+
+@pytest.hookimpl(trylast=True)
+def pytest_sessionfinish(session, exitstatus) -> None:
+    _RESULT["status"] = int(exitstatus)
+
+
+@pytest.hookimpl(trylast=True)
+def pytest_unconfigure(config) -> None:
+    import sys
+
+    if "status" in _RESULT and "PySide6.QtWidgets" in sys.modules:
+        sys.stdout.flush()
+        sys.stderr.flush()
+        _os._exit(_RESULT["status"])

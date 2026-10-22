@@ -29,7 +29,7 @@ from PySide6.QtWidgets import (
 )
 
 from .theme import METRICS
-from .widgets import FieldGrid
+from .widgets import FieldGrid, documents_dir
 
 
 class _FormDialog(QDialog):
@@ -1036,7 +1036,7 @@ class WatchSourceDialog(_FormDialog):
     def _browse(self) -> None:
         from PySide6.QtWidgets import QFileDialog
 
-        folder = QFileDialog.getExistingDirectory(self, "תיקיית קבצי הספק")
+        folder = QFileDialog.getExistingDirectory(self, "תיקיית קבצי הספק", str(documents_dir()))
         if folder:
             self.location.setText(folder)
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from PySide6.QtCore import Qt
@@ -720,9 +721,12 @@ class MainWindow(QMainWindow):
         def done(state: Any, error: BaseException | None) -> None:
             self._updating = False
             if error is None and state is not None and state.ready:
+                problem = state.problem()
                 self.statusBar().showMessage(
-                    f"גרסה חדשה ({state.ready}) הורדה ונבדקה — תותקן בהפעלה הבאה. "
-                    "מערכת ← עדכונים ← ״התקנה והפעלה מחדש״ כדי להתקין עכשיו.", 30000,
+                    f"גרסה חדשה \u2066{state.ready}\u2069 הורדה ונבדקה, אבל עוד לא הותקנה: {problem}"
+                    if problem else
+                    f"גרסה חדשה \u2066{state.ready}\u2069 הורדה ונבדקה — תותקן בהפעלה הבאה. "
+                    "מערכת ← עדכון התוכנה ← ״התקנה והפעלה מחדש״ כדי להתקין עכשיו.", 30000,
                 )
             system = next((p for p in self.pages if p.title == "System"), None)
             if system is not None and hasattr(system, "_refresh_program_update"):
@@ -753,21 +757,87 @@ class MainWindow(QMainWindow):
         result = selfupdate.unannounced()
         if result is None:
             return
+        version = f"\u2066{result.get('version')}\u2069"
         if result.get("outcome") == "rolled_back":
             QMessageBox.warning(
                 self, "העדכון בוטל",
-                f"גרסה {result.get('version')} לא נפתחה, והתוכנה חזרה לגרסה הקודמת. "
+                f"גרסה {version} לא נפתחה, והתוכנה חזרה לגרסה הקודמת. "
                 "הנתונים לא נפגעו. הגרסה הזאת לא תנוסה שוב; כשתתפרסם גרסה מתוקנת "
                 "היא תותקן מעצמה.",
             )
+            return
+        if result.get("outcome") == "failed":
+            reason = str(result.get("reason", ""))
+            said = selfupdate.FAILED_REASONS.get(reason, f"העדכון לא הותקן: {reason}")
+            if reason in ("rollback", "not_the_update"):
+                QMessageBox.warning(self, "העדכון לא הותקן", f"{said}. הנתונים לא נפגעו.")
+            else:
+                self.statusBar().showMessage(said, 30000)
             return
         system = next((p for p in self.pages if p.title == "System"), None)
         if system is not None and hasattr(system, "show_whats_new"):
             from_version = str(result.get("from", "") or "")
             parts = from_version.split(".")
             since = f"{parts[0]}-{parts[1]}-{parts[2]}" if len(parts) >= 3 and parts[0].isdigit() else ""
-            self.statusBar().showMessage(f"התוכנה עודכנה לגרסה {result.get('version')}", 15000)
+            self.statusBar().showMessage(f"התוכנה עודכנה לגרסה {version}", 15000)
             system.show_whats_new(since)
+
+    def offer_new_shortcut(self, *, home: Path | None = None) -> None:
+        """The first desktop script deletes the program and downloads untested
+        code at every start, undoing every update. Offer, once a week, to
+        put the new one in its place."""
+        import json
+        import time as _time
+
+        from PySide6.QtWidgets import QMessageBox
+
+        from ..core import selfupdate
+        from ..core.config import get_settings
+        from ..core.storage import write_json
+
+        scripts = selfupdate.old_desktop_scripts(home)
+        if not scripts:
+            return
+        marker = Path(get_settings().config_dir) / "old_shortcut.json"
+        try:
+            asked = float(json.loads(marker.read_text(encoding="utf-8")).get("asked", 0))
+        except (OSError, ValueError, AttributeError):
+            asked = 0.0
+        if _time.time() - asked < 7 * 24 * 3600:
+            return
+        names = "، ".join(f"⁦{path.name}⁩" for path in scripts)
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setWindowTitle("קיצור דרך ישן על שולחן העבודה")
+        box.setText(
+            f"הקובץ {names} שעל שולחן העבודה מוריד בכל פתיחה גרסה שעוד לא נבדקה, "
+            "ומוחק את העדכונים שהתוכנה הכינה."
+        )
+        box.setInformativeText(
+            "להחליף אותו בקובץ החדש? מעכשיו הוא יפתח רק גרסאות שעברו את כל הבדיקות, "
+            "והתוכנה תתעדכן לבד. העותק הישן נשמר לצדו. הנתונים לא זזים."
+        )
+        replace = box.addButton("להחליף", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton("לא עכשיו", QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+        if box.clickedButton() is not replace:
+            try:
+                write_json(marker, {"asked": _time.time()})
+            except Exception:  # noqa: BLE001 - asked again next time, no harm
+                pass
+            return
+        failed = []
+        for path in scripts:
+            try:
+                selfupdate.replace_old_script(path)
+            except Exception as exc:  # noqa: BLE001 - said below
+                failed.append(f"⁦{path.name}⁩: {exc}")
+        if failed:
+            QMessageBox.warning(self, "קיצור הדרך לא הוחלף", "\n".join(failed))
+        else:
+            self.statusBar().showMessage(
+                "קיצור הדרך הוחלף. בפתיחה הבאה הוא יתקין את הגרסה הבדוקה בתיקייה ProfileOS "
+                "שעל שולחן העבודה.", 30000)
 
     # -- data safety ---------------------------------------------------------- #
     #: Off for windows built by tests and scripts; the application entry point

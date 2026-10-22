@@ -35,6 +35,10 @@ def run(argv: Sequence[str] | None = None, *, theme: str | None = None) -> int:
     delegated = _through_launcher()
     if delegated is not None:
         return delegated
+    # While this runs, the launcher puts no update in place under it.
+    from ..core.selfupdate import hold_instance
+
+    hold_instance()
     from PySide6.QtCore import Qt
     from PySide6.QtGui import QFont
     from PySide6.QtWidgets import QApplication
@@ -120,7 +124,11 @@ def run(argv: Sequence[str] | None = None, *, theme: str | None = None) -> int:
 
     if Gate().is_enrolled and session is None:
         _log.warning("Sign-in cancelled; not starting")
-        return 1
+        # Its own code: the launcher must not take a cancelled sign-in for
+        # a version that failed to open.
+        from ..core.selfupdate import CANCELLED_CODE
+
+        return CANCELLED_CODE
 
     window = MainWindow(palette)
     window.auto_backup = True
@@ -148,12 +156,15 @@ def run(argv: Sequence[str] | None = None, *, theme: str | None = None) -> int:
 
     backup_if_due()
     window._update_safety()
-    # The window is open: this version works — the launcher's proof, so it
-    # does not roll back an update that started fine.
-    from ..core.selfupdate import mark_started
+    # The window opened and stayed open with the shop's real data: this
+    # version works — the launcher's proof, so it does not roll back an
+    # update that started fine. Not at once: a version that opens and then
+    # falls over on the first refresh is not a working one.
+    from ..core.selfupdate import PROVEN_AFTER_S, mark_started
 
-    mark_started()
+    QTimer.singleShot(PROVEN_AFTER_S * 1000, mark_started)
     QTimer.singleShot(1500, window.announce_update)
+    QTimer.singleShot(4000, window.offer_new_shortcut)
     window.offer_draft_recovery()
     _log.info("Desktop application started")
     return application.exec()

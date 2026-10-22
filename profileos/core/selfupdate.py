@@ -31,6 +31,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -55,6 +56,10 @@ MAX_UNPACKED_BYTES = 600 * 1024 * 1024
 CHECK_EVERY_S = 6 * 3600
 #: The exit code that asks the launcher to put the update in place and start again.
 RESTART_CODE = 75
+#: The exit code of a sign-in the person cancelled: not a version that failed.
+CANCELLED_CODE = 76
+#: Seconds the window must stay open before this version counts as working.
+PROVEN_AFTER_S = 45
 
 #: ``fetch(url, limit) -> bytes``; injectable for tests and odd proxies.
 Fetcher = Callable[[str, int], bytes]
@@ -143,6 +148,7 @@ class Release:
     commit: str = ""
     published: str = ""
     notes: list[dict[str, Any]] = field(default_factory=list)
+    branch: str = ""
 
 
 def latest_release(fetch: Fetcher | None = None) -> Release:
@@ -156,6 +162,8 @@ def latest_release(fetch: Fetcher | None = None) -> Release:
         raise ProfileOSError("בגרסה שפורסמה אין קובץ אימות — היא לא תותקן")
     manifest = json.loads(fetch(manifest_url, 1024 * 1024).decode("utf-8"))
     name = str(manifest.get("zip", ""))
+    if version_key(str(manifest.get("version", ""))) is None:
+        raise ProfileOSError("לגרסה שפורסמה אין מספר גרסה תקין — היא לא תותקן")
     if name not in assets:
         raise ProfileOSError("קובץ הגרסה חסר בפרסום — היא לא תותקן")
     return Release(
@@ -166,6 +174,7 @@ def latest_release(fetch: Fetcher | None = None) -> Release:
         commit=str(manifest.get("commit", "")),
         published=str(raw.get("published_at", "")),
         notes=list(manifest.get("notes", []) or []),
+        branch=str(manifest.get("branch", "")),
     )
 
 
@@ -193,22 +202,90 @@ def _unpack(archive: Path, target: Path) -> Path:
     raise ProfileOSError("בקובץ העדכון אין את התוכנה — הוא לא יותקן")
 
 
+def _requirement_name(line: str) -> str:
+    line = line.split("#", 1)[0].strip()
+    if not line or line.startswith("-"):
+        return ""
+    for mark in "<>=!~;[ @":
+        line = line.split(mark, 1)[0]
+    return line.strip()
+
+
+def missing_components(staged: Path) -> list[str]:
+    """The lines of the new version's ``requirements.txt`` naming a component
+    this computer does not have at all."""
+    from importlib import metadata
+
+    try:
+        lines = (staged / "requirements.txt").read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    missing = []
+    for line in lines:
+        name = _requirement_name(line)
+        if not name:
+            continue
+        try:
+            metadata.version(name)
+        except metadata.PackageNotFoundError:
+            missing.append(line.split("#", 1)[0].strip())
+    return missing
+
+
 def self_check(staged: Path) -> str:
     """Start the new version's own code once, apart from everything: empty
-    if it loads, else what went wrong."""
+    if it loads, else what went wrong.
+
+    A component the new version needs and this computer lacks is installed
+    for the check only, into a scratch folder — so a version that adds one
+    can pass. Without internet for it, the check waits (raises) rather than
+    calling the version broken.
+    """
+    launcher = staged / "launcher.py"
+    if launcher.is_file():
+        # The launcher is the one file the window never runs: read it here.
+        try:
+            compile(launcher.read_text(encoding="utf-8"), str(launcher), "exec")
+        except (SyntaxError, ValueError, OSError) as exc:
+            return f"launcher.py: {exc}"
     with tempfile.TemporaryDirectory(prefix="profileos-check-") as scratch:
+        paths = [str(staged)]
+        missing = missing_components(staged)
+        if missing:
+            components = Path(scratch) / "components"
+            try:
+                done = subprocess.run(
+                    [sys.executable, "-m", "pip", "install", "--quiet", "--target",
+                     str(components), *missing],
+                    capture_output=True, text=True, timeout=1800)
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                raise ProfileOSError(
+                    "הגרסה החדשה צריכה רכיב חדש, ולא ניתן היה להוריד אותו — ננסה שוב מאוחר יותר"
+                ) from exc
+            if done.returncode != 0:
+                raise ProfileOSError(
+                    "הגרסה החדשה צריכה רכיב חדש, ולא ניתן היה להוריד אותו — ננסה שוב מאוחר יותר"
+                )
+            paths.append(str(components))
         env = {
             **os.environ,
-            "PYTHONPATH": str(staged),
+            "PYTHONPATH": os.pathsep.join(paths),
+            "PYTHONDONTWRITEBYTECODE": "1",
             "PROFILEOS_CONFIG_DIR": str(Path(scratch) / "config"),
             "PROFILEOS_DATA_DIR": str(Path(scratch) / "data"),
+            "HOME": str(Path(scratch) / "home"),
+            "USERPROFILE": str(Path(scratch) / "home"),
             "QT_QPA_PLATFORM": "offscreen",
         }
+        # os._exit: what is being checked is that the window builds; Qt's
+        # tear-down at interpreter exit is not, and can crash on its own.
         code = (
+            "import os, sys;"
             "import profileos, profileos.core.storage, profileos.insights, profileos.ui.app;"
             "from profileos.ui.main_window import MainWindow;"
             "from PySide6.QtWidgets import QApplication;"
-            "app = QApplication([]); MainWindow(); print('ok')"
+            "app = QApplication([]); MainWindow(); print('ok', flush=True);"
+            "sys.stderr.flush(); os._exit(0)"
         )
         try:
             done = subprocess.run([sys.executable, "-c", code], cwd=staged, env=env,
@@ -216,9 +293,25 @@ def self_check(staged: Path) -> str:
         except (OSError, subprocess.TimeoutExpired) as exc:
             return str(exc)
     if done.returncode != 0 or "ok" not in done.stdout:
-        return (done.stderr or done.stdout).strip().splitlines()[-1:][0] if (
-            done.stderr or done.stdout).strip() else f"exit {done.returncode}"
+        said = (done.stderr or done.stdout).strip()
+        return said.splitlines()[-1] if said else f"exit {done.returncode}"
     return ""
+
+
+def _zip_fingerprints(archive: Path, target: Path, staged: Path) -> dict[str, str]:
+    """Every file the verified zip put into ``staged``, with its SHA-256 — the
+    launcher checks them again right before it moves anything."""
+    files: dict[str, str] = {}
+    with zipfile.ZipFile(archive) as pack:
+        for info in pack.infolist():
+            if info.is_dir():
+                continue
+            try:
+                name = (target / info.filename).relative_to(staged).as_posix()
+            except ValueError:
+                continue
+            files[name] = hashlib.sha256(pack.read(info)).hexdigest()
+    return files
 
 
 def stage(release: Release, *, fetch: Fetcher | None = None, root: Path | None = None,
@@ -246,22 +339,29 @@ def stage(release: Release, *, fetch: Fetcher | None = None, root: Path | None =
     archive = folder / f"profileos-{release.version}.zip"
     archive.write_bytes(body)
 
-    target = folder / f"staged-{release.version}"
-    if target.exists():
-        shutil.rmtree(target)
+    _drop_old_staged(folder)
+    # A name of its own: a second check running meanwhile never deletes it.
+    target = folder / f"staged-{release.version}-{time.time_ns()}"
     try:
         staged = _unpack(archive, target)
+        files = _zip_fingerprints(archive, target, staged)
         stamped = installed(staged).get("version")
         if stamped != release.version:
             raise ProfileOSError("הגרסה שבקובץ לא תואמת לגרסה שפורסמה — היא לא תותקן")
         problem = check(staged)
         if problem:
-            raise ProfileOSError(f"הגרסה החדשה לא נפתחה בבדיקה, ולא תותקן: {problem}")
+            raise DidNotOpen(f"הגרסה החדשה לא נפתחה בבדיקה, ולא תותקן: {problem}")
     except Exception:
         shutil.rmtree(target, ignore_errors=True)
         raise
     finally:
         archive.unlink(missing_ok=True)
+    if staged != target:
+        # The launcher only takes a folder directly inside .updates.
+        moved = folder / f"{target.name}-x"
+        os.replace(staged, moved)
+        shutil.rmtree(target, ignore_errors=True)
+        staged = moved
 
     needs = _differs(root / "requirements.txt", staged / "requirements.txt")
     _write_json(folder / "ready.json", {
@@ -274,8 +374,27 @@ def stage(release: Release, *, fetch: Fetcher | None = None, root: Path | None =
         "staged_at": time.time(),
         # The launcher checks these again before it moves anything.
         "protect": protected,
+        "files": files,
     })
     return staged
+
+
+class DidNotOpen(ProfileOSError):
+    """A version that failed its start check: remembered, not downloaded again."""
+
+
+def _drop_old_staged(folder: Path) -> None:
+    """Folders of versions no longer waiting; a fresh one may be another
+    check's, still at work, and is left alone."""
+    ready = _read_json(folder / "ready.json", {})
+    keep = str(ready.get("path", "")) if isinstance(ready, dict) else ""
+    for old in folder.glob("staged-*"):
+        try:
+            if str(old) == keep or time.time() - old.stat().st_mtime < 3600:
+                continue
+        except OSError:
+            continue
+        shutil.rmtree(old, ignore_errors=True)
 
 
 # --------------------------------------------------------------------------- #
@@ -311,6 +430,8 @@ def stage_git(release: Release, *, root: Path | None = None,
     root = root or install_root()
     if not release.commit:
         raise ProfileOSError("בגרסה שפורסמה אין מזהה גרסה — לא ניתן לעדכן דרך git")
+    if version_key(release.version) is None:
+        raise ProfileOSError("לגרסה שפורסמה אין מספר גרסה תקין — היא לא תותקן")
     problem = git_ready(root)
     if problem:
         raise ProfileOSError(problem)
@@ -337,9 +458,10 @@ def stage_git(release: Release, *, root: Path | None = None,
         _git(root, "worktree", "remove", "--force", str(checkout))
         shutil.rmtree(checkout, ignore_errors=True)
     if problem:
-        raise ProfileOSError(f"הגרסה החדשה לא נפתחה בבדיקה, ולא תותקן: {problem}")
+        raise DidNotOpen(f"הגרסה החדשה לא נפתחה בבדיקה, ולא תותקן: {problem}")
     _write_json(folder / "ready.json", {
         "version": release.version, "mode": "git", "commit": release.commit,
+        "branch": release.branch,
         "previous_commit": head, "needs_components": needs,
         "from_version": installed(root).get("version", ""), "notes": release.notes,
         "staged_at": time.time(),
@@ -410,6 +532,26 @@ def _read_json(path: Path, default: Any) -> Any:
 # What the window asks
 # --------------------------------------------------------------------------- #
 
+def _v(text: str) -> str:
+    """A version number inside Hebrew text, kept in its order."""
+    return f"\u2066{text}\u2069"
+
+
+#: The launcher's reasons, said to the person.
+WAITING_REASONS = {
+    "backup": "הגיבוי לפני העדכון לא הצליח — העדכון יחכה להפעלה שבה הגיבוי יצליח",
+    "components": "אין חיבור לאינטרנט להתקנת רכיב חדש — ננסה שוב בהפעלה הבאה",
+    "running": "ProfileOS פתוחה בחלון נוסף (או טרמינל הטלפון) — העדכון יותקן כשכולם ייסגרו",
+}
+FAILED_REASONS = {
+    "interrupted": "ההתקנה נקטעה באמצע והגרסה הקודמת הוחזרה — העדכון יורד מחדש",
+    "damaged": "קובץ העדכון השתנה מאז שנבדק — הוא יורד מחדש",
+    "merge": "לא ניתן היה לקדם את התיקייה לגרסה החדשה — יש בה שינויים מקומיים",
+    "rollback": "הגרסה החדשה לא נפתחה ולא ניתן היה להחזיר את הקודמת אוטומטית — פנו לתמיכה",
+    "not_the_update": "גם הגרסה הקודמת לא נפתחה — הבעיה אינה בעדכון. פנו לתמיכה",
+}
+
+
 @dataclass
 class Status:
     installed: str
@@ -420,14 +562,35 @@ class Status:
     #: The launcher's last word: installed, rolled_back, waiting, failed.
     last: dict[str, Any] = field(default_factory=dict)
     managed: bool = True
+    #: Versions that failed to open, here or in the start check.
+    blocked: list[str] = field(default_factory=list)
+    git: bool = False
+
+    def problem(self) -> str:
+        """What stops the program from updating, in words; empty when nothing."""
+        last = self.last if isinstance(self.last, dict) else {}
+        reason = str(last.get("reason", ""))
+        if self.ready and last.get("version") == self.ready:
+            if last.get("outcome") == "waiting":
+                return WAITING_REASONS.get(reason, "")
+            if last.get("outcome") == "failed":
+                return FAILED_REASONS.get(reason, f"העדכון לא הותקן: {reason}")
+        if last.get("outcome") == "failed" and reason in ("rollback", "not_the_update"):
+            return FAILED_REASONS[reason]
+        return self.error
 
     def describe(self) -> str:
         if self.ready:
-            return f"גרסה {self.ready} הורדה ונבדקה — תותקן בהפעלה הבאה"
+            text = f"גרסה {_v(self.ready)} הורדה ונבדקה — תותקן בהפעלה הבאה"
+            problem = self.problem()
+            return f"{text}. {problem}" if problem else text
         if self.error:
             return f"בדיקת העדכונים נכשלה: {self.error}"
-        if self.available and is_newer(self.available, self.installed):
-            return f"גרסה {self.available} זמינה — מורידים ובודקים"
+        if self.available and self.available in self.blocked:
+            return (f"גרסה {_v(self.available)} לא נפתחה בבדיקה ולא תותקן — "
+                    "ממתינים לגרסה המתוקנת הבאה")
+        if self.available and is_newer(self.available, self.installed) and not self.git:
+            return f"גרסה {_v(self.available)} זמינה — מורידים ובודקים"
         if self.checked_at:
             return "התוכנה מעודכנת"
         return "עוד לא נבדק"
@@ -440,7 +603,10 @@ def _state_path(root: Path | None = None) -> Path:
 def status(root: Path | None = None) -> Status:
     root = root or install_root()
     state = _read_json(_state_path(root), {})
+    state = state if isinstance(state, dict) else {}
     ready = _read_json(updates_dir(root) / "ready.json", {})
+    bad = _read_json(updates_dir(root) / "bad_versions.json", []) or []
+    failed = [str(state["failed"])] if state.get("failed") else []
     return Status(
         installed=installed(root).get("version", "dev"),
         available=str(state.get("available", "")),
@@ -449,33 +615,67 @@ def status(root: Path | None = None) -> Status:
         error=str(state.get("error", "")),
         last=_read_json(updates_dir(root) / "last_result.json", {}) or {},
         managed=True,
+        blocked=sorted({*map(str, bad), *failed}),
+        git=under_version_control(root),
     )
+
+
+def _http_problem(exc: urllib.error.HTTPError) -> str:
+    if exc.code == 404:
+        return ""  # nothing published yet: not a problem
+    if exc.code in (403, 429):
+        return "GitHub הגביל זמנית את הבדיקות — ננסה שוב בעוד כמה שעות"
+    return f"שרת העדכונים לא ענה כרגיל (קוד {_v(str(exc.code))}) — ננסה שוב מאוחר יותר"
+
+
+#: One check at a time in this program: the timer and the button share it.
+_CHECKING = threading.Lock()
 
 
 def check_and_stage(*, fetch: Fetcher | None = None, root: Path | None = None,
                     check: Callable[[Path], str] = self_check) -> Status:
     """Look for a newer version and, when there is one, make it ready.
 
-    Never raises: what went wrong is kept for the window to say.
+    Never raises: what went wrong is kept for the window to say. A second
+    call while one is at work returns the state as it is.
     """
     root = root or install_root()
-    state: dict[str, Any] = {"checked_at": time.time(), "error": ""}
+    if not _CHECKING.acquire(blocking=False):
+        return status(root)
+    try:
+        return _check_and_stage(fetch, root, check)
+    finally:
+        _CHECKING.release()
+
+
+def _check_and_stage(fetch: Fetcher | None, root: Path,
+                     check: Callable[[Path], str]) -> Status:
+    before = _read_json(_state_path(root), {})
+    before = before if isinstance(before, dict) else {}
+    state: dict[str, Any] = {"checked_at": time.time(), "error": "",
+                             "failed": before.get("failed", "")}
     try:
         git = under_version_control(root)
         current = installed(root).get("version", "dev")
         release = latest_release(fetch)
         state["available"] = release.version
         bad = set(_read_json(updates_dir(root) / "bad_versions.json", []) or [])
+        if state["failed"]:
+            bad.add(state["failed"])
         ready = _read_json(updates_dir(root) / "ready.json", {})
         already = isinstance(ready, dict) and ready.get("version") == release.version
-        if git:
-            # A checkout knows its version by its commit, not by a stamp.
-            head = _git(root, "rev-parse", "HEAD").stdout.strip()
-            behind = bool(release.commit) and head != release.commit
-            if behind and release.version not in bad and not already:
-                stage_git(release, root=root, check=check)
-        elif is_newer(release.version, current) and release.version not in bad and not already:
-            stage(release, fetch=fetch, root=root, check=check)
+        try:
+            if git:
+                if _git_wants(root, release) and release.version not in bad and not already:
+                    stage_git(release, root=root, check=check)
+            elif is_newer(release.version, current) and release.version not in bad and not already:
+                stage(release, fetch=fetch, root=root, check=check)
+        except DidNotOpen:
+            # Not downloaded again every few hours: the next version replaces it.
+            state["failed"] = release.version
+            raise
+    except urllib.error.HTTPError as exc:
+        state["error"] = _http_problem(exc)
     except urllib.error.URLError:
         state["error"] = "אין חיבור לאינטרנט — ננסה שוב מאוחר יותר"
     except Exception as exc:  # noqa: BLE001 - said in the window, never raised
@@ -489,8 +689,28 @@ def check_and_stage(*, fetch: Fetcher | None = None, root: Path | None = None,
     return status(root)
 
 
+def _git_wants(root: Path, release: Release) -> bool:
+    """Whether this checkout should move to the release: it is on the branch
+    that is published, and the release is not already in its history."""
+    if not release.commit:
+        return False
+    try:
+        if release.branch:
+            branch = _git(root, "rev-parse", "--abbrev-ref", "HEAD", timeout=10).stdout.strip()
+            if branch != release.branch:
+                return False
+        head = _git(root, "rev-parse", "HEAD", timeout=10).stdout.strip()
+        if head == release.commit:
+            return False
+        contained = _git(root, "merge-base", "--is-ancestor", release.commit, head, timeout=30)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    # Already ahead of it (a developer's own commits on top): nothing to do.
+    return contained.returncode != 0
+
+
 def mark_started(root: Path | None = None) -> None:
-    """The window opened: this version works (the launcher's proof)."""
+    """The window opened and stayed open: this version works (the launcher's proof)."""
     root = root or install_root()
     try:
         folder = updates_dir(root)
@@ -501,8 +721,94 @@ def mark_started(root: Path | None = None) -> None:
         _log.warning("Could not mark the start: %s", exc)
 
 
+_INSTANCE: Any = None
+
+
+def hold_instance(root: Path | None = None) -> None:
+    """Say, for as long as this program runs, that it is running — so the
+    launcher never moves files out from under it. The file stays open: on
+    Windows nothing can delete it until this process ends."""
+    global _INSTANCE
+    if _INSTANCE is not None:
+        return
+    root = root or install_root()
+    try:
+        folder = updates_dir(root)
+        folder.mkdir(parents=True, exist_ok=True)
+        path = folder / f"instance-{os.getpid()}.lock"
+        handle = open(path, "w", encoding="ascii")  # noqa: SIM115 - held until exit
+        handle.write(str(os.getpid()))
+        handle.flush()
+    except OSError as exc:
+        _log.warning("Could not mark this program as running: %s", exc)
+        return
+    _INSTANCE = (handle, path)
+
+    import atexit
+
+    def _let_go() -> None:
+        try:
+            handle.close()
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    atexit.register(_let_go)
+
+
 def launched_by_launcher() -> bool:
     return os.environ.get("PROFILEOS_LAUNCHER") == "1"
+
+
+# --------------------------------------------------------------------------- #
+# The old desktop shortcut
+# --------------------------------------------------------------------------- #
+
+#: What the first desktop script did at every start: download the branch as
+#: it stood that minute (untested), delete the program folder, start that.
+OLD_SCRIPT_MARK = f"github.com/{REPOSITORY}/archive/refs/heads/"
+
+
+def _desktops(home: Path | None = None) -> list[Path]:
+    home = home or Path.home()
+    found = [home / "Desktop", home / "OneDrive" / "Desktop"]
+    profile = os.environ.get("USERPROFILE")
+    if profile and home == Path.home():
+        found.append(Path(profile) / "Desktop")
+    unique: list[Path] = []
+    for path in found:
+        if path.is_dir() and path not in unique:
+            unique.append(path)
+    return unique
+
+
+def old_desktop_scripts(home: Path | None = None) -> list[Path]:
+    """Copies of the first desktop script, which would keep undoing the
+    updates: each start deleted the program folder and ran untested code."""
+    scripts = []
+    for desktop in _desktops(home):
+        for path in sorted(desktop.glob("*.bat")):
+            try:
+                if path.stat().st_size > 64 * 1024:
+                    continue
+                text = path.read_bytes().decode("utf-8", "replace")
+            except OSError:
+                continue
+            if OLD_SCRIPT_MARK in text:
+                scripts.append(path)
+    return scripts
+
+
+def replace_old_script(path: Path, root: Path | None = None) -> None:
+    """Put the new first-install script in its place; the old one is kept
+    beside it (``.bak``). Safe while the old one is still running: the new
+    one is padded so cmd, reading on from where the old one ended, exits."""
+    from .storage import atomic_write_bytes
+
+    new = ((root or install_root()) / "scripts" / "launch_windows.bat").read_bytes()
+    if b"goto start" not in new:
+        raise ProfileOSError("קובץ ההפעלה החדש חסר — קיצור הדרך לא הוחלף")
+    atomic_write_bytes(path, new.replace(b"\r\n", b"\n").replace(b"\n", b"\r\n"))
 
 
 # --------------------------------------------------------------------------- #
@@ -513,7 +819,8 @@ def whats_new(since: str = "", *, root: Path | None = None) -> list[dict[str, An
     """Entries of ``profileos/data/whats_new.json`` newer than ``since`` (a date)."""
     path = (root or install_root()) / "profileos" / "data" / "whats_new.json"
     entries = _read_json(path, []) or []
-    return [entry for entry in entries if str(entry.get("date", "")) > since]
+    # The same day counts: a version from the morning lacks the evening's news.
+    return [entry for entry in entries if str(entry.get("date", "")) >= since]
 
 
 def unannounced(root: Path | None = None) -> dict[str, Any] | None:
@@ -523,7 +830,7 @@ def unannounced(root: Path | None = None) -> dict[str, Any] | None:
     result = _read_json(path, None)
     if not isinstance(result, dict) or result.get("announced"):
         return None
-    if result.get("outcome") not in ("installed", "rolled_back"):
+    if result.get("outcome") not in ("installed", "rolled_back", "failed"):
         return None
     result["announced"] = True
     try:
@@ -535,7 +842,13 @@ def unannounced(root: Path | None = None) -> dict[str, Any] | None:
 
 
 __all__ = [
+    "CANCELLED_CODE",
     "CHECK_EVERY_S",
+    "PROVEN_AFTER_S",
+    "hold_instance",
+    "missing_components",
+    "old_desktop_scripts",
+    "replace_old_script",
     "RESTART_CODE",
     "Release",
     "Status",

@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..core.logging_setup import get_logger
+from .widgets import documents_dir
 from .theme import METRICS, Palette
 from .widgets import Card, FieldGrid
 
@@ -124,7 +125,7 @@ class LoginDialog(QDialog):
 
     def _choose_key(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
-            self, "קובץ מפתח ProfileOS", "", "קובץ מפתח (*.key);;כל הקבצים (*)"
+            self, "קובץ מפתח ProfileOS", str(documents_dir()), "קובץ מפתח (*.key);;כל הקבצים (*)"
         )
         if path:
             self._key_path = Path(path)

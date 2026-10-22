@@ -84,6 +84,14 @@ Do not `pkill -f pytest` — it kills the shell that runs it.
   a backup, and rolls back a version that does not open. Add a Hebrew entry to
   `whats_new.json` for every change the shop will notice. Tests that move
   program files must use a temporary folder — never this tree.
+  The launcher's rules: every move is journaled before it happens and the
+  `.swapping` marker stays until the install is complete, so a power cut is
+  undone at the next start; one launcher at a time (`launcher.lock`); nothing
+  is swapped while a copy runs (`instance-<pid>.lock`, held by the window and
+  by `serve`); the staged files are re-checked against their SHA-256 just
+  before the swap; exit 75 = restart to install, 76 = sign-in cancelled (not a
+  failure). A file dialog starts in Documents (`widgets.documents_dir()`),
+  never the program folder an update replaces.
 
 ## The team
 
