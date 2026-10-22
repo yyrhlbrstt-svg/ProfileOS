@@ -242,7 +242,9 @@ def _jobs(context: dict[str, Any], today: date) -> list[Insight]:
     # is obvious.
     blocked = []
     for job in jobs:
-        if job.status not in (JobStatus.WON, JobStatus.IN_PRODUCTION):
+        # Only before production: once it is being made, what it waited for
+        # evidently arrived, ticked or not.
+        if job.status is not JobStatus.WON:
             continue
         late = [need for need in getattr(job, "open_needs", []) or []
                 if need.blocks_production

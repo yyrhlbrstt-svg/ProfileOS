@@ -296,7 +296,10 @@ async function api(path, options){
   if(response.status === 401){ signOut(); throw new Error(t("mobile.session_expired")); }
   const data = await response.json().catch(() => ({}));
   if(!response.ok){
-    const refused = new Error(data.detail || "שגיאה");
+    // FastAPI's own validation answers with a list of problems.
+    const detail = Array.isArray(data.detail)
+      ? data.detail.map(d => d.msg || String(d)).join(" · ") : data.detail;
+    const refused = new Error(detail || "שגיאה");
     refused.status = response.status;
     throw refused;
   }
@@ -370,9 +373,30 @@ function num(id){ const v = parseFloat(document.getElementById(id).value); retur
 const OUTBOX = "pos.outbox";
 
 function outbox(){
-  try{ return JSON.parse(localStorage.getItem(OUTBOX) || "[]"); }catch(err){ return []; }
+  const raw = localStorage.getItem(OUTBOX);
+  if(!raw) return [];
+  try{
+    const items = JSON.parse(raw);
+    if(Array.isArray(items)) return items.filter(item => item && item.body);
+  }catch(err){ /* below */ }
+  // Unreadable: set aside, never written over — what was in it is still there.
+  try{ localStorage.setItem(OUTBOX + ".unreadable." + Date.now(), raw); localStorage.removeItem(OUTBOX); }
+  catch(err){ /* nothing more can be done here */ }
+  return [];
 }
+// Throws when the phone cannot store it (storage full, private mode).
 function keepOutbox(items){ localStorage.setItem(OUTBOX, JSON.stringify(items)); }
+
+// Change the outbox as it is now — never write back an older copy of it:
+// a measurement queued while a send was on its way must survive that send.
+function updateOutbox(change){
+  const items = outbox();
+  change(items);
+  keepOutbox(items);
+  return items;
+}
+
+function idOf(item){ return item.body && item.body.client_id; }
 
 function newId(){
   if(window.crypto && crypto.randomUUID) return crypto.randomUUID();
@@ -394,33 +418,56 @@ function showOutbox(){
 let flushing = false;
 async function flushOutbox(){
   if(flushing || !TOKEN) return;
-  const items = outbox();
-  if(!items.some(item => !item.refused)) return;
+  if(!outbox().some(item => !item.refused)) return;
   flushing = true;
   let sent = 0;
   try{
-    for(const item of items){
+    for(const item of outbox()){
       if(item.refused) continue;
       try{
         await api("/api/measurements", {method:"POST", body:JSON.stringify(item.body)});
-        item.done = true; sent++;
+        sent++;
+        updateOutbox(items => {
+          const at = items.findIndex(other => idOf(other) === idOf(item));
+          if(at >= 0) items.splice(at, 1);
+        });
       }catch(err){
         if(err.offline) break;                     // still no signal: try later
         // Refused for what it says (a missing size): kept and shown, never
         // dropped. Anything else (signed out, office busy): tried again later.
-        if(err.status === 422){ item.refused = err.message; }
-        else break;
+        if(err.status === 422){
+          updateOutbox(items => items.forEach(other => {
+            if(idOf(other) === idOf(item)) other.refused = err.message;
+          }));
+        }else break;
       }
     }
+  }catch(err){
+    /* the phone's storage refused a write: what is queued stays queued */
   }finally{
-    keepOutbox(items.filter(item => !item.done));
     flushing = false;
   }
   showOutbox();
+  paintWaiting();
   if(sent){
     say("m-msg", t("mobile.sent_from_phone").replace("{n}", "\u2066" + sent + "\u2069"), true);
     loadMeasurements();
   }
+}
+
+function retryRefused(id){
+  try{ updateOutbox(items => items.forEach(item => { if(idOf(item) === id) delete item.refused; })); }
+  catch(err){ return; }
+  flushOutbox();
+}
+
+function dropRefused(id){
+  if(!confirm(t("mobile.drop_confirm"))) return;
+  try{ updateOutbox(items => {
+    const at = items.findIndex(item => idOf(item) === id && item.refused);
+    if(at >= 0) items.splice(at, 1);
+  }); }catch(err){ return; }
+  showOutbox(); paintWaiting();
 }
 
 function measurementForm(){
@@ -459,9 +506,13 @@ async function sendMeasurement(){
     flushOutbox();
   }catch(err){
     if(err.offline){
-      const items = outbox();
-      items.push({body, at: body.measured_at});
-      keepOutbox(items);
+      try{
+        updateOutbox(items => items.push({body, at: body.measured_at}));
+      }catch(storageErr){
+        // Could not even be kept on the phone: the form stays as it is.
+        say("m-msg", t("mobile.not_saved"), false);
+        return;
+      }
       clearMeasurementForm();
       say("m-msg", t("mobile.saved_offline"), true);
       showOutbox();
@@ -482,7 +533,11 @@ function esc(text){
 function waitingItems(){
   return outbox().map(item => `
       <div class="item">
-        <div class="grow"><b>${esc(item.body.reference)}</b><small class="num">${narrowest(item.body.widths)} × ${narrowest(item.body.heights)}</small></div>
+        <div class="grow"><b>${esc(item.body.reference)}</b><small class="num">${narrowest(item.body.widths)} × ${narrowest(item.body.heights)}</small>
+          ${item.refused ? `<small>${esc(item.refused)}</small>
+          <span class="row2"><button class="ghost" onclick="retryRefused('${esc(idOf(item))}')">${t("mobile.retry")}</button>
+          <button class="ghost" onclick="dropRefused('${esc(idOf(item))}')">${t("mobile.drop")}</button></span>` : ""}
+        </div>
         <span class="pill ${item.refused ? "bad" : "warn"}">${item.refused ? t("mobile.not_accepted") : t("mobile.waiting_network")}</span>
       </div>`).join("");
 }
@@ -567,10 +622,14 @@ function buildLanguages(){
 
 paint();
 buildLanguages();
-if(TOKEN){ document.getElementById("s-pair").classList.remove("on"); buildTabs(); }
-// Whatever waited on the phone since last time goes now, if it can.
-if(TOKEN) flushOutbox();
-else { document.getElementById("tabs").style.display = "none"; }
+if(TOKEN){
+  document.getElementById("s-pair").classList.remove("on");
+  buildTabs();
+  // Whatever waited on the phone since last time goes now, if it can.
+  flushOutbox();
+}else{
+  document.getElementById("tabs").style.display = "none";
+}
 </script>
 </body>
 </html>

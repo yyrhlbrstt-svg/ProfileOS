@@ -340,7 +340,8 @@ def snag_message(*, brand_name: str, customer_name: str = "", job_name: str = ""
     right — or that everything was. Written down, it stops being a feeling
     that "something is still not right" and becomes a list that gets shorter."""
     def item(snag: Any) -> str:
-        where = f" (⁦{snag.where}⁩)" if getattr(snag, "where", "") else ""
+        # Free text, Hebrew or a code: first-strong isolate, not left-to-right.
+        where = f" (\u2068{snag.where}\u2069)" if getattr(snag, "where", "") else ""
         return f"{snag.description}{where}"
 
     work = f"בעבודה ״{job_name}״" if job_name else "בעבודה"

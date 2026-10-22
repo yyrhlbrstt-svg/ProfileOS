@@ -1065,6 +1065,30 @@ class HomePage(Page):
 # Projects
 # --------------------------------------------------------------------------- #
 
+def _merged_by_id(opened: list[Any], edited: list[Any], key: str) -> Any:
+    """What a dialog changed in a list, as a function to apply to the copy on
+    disk — None when it changed nothing.
+
+    Only the items added, changed or deleted in the dialog are written; every
+    other item stays as it is on disk, so a change made meanwhile on another
+    computer (a snag marked fixed there) is never put back by this one.
+    """
+    before = {getattr(item, key): item.model_dump() for item in opened}
+    after = {getattr(item, key): item for item in edited}
+    changed = {k: item for k, item in after.items() if before.get(k) != item.model_dump()}
+    deleted = set(before) - set(after)
+    if not changed and not deleted:
+        return None
+
+    def apply(on_disk: list[Any]) -> list[Any]:
+        kept = [changed.get(getattr(item, key), item) for item in on_disk
+                if getattr(item, key) not in deleted]
+        present = {getattr(item, key) for item in kept}
+        return kept + [item for k, item in changed.items() if k not in present]
+
+    return apply
+
+
 class ProjectsPage(Page):
     """The order book: every job the shop has taken on, and where it stands.
 
@@ -1519,14 +1543,12 @@ class ProjectsPage(Page):
         deposit = self._deposit_missing(job)
         dialog = NeedsDialog(job, deposit_missing=deposit, parent=self)
         dialog.exec()
-        if [n.model_dump() for n in dialog.needs] != [n.model_dump() for n in job.waiting_for]:
+        merged = _merged_by_id(job.waiting_for, dialog.needs, "need_id")
+        if merged is not None:
             try:
                 store = self._store()
                 fresh = store.load(job.job_id)
-                ours = {need.need_id for need in dialog.needs}
-                fresh.waiting_for = list(dialog.needs) + [
-                    need for need in fresh.waiting_for if need.need_id not in ours
-                ]
+                fresh.waiting_for = merged(fresh.waiting_for)
                 fresh.touch()
                 store.save(fresh)
                 job = fresh
@@ -1564,26 +1586,22 @@ class ProjectsPage(Page):
             return
         dialog = SnagListDialog(job, self)
         dialog.exec()
-        before = [snag.model_dump() for snag in job.snags]
-        if [snag.model_dump() for snag in dialog.snags] != before:
+        merged = _merged_by_id(job.snags, dialog.snags, "snag_id")
+        if merged is not None:
             try:
                 store = self._store()
                 fresh = store.load(job.job_id)
-                ours = {snag.snag_id for snag in dialog.snags}
-                # Anything added to the job meanwhile is kept, never dropped.
-                fresh.snags = list(dialog.snags) + [
-                    snag for snag in fresh.snags if snag.snag_id not in ours
-                ]
+                fresh.snags = merged(fresh.snags)
                 fresh.touch()
                 store.save(fresh)
                 job = fresh
             except Exception as exc:  # noqa: BLE001
                 self.report(exc, "רשימת התיקונים לא נשמרה")
                 return
+            self.refresh()
             left = len(job.open_snags)
             self.status(f"{job.job_id}: " + (f"נשארו ⁦{left}⁩ תיקונים" if left
                                             else "כל התיקונים בוצעו"))
-            self.refresh()
         if dialog.send_requested:
             message = snag_message(
                 brand_name=active_brand().display_name, customer_name=job.customer_name,
@@ -2024,16 +2042,18 @@ class ProjectsPage(Page):
         self.refresh()
         self.status(f"{job.job_id} עודכן ל{target.hebrew}")
 
-    @staticmethod
-    def _last_sent_revision(job_id: str) -> int:
+    def _last_sent_revision(self, job_id: str) -> int:
         try:
             from ..quoting.revisions import default_revisions
 
-            for history in default_revisions():
+            book = default_revisions()
+            if getattr(book, "damaged", None) is not None:
+                raise book.damaged
+            for history in book:
                 if history.job_id == job_id and history.last_sent is not None:
                     return history.last_sent.number
-        except Exception:  # noqa: BLE001 - the decision is recorded either way
-            _log.exception("Could not read the quotation versions of %s", job_id)
+        except Exception as exc:  # noqa: BLE001 - the decision is recorded either way
+            self.report(exc, "הסטטוס נשמר, אבל לא נרשם איזו גרסה של ההצעה הלקוח אישר")
         return 0
 
     def show_revisions(self) -> None:
@@ -2054,6 +2074,9 @@ class ProjectsPage(Page):
         except Exception as exc:  # noqa: BLE001
             self.report(exc, "גרסאות ההצעה לא נקראו")
             return
+        if problem is not None:
+            # A damaged file is not "no versions": it is said, as it is.
+            self.report(problem, "קובץ גרסאות ההצעה פגום — מוצג מה שנקרא, ושום דבר לא יישמר עליו")
         if history is None or not len(history):
             self.status(f"{job.job_id}: עוד לא נשלחה הצעה מהמערכת — אין גרסאות")
             return
@@ -2065,6 +2088,9 @@ class ProjectsPage(Page):
             self.report(problem, "קובץ הגרסאות פגום — ההערה לא נשמרה")
             return
         try:
+            # Read again: a version issued from another computer while this
+            # window was open is part of the history the note is saved into.
+            book = default_revisions()
             mine = book.for_job(job.job_id)
             for number, note in dialog.notes.items():
                 mine.get(number).note = note

@@ -235,7 +235,7 @@ class TestThePunchList:
         done = [Snag(description="שריטה", fixed_on="2026-10-20")]
         text = snag_message(brand_name="דאדי", customer_name="לוי", job_name="וילה",
                             open_snags=left, fixed_snags=done, visit="27/10")
-        assert "• ידית תקועה (⁦W3⁩)" in text and "✓ שריטה" in text and "⁦27/10⁩" in text
+        assert "• ידית תקועה (\u2068W3\u2069)" in text and "✓ שריטה" in text and "⁦27/10⁩" in text
         finished = snag_message(brand_name="דאדי", open_snags=[], fixed_snags=left + done)
         assert "כל התיקונים" in finished and "בוצעו" in finished
 
@@ -467,3 +467,74 @@ class TestWaitingForTheCustomer:
         window.close()
         window.deleteLater()
         QCoreApplication.processEvents()
+
+
+def test_a_dialog_writes_only_what_it_changed():
+    """Another computer marked S1 fixed while this one only added S2: S1 stays fixed."""
+    from profileos.projects import Snag
+    from profileos.ui.pages import _merged_by_id
+
+    s1 = Snag(snag_id="S1", description="ידית")
+    opened = [s1]
+    edited = [s1.model_copy(deep=True), Snag(snag_id="S2", description="שריטה")]
+    on_disk = [s1.model_copy(update={"fixed_on": "2026-10-21"})]
+    merged = _merged_by_id(opened, edited, "snag_id")(on_disk)
+    assert [(s.snag_id, s.fixed_on) for s in merged] == [("S1", "2026-10-21"), ("S2", "")]
+    # Deleted here: gone. Nothing changed: nothing written.
+    assert _merged_by_id(opened, [], "snag_id")(on_disk) == []
+    assert _merged_by_id(opened, [s1.model_copy(deep=True)], "snag_id") is None
+
+
+def test_the_same_code_on_a_different_line_is_a_change():
+    from profileos.quoting.revisions import Line, QuoteHistory
+
+    history = QuoteHistory(job_id="J-1")
+    history.record_issued([Line("X-01", "החלפת צנרת", 1, "יח׳", 10_000)], 10_000)
+    second, new = history.record_issued([Line("X-01", "דוד שמש", 1, "יח׳", 10_000)], 10_000)
+    assert new and "לא השתנה" not in second.reason
+    assert "נוספו ⁦1⁩" in second.reason and "הוסרו ⁦1⁩" in second.reason
+
+
+def test_a_job_in_production_is_not_reported_as_waiting(shop):
+    from profileos.insights import scan
+    from profileos.projects import CustomerNeed
+
+    job = JobFile(job_id="J-1", name="וילה", status=JobStatus.IN_PRODUCTION)
+    job.waiting_for = [CustomerNeed(need="colour", requested_on="2026-10-01")]
+    found = scan(date(2026, 10, 22), jobs=[job], customers=[], tasks=None, cheques=None,
+                 service=None, store=None, agenda=None)
+    assert not [i for i in found if i.key.startswith("needs:")]
+
+
+def test_sending_a_balance_with_repairs_open_asks_first(shop, monkeypatch):
+    pytest.importorskip("PySide6")
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtCore import QCoreApplication
+    from PySide6.QtGui import QDesktopServices
+    from PySide6.QtWidgets import QApplication, QMessageBox
+
+    from profileos.projects import Payment, Snag, default_store
+    from profileos.ui.main_window import MainWindow
+    from profileos.ui.theme import LIGHT
+
+    QApplication.instance() or QApplication([])
+    job = JobFile(job_id="J-2026-0001", name="וילה", status=JobStatus.INSTALLED,
+                  quote_total=10_000, customer_name="לוי")
+    job.payments = [Payment(amount=5_000)]
+    job.snags = [Snag(description="ידית תקועה")]
+    default_store().save(job)
+    opened: list[str] = []
+    asked: list[str] = []
+    monkeypatch.setattr(QDesktopServices, "openUrl", lambda url: opened.append(url.toString()))
+    monkeypatch.setattr(QMessageBox, "question",
+                        lambda *a, **k: asked.append(a[2]) or QMessageBox.StandardButton.No)
+    window = MainWindow(LIGHT)
+    page = window.go_to_page("Projects")
+    page.refresh()
+    page.jobs_table.selectRow(0)
+    page.send_balance()
+    assert asked and "תיקון אחד פתוח" in asked[0]
+    assert not opened and not default_store().load("J-2026-0001").balance_reminders
+    window.close()
+    window.deleteLater()
+    QCoreApplication.processEvents()

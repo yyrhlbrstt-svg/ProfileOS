@@ -217,6 +217,28 @@ class TestMeasuring:
         assert again.json()["duplicate"] is True
         assert len(state.measurements.history("W-05")) == 1
 
+    def test_the_same_measurement_arriving_twice_at_once_is_kept_once(self, client, state, monkeypatch):
+        import threading
+        import time
+
+        headers = paired(client, state)
+        real = state.measurements.by_client_id
+
+        def slow(client_id):
+            found = real(client_id)
+            time.sleep(0.2)          # both requests are between the check and the write
+            return found
+
+        monkeypatch.setattr(state.measurements, "by_client_id", slow)
+        body = {"reference": "W-08", "widths": [1200], "heights": [1400], "client_id": "twice"}
+        threads = [threading.Thread(target=lambda: client.post(
+            "/m/api/measurements", json=body, headers=headers)) for _ in range(2)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        assert len(state.measurements.history("W-08")) == 1
+
     def test_a_measurement_kept_on_the_phone_keeps_its_time(self, client, state):
         from datetime import datetime, timedelta, timezone
 

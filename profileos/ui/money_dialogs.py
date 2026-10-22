@@ -1099,6 +1099,10 @@ class NeedsDialog(QDialog):
         reopen = QPushButton("עוד לא התקבל")
         reopen.clicked.connect(self.reopen)
         buttons.addWidget(reopen)
+        delete = QPushButton("מחיקה")
+        delete.setToolTip("למשהו שלא צריך מהלקוח בעבודה הזאת")
+        delete.clicked.connect(self.delete)
+        buttons.addWidget(delete)
         buttons.addStretch(1)
         send = QPushButton("שליחה ללקוח בוואטסאפ")
         send.setObjectName("WhatsApp")
@@ -1154,6 +1158,15 @@ class NeedsDialog(QDialog):
             need.received_on = ""
             self._fill()
 
+    def delete(self) -> None:
+        need = self._chosen()
+        if need is None:
+            return
+        answer = QMessageBox.question(self, "מחיקה", f"להוריד את ״{need.label}״ מהרשימה?")
+        if answer == QMessageBox.StandardButton.Yes:
+            self.needs.remove(need)
+            self._fill()
+
     def _send(self) -> None:
         self.send_requested = True
         self.accept()
@@ -1205,6 +1218,10 @@ class SnagListDialog(QDialog):
         reopen = QPushButton("עוד לא תוקן")
         reopen.clicked.connect(self.reopen)
         buttons.addWidget(reopen)
+        delete = QPushButton("מחיקה")
+        delete.setToolTip("לשורה שנרשמה בטעות — לא לתיקון שבוצע (עליו מסמנים ״תוקן״)")
+        delete.clicked.connect(self.delete)
+        buttons.addWidget(delete)
         buttons.addStretch(1)
         send = QPushButton("שליחה ללקוח בוואטסאפ")
         send.setObjectName("WhatsApp")
@@ -1228,7 +1245,7 @@ class SnagListDialog(QDialog):
         # Open first, oldest first: the order they should be done in.
         self.snags.sort(key=lambda snag: (not snag.is_open, snag.raised_on))
         self.table.set_rows([
-            [snag.description, f"⁦{snag.where}⁩" if snag.where else "", day(snag.raised_on),
+            [snag.description, f"\u2068{snag.where}\u2069" if snag.where else "", day(snag.raised_on),
              day(snag.fixed_on) if snag.fixed_on else "—"]
             for snag in self.snags
         ])
@@ -1265,6 +1282,15 @@ class SnagListDialog(QDialog):
         snag = self._chosen()
         if snag is not None and not snag.is_open:
             snag.fixed_on = ""
+            self._fill()
+
+    def delete(self) -> None:
+        snag = self._chosen()
+        if snag is None:
+            return
+        answer = QMessageBox.question(self, "מחיקה", f"למחוק את ״{snag.description}״ מהרשימה?")
+        if answer == QMessageBox.StandardButton.Yes:
+            self.snags.remove(snag)
             self._fill()
 
     def _send(self) -> None:
@@ -1355,7 +1381,7 @@ class RevisionsDialog(QDialog):
             return
         comparison = compare(revisions[row - 1], revisions[row])
         lines = [comparison.describe()]
-        lines += [f"• {change.describe()} ₪" for change in comparison.biggest[:12]]
+        lines += [f"• {change.describe()}" for change in comparison.biggest[:12]]
         if len(comparison.changes) > 12:
             lines.append(f"ועוד ⁦{len(comparison.changes) - 12}⁩ שינויים קטנים יותר.")
         self.changes.setText("\n".join(lines))
@@ -1367,7 +1393,7 @@ class RevisionsDialog(QDialog):
             return
         revision = self._history.revisions[row]
         text, ok = QInputDialog.getText(
-            self, f"הערה לגרסה {revision.number}",
+            self, f"הערה לגרסה \u2066{revision.number}\u2069",
             "למשל: הלקוח ביקש זכוכית מחוסמת בחדר הילדים",
             text=self.notes.get(revision.number, revision.note),
         )

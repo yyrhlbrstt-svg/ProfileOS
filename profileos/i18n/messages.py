@@ -512,6 +512,29 @@ MESSAGES: dict[str, dict[str, str]] = {
         "it": "Inviati i rilievi rimasti sul telefono: {n}.",
         "es": "Se enviaron las mediciones que esperaban en el teléfono: {n}.",
     },
+    "mobile.not_saved": {
+        "en": "No signal, and the phone could not store it either — it is still in the form. Write it down.",
+        "he": "אין קליטה, וגם הטלפון לא הצליח לשמור — המידות עדיין בטופס. רשמו אותן בצד.",
+        "ar": "لا توجد إشارة، ولم يتمكن الهاتف من الحفظ أيضاً — القياسات ما زالت في النموذج. دوّنها.",
+        "ru": "Нет связи, и телефон не смог сохранить — размеры остались в форме. Запишите их.",
+        "it": "Nessun segnale e il telefono non ha potuto salvare — le misure sono ancora nel modulo. Annotatele.",
+        "es": "Sin señal y el teléfono tampoco pudo guardarlo — las medidas siguen en el formulario. Anótelas.",
+    },
+    "mobile.retry": {
+        "en": "Send again", "he": "שליחה שוב", "ar": "إرسال مجدداً", "ru": "Отправить снова",
+        "it": "Invia di nuovo", "es": "Enviar de nuevo",
+    },
+    "mobile.drop": {
+        "en": "Delete", "he": "מחיקה", "ar": "حذف", "ru": "Удалить", "it": "Elimina", "es": "Eliminar",
+    },
+    "mobile.drop_confirm": {
+        "en": "Delete this measurement from the phone? It never reached the office.",
+        "he": "למחוק את המדידה מהטלפון? היא לא הגיעה למשרד.",
+        "ar": "حذف هذا القياس من الهاتف؟ لم يصل إلى المكتب.",
+        "ru": "Удалить этот замер с телефона? Он не дошёл до офиса.",
+        "it": "Eliminare questo rilievo dal telefono? Non è mai arrivato in ufficio.",
+        "es": "¿Eliminar esta medición del teléfono? Nunca llegó a la oficina.",
+    },
     "mobile.not_accepted": {
         "en": "Not accepted by the office", "he": "לא התקבלה במשרד", "ar": "لم يقبلها المكتب",
         "ru": "Не принят офисом", "it": "Non accettato dall'ufficio", "es": "No aceptada por la oficina",

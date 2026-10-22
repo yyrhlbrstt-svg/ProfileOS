@@ -169,7 +169,7 @@ class Change:
         body = f"{self.hebrew_kind}: {self.description}"
         if self.detail:
             body += f" ({self.detail})"
-        return f"{body} · ⁦{sign}{self.effect:,.0f}⁩"
+        return f"{body} · {_amount(self.effect, sign=sign)}"
 
 
 @dataclass
@@ -278,6 +278,17 @@ def compare(earlier: Revision, later: Revision) -> Comparison:
             result.changes.append(Change(
                 "removed", key, old.description, old.total, 0.0,
                 detail=f"⁦{old.quantity:g}⁩ {old.unit}",
+            ))
+        elif old is not None and new is not None and old.description != new.description:
+            # The same code on a different line (a freehand code reused):
+            # what went and what came, never "nothing changed".
+            result.changes.append(Change(
+                "removed", key, old.description, old.total, 0.0,
+                detail=f"⁦{old.quantity:g}⁩ {old.unit}",
+            ))
+            result.changes.append(Change(
+                "added", key, new.description, 0.0, new.total,
+                detail=f"⁦{new.quantity:g}⁩ {new.unit}",
             ))
         elif old is not None and new is not None:
             if abs(old.quantity - new.quantity) > 1e-9:

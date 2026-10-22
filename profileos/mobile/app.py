@@ -279,6 +279,10 @@ def build_router(state: MobileState | None = None) -> Any:
         }
 
     # -- site measuring ----------------------------------------------------- #
+    import threading
+
+    _MEASURING = threading.Lock()
+
     def _when_taken(text: str) -> Any:
         """The phone's time for the measurement, if it is a believable one:
         not in the future, not older than a month."""
@@ -308,7 +312,14 @@ def build_router(state: MobileState | None = None) -> Any:
         x_device_token: str | None = Header(default=None),
     ) -> dict[str, Any]:
         device = device_for(x_device_id, x_device_token, "measure")
-        already = current().measurements.by_client_id(request.client_id.strip())
+        with _MEASURING:
+            return _add_measurement(request, device)
+
+    def _add_measurement(request: MeasurementRequest, device: Any) -> dict[str, Any]:
+        # One at a time: two copies of the same measurement arriving together
+        # (two tabs flushing on "online") must both see the first one.
+        client_id = request.client_id.strip()[:64]
+        already = current().measurements.by_client_id(client_id)
         if already is not None:
             return {
                 "reference": already.reference,
@@ -335,7 +346,7 @@ def build_router(state: MobileState | None = None) -> Any:
             note=request.note,
             measured_by=device.name,
             device=device.device_id,
-            client_id=request.client_id.strip()[:64],
+            client_id=client_id,
         )
         taken = _when_taken(request.measured_at)
         if taken is not None:
