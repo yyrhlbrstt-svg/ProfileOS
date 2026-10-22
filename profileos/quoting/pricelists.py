@@ -753,25 +753,11 @@ def load_price_lists() -> int:
 # --------------------------------------------------------------------------- #
 
 def job_materials(job: Any) -> list[Any]:
-    """The job's bill of materials, from its openings."""
-    from ..elements.builder import ElementBuilder
+    """The job's bill of materials, from its openings as the design page builds them."""
+    from ..projects.materials import build_job
     from .bom import build_bom
 
-    schedule = getattr(job, "schedule", None)
-    if schedule is None or not getattr(schedule, "openings", None):
-        return []
-    builds = []
-    for opening in schedule.openings:
-        # Built the way the design page builds it, so the codes are the
-        # series' own article numbers and match the supplier's list.
-        try:
-            builder = ElementBuilder.for_system(opening.system_id or schedule.system_id)
-        except Exception:  # noqa: BLE001 - the same fallback as the design page
-            builder = ElementBuilder()
-        try:
-            builds.append(builder.build(opening, sill_height=schedule.sill_height))
-        except Exception as exc:  # noqa: BLE001 - one opening, not the whole job
-            _log.info("Opening %s not built for pricing: %s", getattr(opening, "name", "?"), exc)
+    builds, _problems = build_job(job)
     if not builds:
         return []
     return build_bom(builds, project_id=job.job_id).sorted_lines()
@@ -940,6 +926,8 @@ def impact(book: PriceListBook, edition: PriceListEdition, jobs: Iterable[Any], 
         elif status in NOT_ORDERED_STATES:
             if edition.in_force() and edition.state == ListState.ACCEPTED:
                 continue  # already paying the new price
+            if getattr(job, "material_ordered", False):
+                continue  # bought already, at whatever it cost
             base = book.current(supplier)
             bucket = result.to_order
         else:

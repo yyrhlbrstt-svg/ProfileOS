@@ -1348,6 +1348,8 @@ class ProjectsPage(Page):
         menu = QMenu(more)
         menu.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
         for label, handler in (
+            ("הזמנת חומר מהספק…", self.order_material),
+            ("הזמנות חומר — אישור והגעה…", self.manage_material_orders),
             ("קבע ביקור ביומן", self.plan_visit_for_job),
             ("בקשת המלצה בגוגל", self.request_review),
             ("הצעת בדיקה שנתית", self.offer_checkup),
@@ -1390,6 +1392,11 @@ class ProjectsPage(Page):
         job = self._selected_job()
         self.show_costing(job)
         self.show_attachments(job)
+        self._show_summary(job)
+
+    def _show_summary(self, job: Any) -> None:
+        from ..projects import TRANSITIONS
+
         self.status_combo.clear()
         for widget in getattr(self, "_job_actions", []):
             widget.setEnabled(job is not None)
@@ -1411,11 +1418,113 @@ class ProjectsPage(Page):
         )
         if job.quote_total:
             lines.append(f"הצעה אחרונה: ⁦{job.quote_total:,.0f} ₪⁩ ({job.quoted_on})")
+        orders = [o for o in job.material_orders if o.state.value != "cancelled"]
+        if orders:
+            ordered = sum(o.total for o in orders)
+            waiting = [o for o in orders if o.open]
+            text = f"חומר: ⁦{len(orders)}⁩ הזמנות"
+            if ordered:
+                text += f" · ⁦{ordered:,.0f} ₪⁩ לפי המחירונים"
+                if job.quote_total:
+                    text += f" (⁦{ordered / job.quote_total * 100:.0f}%⁩ מההצעה)"
+            text += " · " + (f"⁦{len(waiting)}⁩ עוד לא הגיעו" if waiting else "הכול הגיע")
+            lines.append(text)
+        elif job.status.value in ("won", "in_production"):
+            lines.append("חומר: עוד לא הוזמן")
         self.job_summary.setText("  ·  ".join(lines[:1]) + "\n" + "\n".join(lines[1:]))
 
         for status in sorted(TRANSITIONS[job.status], key=lambda s: s.value):
             self.status_combo.addItem(status.hebrew, status.value)
         self.status_combo.setEnabled(self.status_combo.count() > 0)
+
+    # -- material ------------------------------------------------------------- #
+    def order_material(self) -> None:
+        """Work out the job's bars and fittings, price them, and send the order."""
+        from ..projects.materials import propose
+        from .background import run_in_background
+
+        job = self._selected_job()
+        if job is None:
+            self.status("בחר פרויקט מהרשימה")
+            return
+        if job.schedule is None or not job.schedule.openings:
+            self.report(ProfileOSError("בפרויקט אין פתחים מתוכננים — אין ממה לחשב חומר"),
+                        "אין מה להזמין")
+            return
+        self.status("מחשב מוטות ומחירים…")
+
+        def done(proposal: Any, error: BaseException | None) -> None:
+            if error is not None:
+                self.report(ProfileOSError(str(error)), "חישוב החומר נכשל")
+                return
+            self._send_material_order(job, proposal)
+
+        run_in_background(lambda: propose(job), done)
+
+    def _send_material_order(self, job: Any, proposal: Any) -> None:
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+
+        from ..branding import active_brand
+        from ..projects.materials import order_message, to_order
+        from ..sharing import whatsapp_link
+        from .money_dialogs import MaterialOrderDialog
+
+        dialog = MaterialOrderDialog(job, proposal, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        values = dialog.values()
+        order = to_order(values["lines"], supplier=values["supplier"],
+                         needed_by=values["needed_by"], note=values["note"])
+        try:
+            store = self._store()
+            fresh = store.load(job.job_id)  # the file as it is now, not as listed
+            fresh.material_orders.append(order)
+            fresh.touch()
+            store.save(fresh)
+        except Exception as exc:  # noqa: BLE001 - nothing is sent that is not kept
+            self.report(exc, "ההזמנה לא נשמרה — לא נשלחה")
+            return
+        if dialog.choice == MaterialOrderDialog.SEND:
+            message = order_message(order, brand_name=active_brand().display_name, job=fresh)
+            QDesktopServices.openUrl(QUrl(whatsapp_link("", message)))
+            self.status(f"ההזמנה נשמרה ונפתחה בוואטסאפ — בחרו את {order.supplier} ושלחו")
+        else:
+            self.status(f"ההזמנה ל{order.supplier} נרשמה בפרויקט")
+        self.refresh()
+
+    def manage_material_orders(self) -> None:
+        from .money_dialogs import MaterialOrdersDialog
+
+        job = self._selected_job()
+        if job is None:
+            self.status("בחר פרויקט מהרשימה")
+            return
+        dialog = MaterialOrdersDialog(job, self)
+        dialog.exec()
+        if not dialog.changes:
+            return
+        from datetime import date
+
+        from ..projects import MaterialOrderState
+
+        try:
+            store = self._store()
+            fresh = store.load(job.job_id)
+            by_id = {order.order_id: order for order in fresh.material_orders}
+            for order_id, state in dialog.changes:
+                order = by_id.get(order_id)
+                if order is None:
+                    continue
+                order.state = MaterialOrderState(state)
+                if order.state is MaterialOrderState.RECEIVED and not order.received_on:
+                    order.received_on = date.today().isoformat()
+            fresh.touch()
+            store.save(fresh)
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "העדכון לא נשמר")
+            return
+        self.refresh()
 
     # -- money ------------------------------------------------------------------ #
     def _cheques_for_accounts(self) -> list[Any]:
@@ -2126,6 +2235,11 @@ class ProjectsPage(Page):
         # showing its detail beats an empty panel that says nothing was chosen.
         if rows and not self.jobs_table.selectionModel().hasSelection():
             self.jobs_table.setCurrentCell(0, 0)
+        # The summary shows the job as just re-read: a selection that stayed
+        # on the same row would otherwise keep the copy from before. Only the
+        # summary — the costing is worked out when a job is chosen, not on
+        # every refresh.
+        self._show_summary(self._selected_job())
 
         pipeline = store.pipeline()
         open_count = sum(

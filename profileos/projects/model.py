@@ -301,6 +301,71 @@ class JobError(ValueError):
     """A job was asked to do something the shop's own rules forbid."""
 
 
+class MaterialOrderState(StrEnum):
+    """Where an order of material for the job stands with the supplier."""
+
+    SENT = "sent"
+    CONFIRMED = "confirmed"
+    RECEIVED = "received"
+    CANCELLED = "cancelled"
+
+    @property
+    def hebrew(self) -> str:
+        return {
+            "sent": "נשלחה", "confirmed": "אושרה על ידי הספק",
+            "received": "התקבלה", "cancelled": "בוטלה",
+        }[self.value]
+
+
+class MaterialOrderLine(RoundTrips):
+    """One thing ordered: so many bars of a profile, metres of gasket, units."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    code: str
+    description: str = ""
+    quantity: float
+    unit: str = "יח׳"
+    #: For bars: the stock length ordered, in millimetres.
+    length_mm: float = 0.0
+    #: Net of VAT and of the shop's discount, per unit as ordered. Zero when
+    #: the supplier's list did not price it — never a guess.
+    unit_price: float = 0.0
+    #: Which list the price came from.
+    price_source: str = ""
+
+    @property
+    def total(self) -> float:
+        return round(self.quantity * self.unit_price, 2)
+
+
+class MaterialOrder(RoundTrips):
+    """Material ordered for the job from one supplier."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    order_id: str = Field(default_factory=lambda: f"MO-{_short_id()}")
+    supplier: str
+    ordered_on: str = Field(default_factory=lambda: date.today().isoformat())
+    needed_by: str = ""
+    state: MaterialOrderState = MaterialOrderState.SENT
+    lines: list[MaterialOrderLine] = Field(default_factory=list)
+    received_on: str = ""
+    note: str = ""
+
+    @property
+    def total(self) -> float:
+        return round(sum(line.total for line in self.lines), 2)
+
+    @property
+    def unpriced(self) -> list[MaterialOrderLine]:
+        return [line for line in self.lines if line.unit_price <= 0]
+
+    @property
+    def open(self) -> bool:
+        return self.state in (MaterialOrderState.SENT, MaterialOrderState.CONFIRMED)
+
+
 class JobFile(RoundTrips):
     """One job: who it is for, what is in it, and where it stands."""
 
@@ -332,6 +397,8 @@ class JobFile(RoundTrips):
     payments: list[Payment] = Field(default_factory=list)
     invoices: list[InvoiceRecord] = Field(default_factory=list)
     progress_bills: list[ProgressBill] = Field(default_factory=list)
+    #: Material ordered from suppliers for this job.
+    material_orders: list[MaterialOrder] = Field(default_factory=list)
 
     #: A snapshot of the last quotation, so the job list can show money
     #: without repricing every job it displays.
@@ -366,6 +433,11 @@ class JobFile(RoundTrips):
         if self.schedule is None:
             return 0.0
         return sum(o.area * max(1, o.quantity) for o in self.schedule.openings)
+
+    @property
+    def material_ordered(self) -> bool:
+        """Whether material was ordered for it (and not every order cancelled)."""
+        return any(order.state != MaterialOrderState.CANCELLED for order in self.material_orders)
 
     def touch(self) -> None:
         self.updated = date.today().isoformat()

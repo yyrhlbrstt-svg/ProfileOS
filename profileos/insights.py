@@ -750,9 +750,56 @@ def _price_lists(context: dict[str, Any], today: date) -> list[Insight]:
     return found
 
 
+def _material(context: dict[str, Any], today: date) -> list[Insight]:
+    """Won jobs nobody ordered material for, and material that has not come."""
+    found: list[Insight] = []
+    jobs = context.get("jobs") or []
+    waiting: list[Any] = []
+    late: list[tuple[Any, Any]] = []
+    for job in jobs:
+        status = job.status.value
+        if status not in ("won", "in_production"):
+            continue
+        openings = getattr(getattr(job, "schedule", None), "openings", None)
+        if openings and not job.material_ordered:
+            since = _days_since(_status_since(job), today)
+            if since is None or since >= 2:
+                waiting.append(job)
+        for order in job.material_orders:
+            if not order.open or not order.needed_by:
+                continue
+            try:
+                needed = date.fromisoformat(order.needed_by[:10])
+            except ValueError:
+                continue
+            if needed < today:
+                late.append((job, order))
+    if waiting:
+        found.append(Insight(
+            "warning",
+            _count(len(waiting), "פרויקט שנסגר ועוד לא הוזמן לו חומר",
+                   "פרויקטים שנסגרו ועוד לא הוזמן להם חומר"),
+            "כל יום בלי הזמנה הוא יום בלוח הזמנים של ההתקנה: "
+            + _names(waiting, lambda job: f"⁦{job.job_id}⁩ {job.name}")
+            + ". בפרויקטים ← עוד פעולות ← הזמנת חומר.",
+            "Projects", "material-waiting:" + ",".join(sorted(j.job_id for j in waiting)),
+        ))
+    if late:
+        found.append(Insight(
+            "warning",
+            _count(len(late), "הזמנת חומר שלא הגיעה בזמן", "הזמנות חומר שלא הגיעו בזמן"),
+            "כדאי להתקשר לספק: " + _names(
+                late, lambda pair: f"{pair[1].supplier} ל⁦{pair[0].job_id}⁩ "
+                f"(נדרש עד ⁦{date.fromisoformat(pair[1].needed_by[:10]):%d/%m}⁩)"
+            ),
+            "Projects", "material-late:" + ",".join(sorted(o.order_id for _j, o in late)),
+        ))
+    return found
+
+
 RULES: tuple[Callable[[dict[str, Any], date], list[Insight]], ...] = (
     _data_safety, _jobs, _accounts, _field, _customers, _money, _service, _tasks,
-    _paperwork, _draft, _catalogue, _price_lists,
+    _paperwork, _draft, _catalogue, _price_lists, _material,
 )
 
 

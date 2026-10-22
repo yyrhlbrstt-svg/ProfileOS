@@ -722,4 +722,223 @@ class JobAccountDialog(QDialog):
         self._change(lambda job: job.invoices.append(invoice), "החשבונית")
 
 
-__all__ = ["JobAccountDialog", "PriceBookDialog", "PriceItemPicker"]
+# --------------------------------------------------------------------------- #
+# Ordering the job's material
+# --------------------------------------------------------------------------- #
+
+class MaterialOrderDialog(QDialog):
+    """What to order for the job, from whom, by when — checked before it goes.
+
+    The quantities are the cutting optimiser's whole bars and the bill of
+    materials; each can be changed (the rack may already hold three bars of
+    the frame) or left off. Prices are the list in force after the shop's
+    discount, and a line no list prices says so instead of showing a number.
+    """
+
+    #: The person chose to send it now (WhatsApp) or only to record it.
+    SEND, RECORD = "send", "record"
+
+    def __init__(self, job: Any, proposal: Any, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        from PySide6.QtCore import QDate
+        from PySide6.QtWidgets import QDateEdit, QTableWidget, QTableWidgetItem
+
+        self.setWindowTitle(f"הזמנת חומר — {job.name}")
+        self.setMinimumSize(820, 560)
+        self._proposal = proposal
+        self.choice = ""
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(*(METRICS.space(5),) * 4)
+        layout.setSpacing(METRICS.space(3))
+
+        grid = FieldGrid()
+        self.supplier = QComboBox()
+        self.supplier.setEditable(True)
+        self.supplier.addItems(proposal.suppliers())
+        self.supplier.lineEdit().setPlaceholderText("שם הספק")
+        self.needed_by = QDateEdit()
+        self.needed_by.setCalendarPopup(True)
+        self.needed_by.setDisplayFormat("dd/MM/yyyy")
+        self.needed_by.setDate(QDate.currentDate().addDays(7))
+        self.note = QLineEdit()
+        self.note.setPlaceholderText("הערה לספק: צבע, אספקה לאתר, איש קשר…")
+        grid.add("ספק", self.supplier)
+        grid.add("נדרש עד", self.needed_by)
+        grid.add("הערה", self.note)
+        layout.addWidget(grid)
+
+        self.table = QTableWidget(len(proposal.lines), 6)
+        self.table.setHorizontalHeaderLabels(["להזמין", "מק״ט", "פריט", "כמות", "מחיר ליחידה", "ספק"])
+        self.table.verticalHeader().setVisible(False)
+        self.table.horizontalHeader().setStretchLastSection(True)
+        for row, line in enumerate(proposal.lines):
+            tick = QTableWidgetItem()
+            tick.setFlags(Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled)
+            tick.setCheckState(Qt.CheckState.Checked)
+            self.table.setItem(row, 0, tick)
+            for column, text in (
+                (1, line.code),
+                (2, " · ".join(part for part in (
+                    line.description if line.description != line.code else "",
+                    f"מוטות של ⁦{line.length_mm / 1000:g}⁩ מ׳" if line.unit == "bar" and line.length_mm
+                    else f"ב{line.unit_hebrew}",
+                ) if part)),
+                (4, f"⁦{line.unit_price:,.2f} ₪⁩" if line.unit_price > 0 else "אין במחירון"),
+                (5, line.supplier or "—"),
+            ):
+                item = QTableWidgetItem(text)
+                item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+                self.table.setItem(row, column, item)
+            quantity = QTableWidgetItem(f"{line.quantity:g}")
+            quantity.setToolTip(f"ב{line.unit_hebrew} — אפשר לשנות")
+            self.table.setItem(row, 3, quantity)
+        self.table.resizeColumnsToContents()
+        self.table.itemChanged.connect(lambda _item: self._update_total())
+        layout.addWidget(self.table, 1)
+
+        self.summary = QLabel("")
+        self.summary.setObjectName("Hint")
+        self.summary.setWordWrap(True)
+        layout.addWidget(self.summary)
+        warnings = list(proposal.warnings)
+        warnings.append("הזכוכית מוזמנת לפי מידה בנפרד, ממסך ״זכוכית״.")
+        hint = QLabel("\n".join(warnings))
+        hint.setObjectName("Hint")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+
+        buttons = QHBoxLayout()
+        send = QPushButton("שליחה לספק בוואטסאפ")
+        send.setObjectName("WhatsApp")
+        send.clicked.connect(lambda: self._finish(self.SEND))
+        record = QPushButton("רישום בלי שליחה")
+        record.setToolTip("כבר הוזמן בטלפון: רק לרשום בפרויקט")
+        record.clicked.connect(lambda: self._finish(self.RECORD))
+        cancel = QPushButton("ביטול")
+        cancel.clicked.connect(self.reject)
+        buttons.addWidget(send)
+        buttons.addWidget(record)
+        buttons.addStretch(1)
+        buttons.addWidget(cancel)
+        layout.addLayout(buttons)
+        self._update_total()
+
+    def _quantity(self, row: int) -> float | None:
+        from ..migration.reader import to_number
+
+        item = self.table.item(row, 3)
+        value = to_number(item.text() if item is not None else "")
+        return value if value is not None and value >= 0 else None
+
+    def chosen(self) -> list[Any]:
+        """The lines ticked, with the quantities as typed."""
+        from dataclasses import replace
+
+        lines = []
+        for row, line in enumerate(self._proposal.lines):
+            tick = self.table.item(row, 0)
+            quantity = self._quantity(row)
+            if tick is None or tick.checkState() != Qt.CheckState.Checked or not quantity:
+                continue
+            lines.append(replace(line, quantity=quantity))
+        return lines
+
+    def _update_total(self) -> None:
+        lines = self.chosen()
+        total = sum(line.total for line in lines)
+        unpriced = sum(1 for line in lines if line.unit_price <= 0)
+        bad = [self.table.item(r, 1).text() for r in range(self.table.rowCount())
+               if self._quantity(r) is None]
+        count = "שורה אחת" if len(lines) == 1 else f"⁦{len(lines)}⁩ שורות"
+        text = f"{count} · לפי המחירונים: ⁦{total:,.0f} ₪⁩ לפני מע״מ, אחרי ההנחה"
+        if unpriced:
+            text += (" · שורה אחת בלי מחיר במחירון" if unpriced == 1
+                     else f" · ⁦{unpriced}⁩ שורות בלי מחיר במחירון") + " — הספק יתמחר"
+        if bad:
+            text += " · כמות לא תקינה: " + ", ".join(f"⁦{code}⁩" for code in bad[:3])
+        self.summary.setText(text)
+
+    def _finish(self, choice: str) -> None:
+        if not self.supplier.currentText().strip():
+            _warn(self, "חסר ספק", ValueError("כתבו למי ההזמנה"))
+            return
+        if not self.chosen():
+            _warn(self, "אין מה להזמין", ValueError("סמנו לפחות שורה אחת עם כמות"))
+            return
+        self.choice = choice
+        self.accept()
+
+    def values(self) -> dict[str, Any]:
+        return {
+            "supplier": self.supplier.currentText().strip(),
+            "needed_by": self.needed_by.date().toString("yyyy-MM-dd"),
+            "note": self.note.text().strip(),
+            "lines": self.chosen(),
+        }
+
+
+class MaterialOrdersDialog(QDialog):
+    """The job's orders, and what came of each: confirmed, received, cancelled."""
+
+    def __init__(self, job: Any, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle(f"הזמנות חומר — {job.name}")
+        self.setMinimumSize(720, 380)
+        self._orders = list(job.material_orders)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(*(METRICS.space(5),) * 4)
+        layout.setSpacing(METRICS.space(3))
+        self.table = DataTable(
+            ["הזמנה", "ספק", "נשלחה", "נדרש עד", "סכום", "מצב"],
+            empty_text="עוד לא הוזמן חומר לפרויקט",
+        )
+        layout.addWidget(self.table, 1)
+        self._fill()
+        buttons = QHBoxLayout()
+        self.actions: dict[str, QPushButton] = {}
+        for state, label in (("confirmed", "הספק אישר"), ("received", "החומר הגיע"),
+                             ("cancelled", "בוטלה")):
+            button = QPushButton(label)
+            button.clicked.connect(lambda _c=False, s=state: self._set(s))
+            buttons.addWidget(button)
+            self.actions[state] = button
+        buttons.addStretch(1)
+        close = QPushButton("סגירה")
+        close.clicked.connect(self.accept)
+        buttons.addWidget(close)
+        layout.addLayout(buttons)
+        #: (order_id, new state) chosen here, applied by the page to the job on disk.
+        self.changes: list[tuple[str, str]] = []
+
+    def _fill(self) -> None:
+        from datetime import date
+
+        def day(text: str) -> str:
+            try:
+                return f"{date.fromisoformat(text[:10]):%d/%m/%Y}"
+            except ValueError:
+                return text or "—"
+
+        self.table.set_rows([
+            [order.order_id, order.supplier, day(order.ordered_on), day(order.needed_by),
+             _money(order.total), order.state.hebrew]
+            for order in self._orders
+        ])
+
+    def _set(self, state: str) -> None:
+        from ..projects import MaterialOrderState
+
+        rows = self.table.selectionModel()
+        if rows is None or not rows.selectedRows():
+            _warn(self, "לא נבחרה הזמנה", ValueError("בחרו הזמנה מהרשימה"))
+            return
+        order = self._orders[rows.selectedRows()[0].row()]
+        order.state = MaterialOrderState(state)
+        self.changes.append((order.order_id, state))
+        self._fill()
+
+
+__all__ = [
+    "JobAccountDialog", "MaterialOrderDialog", "MaterialOrdersDialog", "PriceBookDialog",
+    "PriceItemPicker",
+]
