@@ -1348,6 +1348,7 @@ class ProjectsPage(Page):
         menu = QMenu(more)
         menu.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
         for label, handler in (
+            ("שליחת היתרה ללקוח בוואטסאפ", self.send_balance),
             ("הזמנת חומר מהספק…", self.order_material),
             ("הזמנות חומר — אישור והגעה…", self.manage_material_orders),
             ("קבע ביקור ביומן", self.plan_visit_for_job),
@@ -1436,6 +1437,43 @@ class ProjectsPage(Page):
         for status in sorted(TRANSITIONS[job.status], key=lambda s: s.value):
             self.status_combo.addItem(status.hebrew, status.value)
         self.status_combo.setEnabled(self.status_combo.count() > 0)
+
+    # -- money owed ------------------------------------------------------------ #
+    def send_balance(self) -> None:
+        """What the customer still owes, as one WhatsApp message from the records."""
+        from datetime import date
+
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+
+        from ..branding import active_brand
+        from ..core.config import get_settings
+        from ..projects.account import job_account
+        from ..sharing import balance_message, customer_phone, whatsapp_link
+
+        job = self._selected_job()
+        if job is None:
+            self.status("בחר פרויקט מהרשימה")
+            return
+        account = job_account(job, self._cheques_for_accounts())
+        if account.uncovered <= 0.5:
+            self.status(f"{job.job_id}: אין יתרה פתוחה — " + account.describe())
+            return
+        message = balance_message(
+            brand_name=active_brand().display_name, customer_name=job.customer_name,
+            job_name=job.name, account=account, reminders=len(job.balance_reminders),
+            payment_note=getattr(get_settings(), "payment_note", "") or "",
+        )
+        try:
+            store = self._store()
+            fresh = store.load(job.job_id)
+            fresh.balance_reminders.append(date.today().isoformat())
+            store.save(fresh)
+        except Exception as exc:  # noqa: BLE001 - the message still goes; said
+            self.report(exc, "ההודעה נפתחה, אבל תאריך השליחה לא נרשם בפרויקט")
+        QDesktopServices.openUrl(QUrl(whatsapp_link(customer_phone(job), message)))
+        self.status(f"נפתח וואטסאפ עם היתרה של {job.job_id} — בדקו ושלחו")
+        self.refresh()
 
     # -- material ------------------------------------------------------------- #
     def order_material(self) -> None:
@@ -1840,6 +1878,17 @@ class ProjectsPage(Page):
         except Exception as exc:  # noqa: BLE001
             self.report(exc, "לא ניתן לעדכן את הסטטוס")
             return
+        if target in (JobStatus.WON, JobStatus.LOST):
+            # The customer decided: the quotation's chase calls are over.
+            try:
+                from ..projects.followups import Outcome
+
+                self._task_book().settle_quote(
+                    job.job_id, Outcome.DONE if target is JobStatus.WON else Outcome.LOST,
+                    result="נסגר" if target is JobStatus.WON else f"לא נסגר: {reason}".strip(": "),
+                )
+            except Exception as exc:  # noqa: BLE001 - the status is saved either way
+                self.report(exc, "הסטטוס עודכן, אבל משימות המעקב על ההצעה לא נסגרו")
         if self.session.job is not None and self.session.job.job_id == job.job_id:
             self.session.set_job(job)
         self.refresh()
@@ -2202,13 +2251,38 @@ class ProjectsPage(Page):
         self._all_jobs = list(self._jobs)
         needle = self.search.text().strip().lower()
         if needle:
-            self._jobs = [
-                job for job in self._jobs
+            # A customer on the phone says their number before their name:
+            # three digits or more are matched against the customer's phones.
+            import re as _re
+
+            digits = _re.sub(r"\D", "", needle)
+            phones: dict[str, str] = {}
+            if len(digits) >= 3:
+                try:
+                    from ..projects import default_customers
+
+                    for customer in default_customers().all():
+                        phones[customer.customer_id] = _re.sub(
+                            r"\D", "", " ".join(str(v) for v in (
+                                getattr(customer, "phone", ""), getattr(customer, "mobile", ""),
+                                getattr(customer, "phone2", ""),
+                            ) if v)
+                        )
+                except Exception as exc:  # noqa: BLE001 - names still match
+                    _log.warning("Customers unreadable for phone search: %s", exc)
+
+            def matches(job: Any) -> bool:
                 if needle in " ".join((
-                    job.job_id, job.name, job.customer_name,
-                    job.site_address, job.reference,
-                )).lower()
-            ]
+                    job.job_id, job.name, job.customer_name, job.site_address, job.reference,
+                )).lower():
+                    return True
+                number = phones.get(job.customer_id, "")
+                local = digits[3:] if digits.startswith("972") else digits.lstrip("0")
+                return len(digits) >= 3 and bool(number) and (
+                    digits in number or (local and local in number.lstrip("0"))
+                )
+
+            self._jobs = [job for job in self._jobs if matches(job)]
         wanted_trade = self.trade_filter.currentData() if hasattr(self, "trade_filter") else ""
         if wanted_trade:
             from ..projects import Trade
@@ -4697,6 +4771,18 @@ class QuotePage(Page):
                     "ההצעה שעל המסך תומחרה לפרויקט אחר — תמחרו מחדש לפרויקט הפתוח"
                 )
             job = self.session.save_design_to_job(store)
+            if job.status in (JobStatus.WON, JobStatus.IN_PRODUCTION, JobStatus.INSTALLED) \
+                    and job.quote_total:
+                # The price the customer agreed to is not changed by printing
+                # the quotation again: a change after the deal is an extra,
+                # agreed and recorded as one.
+                agreed = job.quote_total
+                if abs(float(totals["net"]) - agreed) > 0.5:
+                    self.status(
+                        f"ההצעה הודפסה. הסכום שסוכם (⁦{agreed:,.0f} ₪⁩) לא השתנה — "
+                        "שינוי מחיר אחרי סגירה רושמים כתוספת בחשבון הפרויקט."
+                    )
+                return
             job.record_quote(float(totals["net"]), self.draft.quotation.currency)
             # The draft's work lines replace exactly the lines it was started
             # with. A quoted line added to the job since (in its account) is
@@ -4739,9 +4825,12 @@ class QuotePage(Page):
         # promises — an operator should not have to remember a second click
         # on Home for the reminders to exist at all.
         try:
+            from ..projects import JobStatus
             from ..projects.followups import default_tasks
 
-            default_tasks().chase_quote(job)
+            # Only a quotation still waiting for an answer is chased.
+            if job.status is JobStatus.QUOTED:
+                default_tasks().chase_quote(job)
         except Exception:  # noqa: BLE001 - the quotation itself already went out
             _log.exception("Could not schedule follow-ups for %s", job.job_id)
 

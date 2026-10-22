@@ -399,6 +399,9 @@ class JobFile(RoundTrips):
     progress_bills: list[ProgressBill] = Field(default_factory=list)
     #: Material ordered from suppliers for this job.
     material_orders: list[MaterialOrder] = Field(default_factory=list)
+    #: Days the balance was sent to the customer, so the next one knows it is
+    #: a second reminder and the home page knows it was asked for.
+    balance_reminders: list[str] = Field(default_factory=list)
 
     #: A snapshot of the last quotation, so the job list can show money
     #: without repricing every job it displays.

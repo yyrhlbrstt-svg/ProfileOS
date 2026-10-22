@@ -284,6 +284,41 @@ def catalogue_change_message(edition: Any, diff: Any, *, brand_name: str,
     return "\n".join(lines).rstrip()
 
 
+def balance_message(*, brand_name: str, customer_name: str = "", job_name: str = "",
+                    account: Any, reminders: int = 0, payment_note: str = "") -> str:
+    """What is still owed on a finished job, laid out so it cannot be argued.
+
+    Every figure is from the job's own records — the agreed price, the extras
+    the customer approved, what came in, the cheques still to clear — so the
+    customer sees the same sum the shop sees. A second reminder says it is
+    one, politely; it never threatens.
+    """
+    def money(value: float) -> str:
+        return f"⁦{value:,.0f} ₪⁩"
+
+    lines = [_greeting(customer_name), ""]
+    lines.append(
+        ("תזכורת נוספת לגבי " if reminders else "לגבי ")
+        + (f"העבודה ״{job_name}״:" if job_name else "העבודה שהסתיימה:")
+    )
+    lines.append("")
+    lines.append(f"סכום העבודה כולל מע״מ: {money(account.total_gross)}")
+    if account.extras_net:
+        lines.append(f"  מתוכו תוספות שאושרו: {money(account.extras_net)} לפני מע״מ")
+    if account.paid or account.withheld or account.cleared:
+        lines.append(f"שולם: {money(account.received)}")
+    if account.in_cheques:
+        lines.append(f"בצ׳קים שטרם נפרעו: {money(account.in_cheques)}")
+    lines.append(f"יתרה לתשלום: {money(account.uncovered)}")
+    lines.append("")
+    if payment_note:
+        lines.append(payment_note)
+        lines.append("")
+    lines.append("נשמח להסדיר — ואם משהו לא ברור, רק תגידו ונעבור על זה יחד.")
+    lines += ["", brand_name]
+    return "\n".join(lines)
+
+
 def cheque_message(
     *,
     brand_name: str,
@@ -298,11 +333,11 @@ def cheque_message(
     lines = [_greeting(customer_name), ""]
     if bounced:
         lines.append(
-            f"הצ׳ק על סך {amount:,.0f} ₪ לתאריך {when} חזר מהבנק."
+            f"הצ׳ק על סך ⁦{amount:,.0f} ₪⁩ לתאריך ⁦{when}⁩ חזר מהבנק."
         )
         lines.append("נשמח לתאם איתך תשלום חלופי.")
     else:
-        lines.append(f"תזכורת ידידותית: הצ׳ק על סך {amount:,.0f} ₪ ייפרע ב-{when}.")
+        lines.append(f"תזכורת ידידותית: הצ׳ק על סך ⁦{amount:,.0f} ₪⁩ ייפרע ב־⁦{when}⁩.")
         lines.append("תודה!")
     lines += ["", brand_name]
     if phone:
@@ -347,6 +382,7 @@ def customer_phone(job: Any) -> str:
 
 __all__ = [
     "cheque_message",
+    "balance_message",
     "catalogue_change_message",
     "checkup_message",
     "crew_plan_message",

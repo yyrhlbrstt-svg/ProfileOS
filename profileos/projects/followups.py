@@ -393,6 +393,22 @@ class TaskBook(MergingBook):
         _log.info("Scheduled %d follow-ups for %s", len(made), subject or "-")
         return made
 
+    def settle_quote(self, job_id: str, outcome: Outcome, *, result: str = "") -> list[Task]:
+        """Close the quotation's chase calls: the customer decided.
+
+        A job that was won last week must not come up as "call him about the
+        quote" this week — that call is the one that embarrasses the shop.
+        """
+        subject = f"job:{job_id}"
+        closed = []
+        for task in list(self.open_tasks):
+            if task.kind is Kind.CHASE_QUOTE and task.about == subject:
+                task.close(outcome, result=result)
+                closed.append(task)
+        if closed:
+            self.save()
+        return closed
+
     def unchased_quotes(self, jobs: Iterable[Any]) -> list[Any]:
         """Quotations sitting with a customer that nobody is chasing.
 

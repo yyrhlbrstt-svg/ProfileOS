@@ -496,6 +496,16 @@ def _draft(context: dict[str, Any], today: date) -> list[Insight]:
     )]
 
 
+def _last_reminder(job: Any, today: date) -> str:
+    sent = list(getattr(job, "balance_reminders", []) or [])
+    if not sent:
+        return " (עוד לא נשלחה תזכורת)"
+    days = _days_since(sent[-1], today)
+    if days is None:
+        return ""
+    return " (תזכורת נשלחה היום)" if days == 0 else f" (תזכורת לפני ⁦{days}⁩ ימים)"
+
+
 def _accounts(context: dict[str, Any], today: date) -> list[Insight]:
     """Money a job is still owed, extras nobody agreed, invoices that will bounce."""
     from .projects import JobStatus
@@ -520,7 +530,8 @@ def _accounts(context: dict[str, Any], today: date) -> list[Insight]:
                    "פרויקטים הותקנו ולא שולמו במלואם"),
             f"נותר לגבות ⁦{total:,.0f} ₪⁩: "
             + _names(owing, lambda pair: f"{pair[0].customer_name or pair[0].name} "
-                     f"⁦{pair[1].uncovered:,.0f} ₪⁩"),
+                     f"⁦{pair[1].uncovered:,.0f} ₪⁩" + _last_reminder(pair[0], today))
+            + ". בפרויקטים ← עוד פעולות ← שליחת היתרה ללקוח.",
             "Projects", "owing:" + ",".join(
                 sorted(f"{job.job_id}={account.uncovered:.0f}" for job, account in owing)
             ),

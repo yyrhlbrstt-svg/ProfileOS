@@ -1,0 +1,186 @@
+"""Small things that cost the shop calls, money or face every week."""
+
+from __future__ import annotations
+
+import os
+from datetime import date, timedelta
+
+import pytest
+
+from profileos.projects import JobFile, JobStatus
+
+
+@pytest.fixture
+def shop(tmp_path, monkeypatch):
+    from profileos.core.config import reload_settings
+
+    data = tmp_path / "data"
+    monkeypatch.setenv("PROFILEOS_DATA_DIR", str(data))
+    reload_settings()
+    data.mkdir(parents=True, exist_ok=True)
+    yield data
+    monkeypatch.delenv("PROFILEOS_DATA_DIR", raising=False)
+    reload_settings()
+
+
+class TestQuoteChasesEndWithTheDecision:
+    def test_winning_closes_the_chase_calls(self, shop):
+        from profileos.projects.followups import Outcome, default_tasks
+
+        job = JobFile(job_id="J-1", name="וילה", status=JobStatus.QUOTED)
+        book = default_tasks()
+        made = book.chase_quote(job)
+        assert made and len(book.about("job:J-1")) == len(made)
+        closed = book.settle_quote("J-1", Outcome.DONE, result="נסגר")
+        assert len(closed) == len(made)
+        assert not [t for t in default_tasks().open_tasks if t.about == "job:J-1"]
+
+    def test_from_the_projects_page(self, shop, monkeypatch):
+        pytest.importorskip("PySide6")
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PySide6.QtCore import QCoreApplication
+        from PySide6.QtWidgets import QApplication
+
+        from profileos.projects import default_store
+        from profileos.projects.followups import default_tasks
+        from profileos.ui.main_window import MainWindow
+        from profileos.ui.theme import LIGHT
+
+        QApplication.instance() or QApplication([])
+        job = JobFile(job_id="J-2026-0001", name="וילה", status=JobStatus.QUOTED)
+        default_store().save(job)
+        default_tasks().chase_quote(job)
+        window = MainWindow(LIGHT)
+        page = window.go_to_page("Projects")
+        page.refresh()
+        page.jobs_table.selectRow(0)
+        page.status_combo.setCurrentIndex(page.status_combo.findData("won"))
+        page.advance_status()
+        assert default_store().load("J-2026-0001").status is JobStatus.WON
+        assert not [t for t in default_tasks().open_tasks if t.about == "job:J-2026-0001"]
+        window.close()
+        window.deleteLater()
+        QCoreApplication.processEvents()
+
+
+class TestMessages:
+    def test_cheque_figures_are_isolated(self):
+        from profileos.sharing import cheque_message
+
+        text = cheque_message(customer_name="משה", amount=12500, due=date(2026, 11, 1),
+                              brand_name="דאדי", bounced=True)
+        assert "⁦12,500 ₪⁩" in text and "⁦01/11/2026⁩" in text
+
+    def test_the_balance_from_the_records(self):
+        from types import SimpleNamespace
+
+        from profileos.sharing import balance_message
+
+        account = SimpleNamespace(total_gross=59000.0, extras_net=2000.0, paid=30000.0,
+                                  withheld=0.0, cleared=10000.0, received=40000.0,
+                                  in_cheques=5000.0, uncovered=14000.0)
+        first = balance_message(brand_name="דאדי", customer_name="משה", job_name="וילה",
+                                account=account, payment_note="העברה לחשבון 12-345-678")
+        assert "⁦59,000 ₪⁩" in first and "⁦40,000 ₪⁩" in first
+        assert "⁦5,000 ₪⁩" in first and "יתרה לתשלום: ⁦14,000 ₪⁩" in first
+        assert "תזכורת נוספת" not in first and "12-345-678" in first
+        second = balance_message(brand_name="דאדי", account=account, reminders=1)
+        assert "תזכורת נוספת" in second
+
+
+def test_sending_the_balance_is_recorded_and_shown(shop, monkeypatch):
+    pytest.importorskip("PySide6")
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtCore import QCoreApplication
+    from PySide6.QtGui import QDesktopServices
+    from PySide6.QtWidgets import QApplication
+
+    from profileos.insights import scan
+    from profileos.projects import Payment, default_store
+    from profileos.ui.main_window import MainWindow
+    from profileos.ui.theme import LIGHT
+
+    QApplication.instance() or QApplication([])
+    opened: list[str] = []
+    monkeypatch.setattr(QDesktopServices, "openUrl", lambda url: opened.append(url.toString()))
+    job = JobFile(job_id="J-2026-0001", name="וילה", status=JobStatus.INSTALLED,
+                  customer_name="משה")
+    job.quote_total = 10000.0
+    job.payments.append(Payment(amount=5000.0))
+    default_store().save(job)
+    owing = next(i for i in scan() if "לא שולם" in i.title)
+    assert "עוד לא נשלחה תזכורת" in owing.detail
+
+    window = MainWindow(LIGHT)
+    page = window.go_to_page("Projects")
+    page.refresh()
+    page.jobs_table.selectRow(0)
+    page.send_balance()
+    assert opened and "wa.me" in opened[0]
+    assert default_store().load("J-2026-0001").balance_reminders == [date.today().isoformat()]
+    owing = next(i for i in scan() if "לא שולם" in i.title)
+    assert "תזכורת נשלחה היום" in owing.detail
+    window.close()
+    window.deleteLater()
+    QCoreApplication.processEvents()
+
+
+def test_a_job_is_found_by_the_customers_phone(shop):
+    pytest.importorskip("PySide6")
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtCore import QCoreApplication
+    from PySide6.QtWidgets import QApplication
+
+    from profileos.projects import default_customers, default_store
+    from profileos.ui.main_window import MainWindow
+    from profileos.ui.theme import LIGHT
+
+    QApplication.instance() or QApplication([])
+    customers = default_customers()
+    customer = customers.add("משה כהן", phone="052-123-4567")
+    store = default_store()
+    store.save(JobFile(job_id="J-2026-0001", name="וילה", customer_id=customer.customer_id,
+                       customer_name="משה כהן"))
+    store.save(JobFile(job_id="J-2026-0002", name="משרד", customer_name="אחר"))
+    window = MainWindow(LIGHT)
+    page = window.go_to_page("Projects")
+    for typed in ("1234567", "052-1234", "+972521234567"):
+        page.search.setText(typed)
+        page.refresh()
+        assert [job.job_id for job in page._jobs] == ["J-2026-0001"], typed
+    window.close()
+    window.deleteLater()
+    QCoreApplication.processEvents()
+
+
+def test_reprinting_a_won_jobs_quote_keeps_the_agreed_price(shop):
+    pytest.importorskip("PySide6")
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtCore import QCoreApplication
+    from PySide6.QtWidgets import QApplication
+
+    from profileos.projects import Trade, default_store
+    from profileos.projects.followups import default_tasks
+    from profileos.ui.main_window import MainWindow
+    from profileos.ui.theme import LIGHT
+
+    QApplication.instance() or QApplication([])
+    store = default_store()
+    job = store.create("דירה", trade=Trade.PLUMBING)
+    job = store.load(job.job_id)
+    job.record_quote(10_000.0)
+    job.advance(JobStatus.QUOTED)
+    job.advance(JobStatus.WON)
+    store.save(job)
+    window = MainWindow(LIGHT)
+    window.session.set_job(store.load(job.job_id))
+    quote = window.go_to_page("Quotation")
+    quote.start_draft()
+    quote.draft.add_extra_line("עבודה", unit_price=12_500)
+    quote._record_in_job()
+    saved = store.load(job.job_id)
+    assert saved.quote_total == 10_000.0 and saved.status is JobStatus.WON
+    assert not [t for t in default_tasks().open_tasks if t.about == f"job:{job.job_id}"]
+    window.close()
+    window.deleteLater()
+    QCoreApplication.processEvents()
