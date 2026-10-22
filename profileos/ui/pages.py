@@ -6797,8 +6797,12 @@ class CataloguePage(Page):
         accept.clicked.connect(self.accept_edition)
         reject = QPushButton("דחייה")
         reject.clicked.connect(self.reject_edition)
+        tell = QPushButton("שליחה לצוות…")
+        tell.setToolTip("סיכום השינויים בוואטסאפ — למנהל העבודה ולמשרד")
+        tell.clicked.connect(self.send_edition)
         buttons.addWidget(accept)
         buttons.addWidget(reject)
+        buttons.addWidget(tell)
         buttons.addStretch(1)
         editions.add_layout(buttons)
         row = QSplitter(Qt.Orientation.Horizontal)
@@ -6939,17 +6943,40 @@ class CataloguePage(Page):
         row = model.selectedRows()[0].row()
         return ids[row] if row < len(ids) else ""
 
-    def _show_edition(self) -> None:
+    def _edition_facts(self, edition: Any) -> tuple[Any, list[Any], list[Any], list[Any]]:
+        """The comparison, the open jobs, the cutting figures and the stock it touches."""
         from ..catalogue.editions import (
-            EditionState, confirmation_hits, default_editions, open_jobs_on,
+            confirmation_hits, default_editions, open_jobs_on, stock_of_removed,
         )
 
+        diff = default_editions().diff(edition)
+        affected = open_jobs_on(edition.system_id, self._open_jobs())
+        hits: list[Any] = []
+        if edition.system_id:
+            try:
+                from ..systems import default_confirmations
+
+                hits = confirmation_hits(diff, default_confirmations().get(edition.system_id))
+            except Exception as exc:  # noqa: BLE001 - the rest still shows
+                _log.warning("Confirmations unreadable: %s", exc)
+        stock: list[Any] = []
+        if diff.removed:
+            try:
+                from ..erp.stocktake import default_stocktakes
+
+                stock = stock_of_removed(diff, default_stocktakes())
+            except Exception as exc:  # noqa: BLE001
+                _log.warning("Stocktakes unreadable: %s", exc)
+        return diff, affected, hits, stock
+
+    def _show_edition(self) -> None:
+        from ..catalogue.editions import EditionState, default_editions
+
         edition_id = self._selected(self.editions_table, self._edition_ids)
-        book = default_editions()
-        edition = book.get(edition_id)
+        edition = default_editions().get(edition_id)
         if edition is None:
             return
-        diff = book.diff(edition)
+        diff, affected, hits, stock = self._edition_facts(edition)
         lines = [
             f"{edition.label} — {edition.source}",
             f"התקבלה ⁦{_short_date(edition.received_on)}⁩"
@@ -6964,20 +6991,42 @@ class CataloguePage(Page):
             )
         lines.append("")
         lines += diff.lines()
-        affected = open_jobs_on(edition.system_id, self._open_jobs())
         if affected:
             lines.append("פרויקטים פתוחים על הסדרה")
-            lines += [f"  • {job.job_id} — {job.name}" for job in affected]
+            lines += [f"  • ⁦{job.job_id}⁩ — {job.name}" for job in affected]
             lines.append("")
-        if edition.system_id:
-            from ..systems import default_confirmations
+        if hits:
+            lines.append("נתוני החיתוך שאושרו לסדרה נוגעים בפרופילים שהשתנו")
+            lines += [f"  • {hit.describe()}" for hit in hits]
+            lines.append("אחרי האישור צריך להזין אותם שוב מהקטלוג החדש.")
+            lines.append("")
+        if stock:
+            lines.append("במלאי מפרופילים שיצאו מהקטלוג")
+            lines += [f"  • {left.describe()}" for left in stock]
+        self.edition_detail.setPlainText("\n".join(lines).rstrip())
 
-            hits = confirmation_hits(diff, default_confirmations().get(edition.system_id))
-            if hits:
-                lines.append("נתוני החיתוך שאושרו לסדרה נוגעים בפרופילים שהשתנו")
-                lines += [f"  • {hit.describe()}" for hit in hits]
-                lines.append("אחרי האישור צריך להזין אותם שוב מהקטלוג החדש.")
-        self.edition_detail.setPlainText("\n".join(lines))
+    def send_edition(self) -> None:
+        """The changes, as a WhatsApp message to whoever the shop chooses."""
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+
+        from ..branding import active_brand
+        from ..catalogue.editions import default_editions
+        from ..sharing import catalogue_change_message, whatsapp_link
+
+        edition = default_editions().get(
+            self._selected(self.editions_table, self._edition_ids)
+        )
+        if edition is None:
+            self.report(ProfileOSError("בחרו מהדורה מהרשימה"), "לא נבחרה מהדורה")
+            return
+        diff, affected, hits, stock = self._edition_facts(edition)
+        message = catalogue_change_message(
+            edition, diff, brand_name=active_brand().display_name,
+            jobs=affected, hits=hits, stock=stock,
+        )
+        QDesktopServices.openUrl(QUrl(whatsapp_link(None, message)))
+        self.status("ההודעה נפתחה בוואטסאפ — בחרו למי לשלוח")
 
     # -- sources -------------------------------------------------------------- #
     def add_source(self, kind: str) -> None:

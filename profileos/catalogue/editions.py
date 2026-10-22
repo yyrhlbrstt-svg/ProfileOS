@@ -654,6 +654,56 @@ def stale_confirmation(book: EditionBook, system_id: str, confirmation: Any) -> 
     return list(unique.values())
 
 
+@dataclass(frozen=True)
+class StockLeft:
+    """Bars of an article the supplier dropped, still on the rack."""
+
+    profile_id: str
+    name: str
+    quantity: float
+    unit: str
+    counted_on: str
+
+    def describe(self) -> str:
+        unit = self.unit or "יח׳"
+        return (
+            f"⁦{self.profile_id}⁩ — נספרו ⁦{self.quantity:g}⁩ {unit} "
+            f"בספירה של ⁦{self.counted_on}⁩"
+        )
+
+
+def stock_of_removed(diff: EditionDiff, stocktakes: Iterable[Any]) -> list[StockLeft]:
+    """What the last stocktake found of each article this edition drops.
+
+    A dropped profile is not only a drawing problem: bars of it are money on
+    the rack that no future job will be drawn on. The latest posted count of
+    each code says how many — figures from the shop's own count, not a guess.
+    """
+    removed = {snapshot.key: snapshot for snapshot in diff.removed}
+    if not removed:
+        return []
+    latest: dict[str, StockLeft] = {}
+    posted = [
+        sheet for sheet in stocktakes
+        if str(getattr(getattr(sheet, "status", ""), "value", getattr(sheet, "status", ""))) == "posted"
+    ]
+    posted.sort(key=lambda sheet: str(getattr(sheet, "posted_on", None) or sheet.opened))
+    for sheet in posted:
+        when = getattr(sheet, "posted_on", None) or sheet.opened
+        for line in sheet.lines:
+            key = code_key(line.code)
+            if key in removed and line.counted is not None:
+                latest[key] = StockLeft(
+                    removed[key].profile_id, removed[key].name or line.name,
+                    float(line.counted), line.unit,
+                    f"{when:%d/%m/%Y}" if hasattr(when, "strftime") else str(when),
+                )
+    return sorted(
+        (left for left in latest.values() if left.quantity > 0),
+        key=lambda left: left.profile_id,
+    )
+
+
 __all__ = [
     "ConfirmationHit",
     "Edition",
@@ -674,5 +724,7 @@ __all__ = [
     "open_jobs_on",
     "series_key",
     "snapshots_from_report",
+    "StockLeft",
+    "stock_of_removed",
     "stale_confirmation",
 ]

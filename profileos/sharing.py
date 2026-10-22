@@ -245,6 +245,42 @@ def review_request_message(*, brand_name: str, customer_name: str = "",
     return "\n".join(lines)
 
 
+def catalogue_change_message(edition: Any, diff: Any, *, brand_name: str,
+                             jobs: Any = (), hits: Any = (), stock: Any = ()) -> str:
+    """A new supplier catalogue, for the shop floor and the office.
+
+    What the foreman needs before the next bar is cut: which articles moved
+    and by how much, which are gone, which open jobs are on the series, and
+    whether the deductions the saw works to have to be read again.
+    """
+    lines = [f"עדכון קטלוג — {edition.label}", edition.source, ""]
+    lines.append(diff.summary())
+    if diff.changed:
+        lines += ["", "השתנו:"]
+        lines += [f"• {change.describe()}" for change in diff.changed[:12]]
+        if len(diff.changed) > 12:
+            lines.append(f"ועוד ⁦{len(diff.changed) - 12}⁩")
+    if diff.removed:
+        lines += ["", "יצאו מהקטלוג:"]
+        lines += [f"• ⁦{s.profile_id}⁩ {s.name}".rstrip() for s in diff.removed[:12]]
+    if diff.added:
+        lines += ["", f"חדשים: ⁦{len(diff.added)}⁩"]
+    jobs = list(jobs)
+    if jobs:
+        lines += ["", "פרויקטים פתוחים על הסדרה:"]
+        lines += [f"• ⁦{job.job_id}⁩ {job.name}" for job in jobs[:10]]
+    hits = list(hits)
+    if hits:
+        lines += ["", "⚠️ לפני החיתוך הבא צריך לקרוא שוב את נתוני היצרן:"]
+        lines += [f"• {hit.describe()}" for hit in hits]
+    stock = list(stock)
+    if stock:
+        lines += ["", "במלאי מפרופילים שיצאו מהקטלוג:"]
+        lines += [f"• {left.describe()}" for left in stock]
+    lines += ["", brand_name]
+    return "\n".join(lines).rstrip()
+
+
 def cheque_message(
     *,
     brand_name: str,
@@ -308,6 +344,7 @@ def customer_phone(job: Any) -> str:
 
 __all__ = [
     "cheque_message",
+    "catalogue_change_message",
     "checkup_message",
     "crew_plan_message",
     "customer_phone",

@@ -628,3 +628,52 @@ def _zip(files: dict[str, str]) -> bytes:
         for name, text in files.items():
             pack.writestr(name, text)
     return buffer.getvalue()
+
+
+class TestStockAndTeam:
+    def removed_diff(self, book):
+        first_accepted(book)
+        smaller = {code: values for code, values in BASE.items() if code != "4303"}
+        smaller["4301"] = {"mass_per_metre": 1.5, "width": 45.0, "height": 70.0}
+        edition = book.record(report(smaller), source="קטלוג 2026", system_id="klil-4300",
+                              complete=True)
+        return edition, book.diff(edition)
+
+    def test_bars_of_a_dropped_profile_still_in_stock(self, book):
+        from datetime import date
+
+        from profileos.catalogue.editions import stock_of_removed
+        from profileos.erp.stocktake import CountLine, Status, Stocktake
+
+        _, diff = self.removed_diff(book)
+        old = Stocktake(opened=date(2025, 1, 5), status=Status.POSTED,
+                        posted_on=date(2025, 1, 6),
+                        lines=[CountLine(code="43-03", unit="מוט", counted=30)])
+        newer = Stocktake(opened=date(2026, 1, 5), status=Status.POSTED,
+                          posted_on=date(2026, 1, 6),
+                          lines=[CountLine(code="4303", unit="מוט", counted=14),
+                                 CountLine(code="4301", unit="מוט", counted=9)])
+        still_open = Stocktake(opened=date(2026, 6, 1),
+                               lines=[CountLine(code="4303", counted=0)])
+        [left] = stock_of_removed(diff, [newer, still_open, old])
+        assert left.profile_id == "4303" and left.quantity == 14
+        assert "06/01/2026" in left.describe()
+
+    def test_nothing_counted_nothing_said(self, book):
+        from profileos.catalogue.editions import stock_of_removed
+
+        _, diff = self.removed_diff(book)
+        assert stock_of_removed(diff, []) == []
+
+    def test_the_team_message(self, book):
+        from profileos.sharing import catalogue_change_message
+
+        edition, diff = self.removed_diff(book)
+        job = SimpleNamespace(job_id="J-2026-0007", name="וילה בבית אל")
+        hit = SimpleNamespace(describe=lambda: "משקוף ⁦4301⁩ השתנה")
+        text = catalogue_change_message(edition, diff, brand_name="דאדי בע״מ",
+                                        jobs=[job], hits=[hit])
+        assert "קטלוג 2026" in text and "יצאו מהקטלוג" in text and "4303" in text
+        assert "J-2026-0007" in text and "לקרוא שוב" in text
+        assert "היה ⁦1.386⁩, עכשיו ⁦1.5⁩" in text
+        assert text.endswith("דאדי בע״מ")

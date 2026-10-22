@@ -570,7 +570,7 @@ def _accounts(context: dict[str, Any], today: date) -> list[Insight]:
 def _catalogue(context: dict[str, Any], today: date) -> list[Insight]:
     """New supplier files, catalogue editions waiting, and figures they made stale."""
     from .catalogue.editions import (
-        confirmation_hits, open_jobs_on, stale_confirmation,
+        confirmation_hits, open_jobs_on, stale_confirmation, stock_of_removed,
     )
 
     found: list[Insight] = []
@@ -620,6 +620,11 @@ def _catalogue(context: dict[str, Any], today: date) -> list[Insight]:
         if hits:
             detail += " · נתוני החיתוך שאושרו נוגעים ל־" + ", ".join(
                 hit.describe() for hit in hits[:3]
+            )
+        stock = stock_of_removed(diff, context.get("stocktakes") or [])
+        if stock:
+            detail += " · במלאי מפרופילים שיצאו: " + ", ".join(
+                left.describe() for left in stock[:3]
             )
         severity = "danger" if hits else ("warning" if (affected and not diff.empty) else "info")
         found.append(Insight(
@@ -787,7 +792,13 @@ def gather_context(**given: Any) -> dict[str, Any]:
     load("editions", editions)
     load("findings", findings)
     load("watch", watch)
+    def stocktakes() -> Any:
+        from .erp.stocktake import default_stocktakes
+
+        return default_stocktakes()
+
     load("confirmations", confirmations)
+    load("stocktakes", stocktakes)
     load("customers", customers)
     load("tasks", tasks)
     load("cheques", cheques)
@@ -853,7 +864,7 @@ _BOOK_NAMES = {
     "tasks": "משימות המעקב", "cheques": "פנקס הצ׳קים", "service": "קריאות השירות",
     "agenda": "יומן הביקורים", "editions": "מהדורות הקטלוג",
     "findings": "ממצאי מעקב הספקים", "watch": "מקורות הספקים במעקב",
-    "confirmations": "נתוני היצרן שאושרו לחיתוך",
+    "confirmations": "נתוני היצרן שאושרו לחיתוך", "stocktakes": "ספירות המלאי",
 }
 
 
