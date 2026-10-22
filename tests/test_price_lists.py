@@ -426,3 +426,147 @@ def test_the_price_lists_tab(shop, tmp_path, monkeypatch):
     window.close()
     window.deleteLater()
     QCoreApplication.processEvents()
+
+
+class TestWhatTheCodeReviewFound:
+    """Each of these would have put a wrong number on a real quotation."""
+
+    def bom(self, code, quantity, unit="m", currency="ILS", category="profile"):
+        from profileos.quoting.bom import BillOfMaterials, BomCategory, BomLine, Unit
+
+        bom = BillOfMaterials(currency=currency)
+        bom.add(BomLine(category=BomCategory(category), code=code, description=code,
+                        quantity=quantity, unit=Unit(unit)))
+        return bom
+
+    def test_a_euro_list_never_prices_a_shekel_quotation(self, book):
+        from profileos.quoting.pricing import price_bom
+
+        edition = book.record(rows({"ROTO-1": 10.0}, unit="יח'"), supplier="Roto",
+                              source="roto.xlsx", currency="EUR")
+        book.accept(edition.edition_id)
+        bom = self.bom("ROTO-1", 2, unit="pc", category="hardware")
+        total, unpriced = price_bom(bom, fallback_rates={"hardware": 5.0})
+        assert unpriced == ["ROTO-1"] and total == 0
+        assert any("EUR" in warning for warning in bom.warnings)
+
+    def test_another_unit_stays_unpriced_and_is_never_given_a_generic_rate(self, book):
+        from profileos.quoting.pricing import price_bom
+
+        accepted(book, {"KL-1": 42.0}, unit='ק"ג')
+        bom = self.bom("KL-1", 6)
+        total, unpriced = price_bom(bom, fallback_rates={"profile": 30.0, "KL-1": 30.0})
+        assert unpriced == ["KL-1"] and total == 0
+        assert any("ק\"ג" in w or "kg" in w for w in bom.warnings)
+
+    def test_a_zero_price_is_not_a_free_item(self, tmp_path):
+        from profileos.migration import plan_prices
+
+        path = tmp_path / "z.csv"
+        path.write_text('מק"ט;מחיר;יחידה\nHW-9;0;יח\nHW-8;12;יח\n', encoding="utf-8")
+        plan = plan_prices(path)
+        assert plan.creates == 1
+        assert any("אפס" in row.reason for row in plan.of_action("skip"))
+
+    def test_in_force_follows_the_dates_not_the_order_of_acceptance(self, book):
+        future = (date.today() + timedelta(days=10)).isoformat()
+        past = (date.today() - timedelta(days=30)).isoformat()
+        coming = accepted(book, {"4301": 50.0}, valid_from=future)
+        late_entered = accepted(book, {"4301": 44.0}, valid_from=past)
+        assert book.current("קליל").edition_id == late_entered.edition_id
+        later = book.current("קליל", date.today() + timedelta(days=11))
+        assert later.edition_id == coming.edition_id
+
+    def test_a_replaced_list_leaves_nothing_behind(self, book):
+        from profileos.core.registry import SUPPLIERS
+        from profileos.quoting.suppliers import find_price
+
+        accepted(book, {"4301": 40.0}, supplier="ספק ישן")
+        accepted(book, {"4301": 44.0}, supplier="קליל")
+        assert find_price("4301", 1.0, unit="m")[1] == pytest.approx(40.0)
+        old = book.accepted("ספק ישן")[0]
+        # The old supplier's list is replaced by one without that code.
+        newer = book.record(rows({"9999": 1.0}), supplier="ספק ישן", source="חדש")
+        book.accept(newer.edition_id)
+        assert find_price("4301", 1.0, unit="m")[1] == pytest.approx(44.0)
+        assert old.edition_id not in {getattr(item, "version", "") for _, item in SUPPLIERS.items()}
+
+    def test_old_imports_only_fill_codes_no_new_list_has(self, shop):
+        import json
+
+        from profileos.quoting.pricelists import default_price_lists, load_price_lists
+        from profileos.quoting.suppliers import find_price
+
+        (shop / "price_list.json").write_text(json.dumps({"prices": [
+            {"code": "4301", "price": 5.0, "unit": "מטר"},
+            {"code": "7777", "price": 3.0, "unit": "מטר"},
+        ]}), encoding="utf-8")
+        accepted(default_price_lists(), {"4301": 44.0})
+        load_price_lists()
+        assert find_price("4301", 1.0, unit="m")[1] == pytest.approx(44.0)
+        assert find_price("7777", 1.0, unit="m")[1] == pytest.approx(3.0)
+
+    def test_a_list_that_cannot_load_is_on_the_home_page(self, shop):
+        from profileos.insights import scan
+        from profileos.quoting.pricelists import LOAD_PROBLEMS, load_price_lists
+
+        (shop / "price_list.json").write_text("{damaged", encoding="utf-8")
+        load_price_lists()
+        assert LOAD_PROBLEMS
+        assert any(i.title == "מחירון ספק לא הופעל" for i in scan())
+        LOAD_PROBLEMS.clear()
+
+    def test_codes_match_however_they_are_punctuated(self, book):
+        from profileos.quoting.suppliers import find_price
+
+        accepted(book, {"KL-4301": 40.0})
+        assert find_price("kl 4301", 1.0, unit="m")[1] == pytest.approx(40.0)
+
+    def test_a_real_job_is_costed_with_its_series_own_articles(self, shop):
+        from profileos.elements.model import ElementSchedule, Opening
+        from profileos.elements.builder import ElementBuilder
+        from profileos.projects import JobFile, JobStatus
+        from profileos.quoting.pricelists import job_materials
+
+        job = JobFile(job_id="J-1", name="x", status=JobStatus.QUOTED, system_id="klil-7300")
+        job.schedule = ElementSchedule(name="x", system_id="klil-7300", openings=[
+            Opening(name="W", width=1500, height=1200, system_id="klil-7300")])
+        codes = {line.code for line in job_materials(job)}
+        design = ElementBuilder.for_system("klil-7300").build(job.schedule.openings[0])
+        assert {cut.profile_id for cut in design.cuts} <= codes
+
+    def test_excel_cells_without_references_keep_their_columns(self, tmp_path):
+        from profileos.migration.reader import xlsx_rows
+
+        main = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+        path = tmp_path / "noref.xlsx"
+        with zipfile.ZipFile(path, "w") as book:
+            book.writestr("xl/worksheets/sheet1.xml",
+                          f'<worksheet xmlns="{main}"><sheetData>'
+                          '<row><c t="inlineStr"><is><t>code</t></is></c>'
+                          '<c t="inlineStr"><is><t>price</t></is></c></row>'
+                          '<row><c t="inlineStr"><is><t>A1</t></is></c><c><v>12.5</v></c></row>'
+                          '</sheetData></worksheet>')
+        assert xlsx_rows(path) == [["code", "price"], ["A1", "12.5"]]
+
+    def test_repeated_headers_never_lose_a_column(self, tmp_path):
+        from profileos.migration.reader import read_table
+
+        path = tmp_path / "h.csv"
+        path.write_text("מקט;מחיר;מחיר (2);מחיר\nA;1;2;3\n", encoding="utf-8")
+        table = read_table(path)
+        assert len(set(table.headers)) == 4
+        assert sorted(table.rows[0].values()) == ["1", "2", "3", "A"]
+
+    def test_the_command_line_says_when_the_list_was_not_recorded(self, shop, monkeypatch):
+        from profileos.migration import import_prices, importers, plan_prices
+
+        path = shop / "p.csv"
+        path.write_text('מק"ט;מחיר;יחידה;ספק\nKL-1;42.5;מטר;קליל\n', encoding="utf-8")
+
+        def broken(plan):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(importers, "_record_editions", broken)
+        with pytest.raises(ProfileOSError, match="לא יתומחרו"):
+            import_prices(plan_prices(path))

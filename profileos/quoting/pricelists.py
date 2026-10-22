@@ -207,6 +207,9 @@ class PriceListEdition:
 # Comparing
 # --------------------------------------------------------------------------- #
 
+SYMBOLS = {"ILS": "₪", "USD": "$", "EUR": "€"}
+
+
 @dataclass(frozen=True)
 class PriceChange:
     code: str
@@ -214,6 +217,7 @@ class PriceChange:
     old: float
     new: float
     unit: str = ""
+    currency: str = "ILS"
 
     @property
     def relative(self) -> float:
@@ -224,7 +228,8 @@ class PriceChange:
         per = f" ל{unit}" if unit else ""
         return (
             f"⁦{self.code}⁩ {self.description}".rstrip()
-            + f": היה ⁦{self.old:,.2f} ₪⁩, עכשיו ⁦{self.new:,.2f} ₪⁩{per}"
+            + f": היה ⁦{self.old:,.2f} {SYMBOLS.get(self.currency, self.currency)}⁩, "
+            + f"עכשיו ⁦{self.new:,.2f} {SYMBOLS.get(self.currency, self.currency)}⁩{per}"
             + f" (⁦{self.relative * 100:+.1f}%⁩)"
         )
 
@@ -301,6 +306,10 @@ def compare(old: PriceListEdition | None, new: PriceListEdition) -> PriceDiff:
     if old is None:
         return PriceDiff(first=True, added=sorted(new.prices.values(), key=lambda r: r.code))
     diff = PriceDiff(first=False)
+    if old.currency != new.currency:
+        diff.terms_changed = f"המטבע השתנה מ־{old.currency} ל־{new.currency} — המחירים לא הושוו"
+        diff.added = sorted(new.prices.values(), key=lambda r: r.code)
+        return diff
     if abs(old.net_factor - new.net_factor) > 1e-9:
         diff.terms_changed = f"התנאים היו {old.terms()}, עכשיו {new.terms()}"
     for key, row in sorted(new.prices.items()):
@@ -315,7 +324,7 @@ def compare(old: PriceListEdition | None, new: PriceListEdition) -> PriceDiff:
             diff.unchanged += 1
             continue
         change = PriceChange(row.code, row.description or before.description,
-                             before.price, row.price, row.unit or before.unit)
+                             before.price, row.price, row.unit or before.unit, new.currency)
         (diff.up if row.price > before.price else diff.down).append(change)
     diff.missing = sorted(
         (row for key, row in old.prices.items() if key not in new.prices),
@@ -386,11 +395,15 @@ class PriceListBook(MergingBook):
         return [e for e in self if e.state == ListState.PENDING]
 
     def accepted(self, supplier_id: str) -> list[PriceListEdition]:
-        """A supplier's accepted lists, in the order they were accepted."""
+        """A supplier's accepted lists, by the date each takes effect.
+
+        Not by when it was accepted: a list entered late, dated last month,
+        is older than one accepted yesterday that starts next month.
+        """
         return sorted(
             (e for e in self._editions.values()
              if e.state == ListState.ACCEPTED and e.supplier_id == supplier_id),
-            key=lambda e: (e.decision_no, e.decided_at, e.edition_id),
+            key=lambda e: (e.effective, e.decision_no, e.edition_id),
         )
 
     def suppliers(self) -> list[str]:
@@ -638,32 +651,18 @@ def _as_supplier(edition: PriceListEdition,
     )
 
 
-def apply_price_lists(book: PriceListBook | None = None) -> int:
-    """Put each supplier's list in force where the quoting engine finds prices."""
-    from ..core.registry import SUPPLIERS
-
-    book = book or default_price_lists()
-    weights = catalogue_weights()
-    count = 0
-    for supplier_id in book.suppliers():
-        edition = book.current(supplier_id)
-        if edition is None:
-            continue
-        try:
-            supplier = _as_supplier(edition, weights)
-            SUPPLIERS.add(supplier.id, supplier, version=edition.edition_id, source="shop")
-            count += 1
-        except Exception as exc:  # noqa: BLE001 - one list, not the rest
-            _log.warning("Price list %s not applied: %s", edition.edition_id, exc)
-    return count
+#: What went wrong the last time the lists were put in force, for the home
+#: page to say — a quotation priced from a generic rate because the shop's
+#: list did not load is a quotation nobody knows is wrong.
+LOAD_PROBLEMS: list[str] = []
 
 
-def _legacy_file() -> Any:
+def _legacy_suppliers() -> list[Any]:
     """Prices imported before price lists were kept by edition.
 
     They were written to ``price_list.json`` and never read; they are put to
-    work as they are, under the name they were imported with, until a list
-    from the same supplier is taken in the new way.
+    work as they are, under the name they were imported with — but only for
+    codes no list taken in the new way carries.
     """
     from ..core.config import get_settings
     from ..core.storage import read_json
@@ -676,9 +675,12 @@ def _legacy_file() -> Any:
     by_supplier: dict[str, list[Any]] = {}
     for item in raw.get("prices", []):
         try:
+            price = float(item["price"])
+            if price <= 0:
+                continue
             unit = unit_key(str(item.get("unit") or ""))
-            entry = PriceEntry(code=str(item["code"]), price=float(item["price"]),
-                               unit=unit or "pc", description=item.get("description") or None,
+            entry = PriceEntry(code=str(item["code"]), price=price, unit=unit or "pc",
+                               description=item.get("description") or None,
                                metadata={"unit_known": bool(unit)})
         except Exception:  # noqa: BLE001 - one row, not the list
             continue
@@ -690,19 +692,59 @@ def _legacy_file() -> Any:
     ]
 
 
-def load_price_lists() -> int:
-    """At start-up: every supplier's list in force, where quoting finds prices."""
+def apply_price_lists(book: PriceListBook | None = None) -> int:
+    """Put each supplier's list in force where the quoting engine finds prices.
+
+    Everything the shop's lists put there before is taken out first, so a
+    list that was replaced, or a supplier whose list is not in force yet,
+    leaves nothing stale behind to win "cheapest".
+    """
     from ..core.registry import SUPPLIERS
 
+    LOAD_PROBLEMS.clear()
+    book = book or default_price_lists()
+    if getattr(book, "damaged", None) is not None:
+        LOAD_PROBLEMS.append(f"מחירוני הספקים לא נקראו: {book.damaged}")
+    SUPPLIERS.remove_by_source("shop")
+    weights = catalogue_weights()
+    count = 0
+    in_force: set[str] = set()
+    codes: set[str] = set()
+    for supplier_id in book.suppliers():
+        edition = book.current(supplier_id)
+        if edition is None:
+            continue
+        try:
+            supplier = _as_supplier(edition, weights)
+            SUPPLIERS.add(supplier.id, supplier, version=edition.edition_id, source="shop")
+            in_force.add(supplier.id)
+            codes |= {code_key(entry.code) for entry in supplier.entries}
+            count += 1
+        except Exception as exc:  # noqa: BLE001 - one list, not the rest
+            _log.warning("Price list %s not applied: %s", edition.edition_id, exc)
+            LOAD_PROBLEMS.append(f"המחירון {edition.source} מ{edition.supplier} לא הופעל: {exc}")
     try:
-        book = default_price_lists()
-        kept = set(book.suppliers())
-        for supplier in _legacy_file():
-            if supplier.id.removeprefix("shop:") not in kept:
-                SUPPLIERS.add(supplier.id, supplier, version="legacy", source="shop")
-        return apply_price_lists(book)
-    except Exception as exc:  # noqa: BLE001 - quoting still runs on its own figures
+        legacy = _legacy_suppliers()
+    except Exception as exc:  # noqa: BLE001 - the lists above are in force either way
+        _log.warning("Old imported prices not read: %s", exc)
+        LOAD_PROBLEMS.append(f"המחירים שיובאו בעבר (price_list.json) לא נקראו: {exc}")
+        legacy = []
+    for supplier in legacy:
+        if supplier.id in in_force:
+            continue
+        supplier.entries = [e for e in supplier.entries if code_key(e.code) not in codes]
+        if supplier.entries:
+            SUPPLIERS.add(supplier.id, supplier, version="legacy", source="shop")
+    return count
+
+
+def load_price_lists() -> int:
+    """At start-up: every supplier's list in force, where quoting finds prices."""
+    try:
+        return apply_price_lists()
+    except Exception as exc:  # noqa: BLE001 - said on the home page, not only logged
         _log.warning("Price lists not loaded: %s", exc)
+        LOAD_PROBLEMS.append(f"מחירוני הספקים לא הופעלו: {exc}")
         return 0
 
 
@@ -718,9 +760,14 @@ def job_materials(job: Any) -> list[Any]:
     schedule = getattr(job, "schedule", None)
     if schedule is None or not getattr(schedule, "openings", None):
         return []
-    builder = ElementBuilder()
     builds = []
     for opening in schedule.openings:
+        # Built the way the design page builds it, so the codes are the
+        # series' own article numbers and match the supplier's list.
+        try:
+            builder = ElementBuilder.for_system(opening.system_id or schedule.system_id)
+        except Exception:  # noqa: BLE001 - the same fallback as the design page
+            builder = ElementBuilder()
         try:
             builds.append(builder.build(opening, sill_height=schedule.sill_height))
         except Exception as exc:  # noqa: BLE001 - one opening, not the whole job
@@ -783,6 +830,8 @@ def cost_change(job: Any, old: PriceListEdition, new: PriceListEdition, *,
                 mass_per_metre: Callable[[str], float | None] = lambda _code: None,
                 ) -> JobCostChange | None:
     """How much more (or less) the job's material costs on the new list."""
+    if old.currency != new.currency or new.currency != "ILS":
+        return None  # the estimate is in shekels, like the quotation
     materials = job_materials(job) if materials is None else materials
     delta = 0.0
     lines = unmatched = 0
@@ -818,11 +867,19 @@ def catalogue_weights() -> Callable[[str], float | None]:
 
         book = default_editions()
         weights: dict[str, float] = {}
+        conflicting: set[str] = set()
         for key in book.keys():
             for article, snapshot in book.library(key).items():
+                # The supplier's printed weight; measured from its own drawing
+                # only when the table gave none.
                 value = snapshot.published.get("mass_per_metre") or snapshot.measured.get("mass_per_metre")
-                if value:
-                    weights[article] = float(value)
+                if not value:
+                    continue
+                if article in weights and abs(weights[article] - float(value)) > 1e-6:
+                    conflicting.add(article)  # two series, one number: not ours to pick
+                weights[article] = float(value)
+        for article in conflicting:
+            weights.pop(article, None)
     except Exception as exc:  # noqa: BLE001 - without weights, kg lines are left out
         _log.info("Catalogue weights unavailable: %s", exc)
         return lambda _code: None
@@ -853,7 +910,8 @@ def _day(text: str) -> date | None:
 
 
 def impact(book: PriceListBook, edition: PriceListEdition, jobs: Iterable[Any], *,
-           mass_per_metre: Callable[[str], float | None] | None = None) -> ListImpact:
+           mass_per_metre: Callable[[str], float | None] | None = None,
+           materials: dict[str, list[Any]] | None = None) -> ListImpact:
     """What this list does to quotations out and jobs not yet ordered.
 
     A quotation is set against the list that was in force the day it was
@@ -888,7 +946,13 @@ def impact(book: PriceListBook, edition: PriceListEdition, jobs: Iterable[Any], 
             continue
         if base is None or base.edition_id == edition.edition_id:
             continue
-        change = cost_change(job, base, edition, mass_per_metre=weights)
+        if materials is not None:
+            if job.job_id not in materials:
+                materials[job.job_id] = job_materials(job)
+            lines = materials[job.job_id]
+        else:
+            lines = None
+        change = cost_change(job, base, edition, mass_per_metre=weights, materials=lines)
         if change is None or abs(change.delta) < 1:
             continue
         bucket.append(change)
@@ -899,6 +963,7 @@ def impact(book: PriceListBook, edition: PriceListEdition, jobs: Iterable[Any], 
 
 __all__ = [
     "JobCostChange",
+    "LOAD_PROBLEMS",
     "ListImpact",
     "ListState",
     "PriceChange",

@@ -109,9 +109,18 @@ class Supplier(BaseModel):
         return True
 
     def entry(self, code: str) -> PriceEntry | None:
-        return next((e for e in self.entries if e.code == code), None)
+        exact = next((e for e in self.entries if e.code == code), None)
+        if exact is not None:
+            return exact
+        # 'KL-4301', 'kl 4301' and 'KL4301' are one article: the drawing
+        # office and the supplier punctuate it differently.
+        from .pricelists import code_key
 
-    def net_price(self, code: str, quantity: float, unit: str | None = None) -> float | None:
+        wanted = code_key(code)
+        return next((e for e in self.entries if code_key(e.code) == wanted), None)
+
+    def net_price(self, code: str, quantity: float, unit: str | None = None,
+                  currency: str | None = None) -> float | None:
         """Total price after discount and surcharge, or ``None`` if not listed.
 
         When the list says what its unit is (a shop's own price list does)
@@ -120,7 +129,12 @@ class Supplier(BaseModel):
         than being multiplied into a wrong one.
         """
         entry = self.entry(code)
-        if entry is None:
+        if entry is None or (entry.metadata.get("unit_known") is not None and entry.price <= 0):
+            return None
+        # A euro price is not a shekel price: a list in another currency is
+        # not used for a quotation in this one.
+        if currency and entry.metadata.get("unit_known") is not None \
+                and self.currency.upper() != currency.upper():
             return None
         if unit and entry.metadata.get("unit_known"):
             from .pricelists import unit_key
@@ -150,7 +164,8 @@ def register_supplier(supplier: Supplier) -> None:
 
 
 def find_price(
-    code: str, quantity: float, *, category: str | None = None, unit: str | None = None
+    code: str, quantity: float, *, category: str | None = None, unit: str | None = None,
+    currency: str | None = None,
 ) -> tuple[Supplier, float] | None:
     """Cheapest current supplier for ``code``, or ``None`` if nobody lists it."""
     best: tuple[Supplier, float] | None = None
@@ -159,12 +174,26 @@ def find_price(
             continue
         if category is not None and not supplier.serves(category):
             continue
-        price = supplier.net_price(code, quantity, unit)
+        price = supplier.net_price(code, quantity, unit, currency)
         if price is None:
             continue
         if best is None or price < best[1]:
             best = (supplier, price)
     return best
+
+
+def shop_list_holds(code: str) -> Supplier | None:
+    """The shop's own price list that carries this code, whatever its unit.
+
+    Used to tell "nobody sells this" from "the shop's list sells it, in a
+    unit or currency this quantity is not counted in" — the second must stay
+    unpriced, never be priced from a generic rate instead.
+    """
+    for supplier in all_suppliers():
+        entry = supplier.entry(code)
+        if entry is not None and entry.metadata.get("unit_known") is not None:
+            return supplier
+    return None
 
 
 def _validate_supplier(document: dict[str, Any]) -> Supplier:
@@ -189,5 +218,6 @@ __all__ = [
     "all_suppliers",
     "register_supplier",
     "find_price",
+    "shop_list_holds",
     "PRICE_LIST_SCHEMA",
 ]

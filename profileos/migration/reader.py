@@ -215,19 +215,40 @@ def xlsx_rows(path: Path) -> list[list[str]]:
                     raise ProfileOSError(f"{Path(path).name}: הגיליון גדול מדי לקריאה")
                 return book.read(name)
 
+            ns = dict(_NS)
+            if "xl/workbook.xml" in names:
+                head = read("xl/workbook.xml")[:2000]
+                if b"purl.oclc.org/ooxml/spreadsheetml/main" in head:
+                    # "Strict" Open XML: the same parts in other namespaces.
+                    ns["m"] = "http://purl.oclc.org/ooxml/spreadsheetml/main"
+                    ns["r"] = "http://purl.oclc.org/ooxml/officeDocument/relationships"
+            main = ns["m"]
+
+            def text_of(node: Any) -> str:
+                """A string item's text, without the phonetic guide (rPh)."""
+                direct = node.find("m:t", ns)
+                if direct is not None:
+                    return direct.text or ""
+                return "".join((run.find("m:t", ns).text or "") for run in node.findall("m:r", ns)
+                               if run.find("m:t", ns) is not None)
+
             shared: list[str] = []
             if "xl/sharedStrings.xml" in names:
                 root = ElementTree.fromstring(read("xl/sharedStrings.xml"))
-                for item in root.findall("m:si", _NS):
-                    shared.append("".join(t.text or "" for t in item.iter(f"{{{_NS['m']}}}t")))
+                for item in root.findall("m:si", ns):
+                    shared.append(text_of(item))
 
             sheet = "xl/worksheets/sheet1.xml"
             if "xl/workbook.xml" in names and "xl/_rels/workbook.xml.rels" in names:
                 workbook = ElementTree.fromstring(read("xl/workbook.xml"))
-                first = workbook.find("m:sheets/m:sheet", _NS)
+                # The first sheet somebody can see — a hidden one is often a
+                # lookup table or a cover page.
+                sheets = workbook.findall("m:sheets/m:sheet", ns)
+                visible = [s for s in sheets if s.get("state", "visible") == "visible"]
+                first = (visible or sheets or [None])[0]
                 rels = ElementTree.fromstring(read("xl/_rels/workbook.xml.rels"))
                 if first is not None:
-                    wanted = first.get(f"{{{_NS['r']}}}id")
+                    wanted = first.get(f"{{{ns['r']}}}id")
                     for rel in rels.findall("rel:Relationship", _NS):
                         if rel.get("Id") == wanted:
                             target = rel.get("Target", "").lstrip("/")
@@ -236,18 +257,21 @@ def xlsx_rows(path: Path) -> list[list[str]]:
                 raise ProfileOSError(f"{Path(path).name}: לא נמצא גיליון בקובץ")
 
             rows: list[list[str]] = []
-            for row in ElementTree.fromstring(read(sheet)).iter(f"{{{_NS['m']}}}row"):
+            for row in ElementTree.fromstring(read(sheet)).iter(f"{{{main}}}row"):
                 cells: dict[int, str] = {}
-                for position, cell in enumerate(row.findall("m:c", _NS)):
+                column = -1
+                for cell in row.findall("m:c", ns):
                     reference = cell.get("r", "")
-                    column = _column_index(reference) if reference else position
+                    # A cell without a reference is the one after the last.
+                    column = _column_index(reference) if reference else column + 1
                     kind = cell.get("t", "n")
-                    value = cell.find("m:v", _NS)
+                    value = cell.find("m:v", ns)
                     raw = value.text if value is not None and value.text else ""
                     if kind == "s" and raw:
                         text = shared[int(raw)] if int(raw) < len(shared) else ""
                     elif kind == "inlineStr":
-                        text = "".join(t.text or "" for t in cell.iter(f"{{{_NS['m']}}}t"))
+                        node = cell.find("m:is", ns)
+                        text = text_of(node) if node is not None else ""
                     elif kind == "b":
                         text = "TRUE" if raw == "1" else "FALSE"
                     elif kind in ("str", "e"):
@@ -295,14 +319,14 @@ def read_table(path: Path, expected: Iterable[str] = ()) -> Table:
 
     headers = [cell.strip() for cell in rows[header_index]]
     # Unnamed or repeated header cells would lose a column's values.
-    seen: dict[str, int] = {}
+    taken: set[str] = set()
     for index, header in enumerate(headers):
-        name = header or f"עמודה {index + 1}"
-        if name in seen:
-            seen[name] += 1
-            name = f"{name} ({seen[name]})"
-        else:
-            seen[name] = 1
+        base = header or f"עמודה {index + 1}"
+        name, serial = base, 2
+        while name in taken:
+            name = f"{base} ({serial})"
+            serial += 1
+        taken.add(name)
         headers[index] = name
     table = Table(
         headers=headers,
@@ -360,9 +384,18 @@ def to_number(text: Any) -> float | None:
     if isinstance(text, (int, float)):
         return float(text)
     cleaned = (
-        str(text).replace(",", "").replace("₪", "").replace("%", "")
-        .replace("⁦", "").replace("⁩", "").strip()
+        str(text).replace("₪", "").replace("%", "")
+        .replace("⁦", "").replace("⁩", "").replace(" ", "").strip()
     )
+    import re as _re
+
+    # "12,50" is twelve and a half (a European or Excel-in-Hebrew decimal
+    # comma); "1,250" and "1,250.50" are thousands. One or two digits after a
+    # single comma, and no point, is the decimal reading.
+    if _re.fullmatch(r"-?\d+,\d{1,2}", cleaned):
+        cleaned = cleaned.replace(",", ".")
+    else:
+        cleaned = cleaned.replace(",", "")
     if not cleaned:
         return None
     try:

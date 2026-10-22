@@ -678,18 +678,31 @@ def _catalogue(context: dict[str, Any], today: date) -> list[Insight]:
 def _price_lists(context: dict[str, Any], today: date) -> list[Insight]:
     """New supplier prices: waiting to be checked, eating a quotation's margin,
     or a reason to order before they take effect."""
-    from .quoting.pricelists import impact
+    from .quoting.pricelists import LOAD_PROBLEMS, impact
 
+    found: list[Insight] = []
+    for problem in LOAD_PROBLEMS:
+        found.append(Insight(
+            "danger", "מחירון ספק לא הופעל",
+            problem + " — הצעות מחיר מתומחרות עכשיו בלעדיו. בדקו במסך קטלוג ← מחירוני ספקים.",
+            "Catalogue", f"price-load:{problem}:{today}",
+        ))
     book = context.get("price_lists")
     if book is None:
-        return []
+        return found
     jobs = context.get("jobs") or []
-    found: list[Insight] = []
+    # A job's bill of materials is built once for the whole scan, not once
+    # per supplier.
+    materials: dict[str, list[Any]] = {}
+
+    def name(text: str) -> str:
+        return f"\u2068{text}\u2069"  # a supplier's name, Hebrew or Latin, kept whole
+
     for edition in book.pending():
         diff = book.diff(edition)
         found.append(Insight(
             "warning" if diff.up else "info",
-            f"מחירון חדש מ{edition.supplier} ממתין לבדיקה",
+            f"מחירון חדש מ{name(edition.supplier)} ממתין לבדיקה",
             diff.summary() + (f" · בתוקף מ־⁦{edition.valid_from}⁩" if edition.valid_from else ""),
             "Catalogue", f"price-list:{edition.edition_id}",
         ))
@@ -700,7 +713,7 @@ def _price_lists(context: dict[str, Any], today: date) -> list[Insight]:
             continue
         latest = accepted[-1]
         try:
-            effect = impact(book, latest, jobs)
+            effect = impact(book, latest, jobs, materials=materials)
         except Exception as exc:  # noqa: BLE001 - one supplier, not the scan
             _log.warning("Price impact for %s failed: %s", supplier_id, exc)
             continue
@@ -713,7 +726,7 @@ def _price_lists(context: dict[str, Any], today: date) -> list[Insight]:
                 "warning",
                 _count(len(dearer), "הצעה פתוחה תומחרה לפני ההתייקרות",
                        "הצעות פתוחות תומחרו לפני ההתייקרות")
-                + f" של {latest.supplier}",
+                + f" של {name(latest.supplier)}",
                 f"החומר בהן עולה לפחות ⁦{total:,.0f} ₪⁩ יותר (הערכה: אורך נטו בלי פחת, "
                 "אחרי ההנחה שלכם) — כדאי לעדכן לפני שהלקוח חותם: "
                 + _names(dearer, lambda c: c.describe()),
@@ -726,9 +739,9 @@ def _price_lists(context: dict[str, Any], today: date) -> list[Insight]:
             when = date.fromisoformat(effect.buy_before[:10])
             found.append(Insight(
                 "warning",
-                f"להזמין מ{latest.supplier} לפני ⁦{when:%d/%m/%Y}⁩",
+                f"להזמין מ{name(latest.supplier)} לפני ⁦{when:%d/%m/%Y}⁩",
                 f"המחירון החדש נכנס לתוקף בעוד ⁦{(when - today).days}⁩ ימים. הזמנת החומר "
-                f"לפרויקטים שנסגרו חוסכת לפחות ⁦{saving:,.0f} ₪⁩: "
+                f"לפרויקטים שנסגרו (אם עוד לא הזמנתם) חוסכת לפחות ⁦{saving:,.0f} ₪⁩: "
                 + _names(dearer_orders, lambda c: f"⁦{c.job.job_id}⁩")
                 + ". בדרך כלל המחיר הישן תקף להזמנה שבוצעה (ולפעמים שולמה) לפני "
                 "התאריך — ושווה לשקול מול המזומנים שיתפסו עד שהלקוח משלם.",

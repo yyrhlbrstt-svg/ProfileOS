@@ -6817,7 +6817,7 @@ class CataloguePage(Page):
         if edition is None:
             return
         lines = [
-            f"{edition.supplier} — {edition.source}",
+            f"\u2068{edition.supplier}\u2069 — \u2068{edition.source}\u2069 · {edition.currency}",
             f"בתוקף מ־⁦{_short_date(edition.effective)}⁩ · ⁦{len(edition.prices)}⁩ פריטים"
             + (f" · נקלט על ידי {edition.recorded_by}" if edition.recorded_by else ""),
             f"התנאים שלכם: {edition.terms()}",
@@ -6846,7 +6846,7 @@ class CataloguePage(Page):
                 lines += [f"  • {change.describe()}" for change in effect.quoted]
                 lines.append("")
             if effect.to_order:
-                header = "פרויקטים שנסגרו ועוד לא הוזמן להם חומר"
+                header = "פרויקטים שנסגרו — אם עוד לא הזמנתם להם חומר"
                 if effect.buy_before:
                     header += f" — הזמנה לפני ⁦{_short_date(effect.buy_before)}⁩ במחיר הישן"
                 lines.append(header)
@@ -6872,7 +6872,7 @@ class CataloguePage(Page):
 
         if path is None:
             chosen, _ = QFileDialog.getOpenFileName(
-                self, "מחירון ספק", "", "מחירונים (*.xlsx *.csv *.tsv *.txt)"
+                self, "מחירון ספק", "", "מחירונים (*.xlsx *.xlsm *.csv *.tsv *.txt)"
             )
             if not chosen:
                 return
@@ -6961,12 +6961,12 @@ class CataloguePage(Page):
         if edition is None:
             return
         question = (
-            f"לאשר את {edition.source} כמחירון של {edition.supplier}?\n"
+            f"לאשר את \u2068{edition.source}\u2069 כמחירון של \u2068{edition.supplier}\u2069?\n"
             f"{book.diff(edition).summary()}\n"
             "הצעות מחיר חדשות יתומחרו ממנו"
             + (f" מ־{_short_date(edition.valid_from)}." if edition.valid_from else ".")
             if accept else
-            f"לדחות את {edition.source}? הוא יישמר ברשימה ולא ישמש לתמחור."
+            f"לדחות את \u2068{edition.source}\u2069? הוא יישמר ברשימה ולא ישמש לתמחור."
         )
         name, ok = QInputDialog.getText(
             self, "אישור מחירון" if accept else "דחיית מחירון", question + "\n\nמי מחליט?",
@@ -7530,7 +7530,7 @@ class CataloguePage(Page):
                     use(stage(path), drawings=True)
                 except OSError as exc:
                     self.report(exc, "הקובץ לא הועתק לקליטה")
-            elif suffix == ".xlsx":
+            elif suffix in (".xlsx", ".xlsm"):
                 self.import_price_list(path, finding_id=finding.finding_id)
             elif suffix in (".csv", ".tsv", ".txt"):
                 box = QMessageBox(self)

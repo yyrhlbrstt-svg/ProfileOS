@@ -24,7 +24,7 @@ from ..core.events import Topic, publish
 from ..core.logging_setup import get_logger
 from ..elements.builder import ElementBuild
 from .bom import BillOfMaterials, BomCategory, BomLine, Unit
-from .suppliers import Supplier, find_price, get_supplier
+from .suppliers import Supplier, find_price, get_supplier, shop_list_holds
 
 _log = get_logger("quoting.pricing")
 
@@ -293,20 +293,38 @@ def price_bom(
         if line.supplier_id:
             supplier = get_supplier(line.supplier_id)
             if supplier is not None:
-                supplier_price = supplier.net_price(line.code, line.quantity, line.unit.value)
+                supplier_price = supplier.net_price(line.code, line.quantity, line.unit.value,
+                                                    bom.currency)
                 supplier_id = supplier.id
 
         if supplier_price is None:
             found = find_price(line.code, line.quantity, category=line.category.value,
-                               unit=line.unit.value)
+                               unit=line.unit.value, currency=bom.currency)
             if found is not None:
                 supplier_obj, supplier_price = found
                 supplier_id = supplier_obj.id
 
         if supplier_price is None and default_supplier is not None:
-            supplier_price = default_supplier.net_price(line.code, line.quantity, line.unit.value)
+            supplier_price = default_supplier.net_price(line.code, line.quantity, line.unit.value,
+                                                        bom.currency)
             if supplier_price is not None:
                 supplier_id = default_supplier.id
+
+        if supplier_price is None:
+            holder = shop_list_holds(line.code)
+            if holder is not None:
+                # The shop's own list has this code, in another unit or
+                # currency (per kilogram against metres, euros against
+                # shekels). A generic rate in its place would be a made-up
+                # price on a real quotation: it stays unpriced, and says why.
+                entry = holder.entry(line.code)
+                bom.warnings.append(
+                    f"⁦{line.code}⁩: במחירון {holder.name} המחיר הוא "
+                    f"ל{entry.unit} ב{holder.currency}, והכמות כאן ב{line.unit.value} "
+                    f"ב{bom.currency} — השורה נשארה בלי מחיר"
+                )
+                unpriced.append(line.code)
+                continue
 
         if supplier_price is None and line.code in fallback_rates:
             supplier_price = fallback_rates[line.code] * line.quantity

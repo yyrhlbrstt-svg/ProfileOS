@@ -105,7 +105,9 @@ class TestMatchingColumns:
 
 class TestNumbersAsASpreadsheetWritesThem:
     @pytest.mark.parametrize("text,expected", [
-        ("48,500", 48500.0), ("₪ 1,200.50", 1200.5), ("38,90", 3890.0),
+        # A comma with three digits after it is thousands; with one or two it
+        # is a decimal comma — "38,90" is thirty-eight ninety, never 3,890.
+        ("48,500", 48500.0), ("₪ 1,200.50", 1200.5), ("38,90", 38.9), ("7,5", 7.5),
         ("12", 12.0), ("", None), ("לא מספר", None), (None, None),
     ])
     def test_read(self, text, expected):

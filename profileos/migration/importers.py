@@ -317,6 +317,10 @@ def plan_prices(path: Path) -> ImportPlan:
         if price < 0:
             plan.rows.append(Row(number, "skip", code, "מחיר שלילי"))
             continue
+        if price == 0:
+            # "On request" or discontinued, in most lists: not a free item.
+            plan.rows.append(Row(number, "skip", code, "מחיר אפס — לפי הזמנה או לא נמכר"))
+            continue
         finish = _value(row, plan.columns, "finish")
         # One code is one price per finish: white and mill are different rows.
         identity = f"{code}|{finish}" if finish else code
@@ -383,29 +387,32 @@ def import_prices(plan: ImportPlan, path: Path | None = None) -> dict[str, int]:
     if path is None:
         try:
             _record_editions(plan)
-        except Exception as exc:  # noqa: BLE001 - the file above is written either way
-            _log.warning("Price list not recorded as an edition: %s", exc)
+        except Exception as exc:  # noqa: BLE001 - said, not only logged
+            raise ProfileOSError(
+                f"המחירים נשמרו, אבל לא נרשמו כמחירון ולא יתומחרו בהצעות: {exc}"
+            ) from exc
     return {"created": created, "updated": updated, "failed": 0}
 
 
 def _record_editions(plan: ImportPlan) -> None:
     from ..quoting.pricelists import PriceRow, default_price_lists
 
-    groups: dict[str, list[PriceRow]] = {}
+    groups: dict[tuple[str, str], list[PriceRow]] = {}
     for row in plan.rows:
         if row.action != "create":
             continue
         values = row.values
-        groups.setdefault(values.get("supplier") or "מחירון מיובא", []).append(PriceRow(
+        # One edition per supplier and currency: a euro row is not a shekel row.
+        group = (values.get("supplier") or "מחירון מיובא", values.get("currency") or "ILS")
+        groups.setdefault(group, []).append(PriceRow(
             code=str(values["code"]), price=float(values["price"]),
             unit=str(values.get("unit") or ""), description=str(values.get("description") or ""),
             finish=str(values.get("finish") or ""),
         ))
     book = default_price_lists()
-    for supplier, rows in groups.items():
+    for (supplier, currency), rows in groups.items():
         edition = book.record(rows, supplier=supplier, source=plan.table.source or "ייבוא",
-                              currency=next((r.values.get("currency") for r in plan.rows
-                                             if r.action == "create"), "ILS") or "ILS")
+                              currency=currency)
         book.accept(edition.edition_id, by="ייבוא מחירון")
 
 
