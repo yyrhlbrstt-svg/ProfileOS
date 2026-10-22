@@ -1353,6 +1353,7 @@ class ProjectsPage(Page):
         for label, handler in (
             ("שליחת היתרה ללקוח בוואטסאפ", self.send_balance),
             ("רשימת תיקונים…", self.manage_snags),
+            ("גרסאות ההצעה — מה השתנה…", self.show_revisions),
             ("הזמנת חומר מהספק…", self.order_material),
             ("הזמנות חומר — אישור והגעה…", self.manage_material_orders),
             ("קבע ביקור ביומן", self.plan_visit_for_job),
@@ -1935,6 +1936,11 @@ class ProjectsPage(Page):
             job.advance(target, reason)
             if target is JobStatus.LOST:
                 job.lost_reason = reason.strip()
+            if target is JobStatus.WON:
+                # The version the customer holds is the one they said yes to.
+                accepted = self._last_sent_revision(job.job_id)
+                if accepted:
+                    job.accepted_revision = accepted
             store.save(job)
         except Exception as exc:  # noqa: BLE001
             self.report(exc, "לא ניתן לעדכן את הסטטוס")
@@ -1954,6 +1960,56 @@ class ProjectsPage(Page):
             self.session.set_job(job)
         self.refresh()
         self.status(f"{job.job_id} עודכן ל{target.hebrew}")
+
+    @staticmethod
+    def _last_sent_revision(job_id: str) -> int:
+        try:
+            from ..quoting.revisions import default_revisions
+
+            for history in default_revisions():
+                if history.job_id == job_id and history.last_sent is not None:
+                    return history.last_sent.number
+        except Exception:  # noqa: BLE001 - the decision is recorded either way
+            _log.exception("Could not read the quotation versions of %s", job_id)
+        return 0
+
+    def show_revisions(self) -> None:
+        """Every version of the job's quotation, why each was made, and what
+        moved between them — the answer to "why did the price go up?"."""
+        from .money_dialogs import RevisionsDialog
+
+        job = self._selected_job()
+        if job is None:
+            self.status("בחר פרויקט מהרשימה")
+            return
+        try:
+            from ..quoting.revisions import default_revisions
+
+            book = default_revisions()
+            problem = getattr(book, "damaged", None)
+            history = next((h for h in book if h.job_id == job.job_id), None)
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "גרסאות ההצעה לא נקראו")
+            return
+        if history is None or not len(history):
+            self.status(f"{job.job_id}: עוד לא נשלחה הצעה מהמערכת — אין גרסאות")
+            return
+        dialog = RevisionsDialog(history, accepted=job.accepted_revision, parent=self)
+        dialog.exec()
+        if not dialog.notes:
+            return
+        if problem is not None:
+            self.report(problem, "קובץ הגרסאות פגום — ההערה לא נשמרה")
+            return
+        try:
+            mine = book.for_job(job.job_id)
+            for number, note in dialog.notes.items():
+                mine.get(number).note = note
+            book.save()
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "ההערה לא נשמרה")
+            return
+        self.status("ההערה נשמרה ליד הגרסה")
 
     def notify_customer(self) -> None:
         """Open WhatsApp on the customer's chat with the status already written."""
@@ -4832,6 +4888,31 @@ class QuotePage(Page):
             + ("" if whatsapp_number(phone) else " (ללקוח אין טלפון נייד בתיק — בחר צ׳אט)")
         )
 
+    def _record_revision(self, job: Any) -> str:
+        """Keep the version that went to the customer: a new one when the
+        price or a line changed (with what changed, in words), the same one
+        when nothing did. Returns a few words for the status line."""
+        try:
+            from ..quoting.revisions import default_revisions, lines_of_rows
+
+            book = default_revisions()
+            problem = getattr(book, "damaged", None)
+            if problem is not None:
+                self.report(problem, "קובץ גרסאות ההצעה פגום — הגרסה הזאת לא נרשמה")
+                return ""
+            history = book.for_job(job.job_id)
+            revision, new = history.record_issued(
+                lines_of_rows(self.draft.customer_lines()),
+                float(self.draft.totals()["net"]), self.draft.quotation.currency,
+            )
+            book.save()
+        except Exception as exc:  # noqa: BLE001 - the quotation itself already went out
+            self.report(exc, "ההצעה נשלחה, אבל הגרסה שלה לא נרשמה")
+            return ""
+        if not new:
+            return f" · גרסה ⁦{revision.number}⁩ (ללא שינוי)"
+        return f" · נשמרה גרסה ⁦{revision.number}⁩"
+
     def _record_in_job(self) -> None:
         """Write the quoted figure onto the open job, and move it along.
 
@@ -4907,6 +4988,8 @@ class QuotePage(Page):
             )
             return
 
+        revision_note = self._record_revision(job)
+
         # Sending a quotation creates its own chase, as the follow-up module
         # promises — an operator should not have to remember a second click
         # on Home for the reminders to exist at all.
@@ -4920,7 +5003,7 @@ class QuotePage(Page):
         except Exception:  # noqa: BLE001 - the quotation itself already went out
             _log.exception("Could not schedule follow-ups for %s", job.job_id)
 
-        self.status(f"{job.job_id} עודכן: {job.status.hebrew}")
+        self.status(f"{job.job_id} עודכן: {job.status.hebrew}" + revision_note)
 
 
 # --------------------------------------------------------------------------- #

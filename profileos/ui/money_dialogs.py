@@ -1165,7 +1165,109 @@ class SnagListDialog(QDialog):
         self.accept()
 
 
+class RevisionsDialog(QDialog):
+    """Every version of a job's quotation: when, how much, why — and, for
+    the one chosen, exactly which lines moved and by how much."""
+
+    def __init__(self, history: Any, *, accepted: int = 0,
+                 parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("גרסאות ההצעה")
+        self.setMinimumSize(820, 520)
+        self._history = history
+        self._accepted = accepted
+        #: Notes written here, by version number; the page saves them.
+        self.notes: dict[int, str] = {}
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(*(METRICS.space(5),) * 4)
+        layout.setSpacing(METRICS.space(3))
+        self.table = DataTable(["גרסה", "תאריך", "לפני מע״מ", "שינוי", "למה", "הערה"],
+                               empty_text="אין גרסאות")
+        self.table.stretch(4)
+        layout.addWidget(self.table, 1)
+        self.changes = QLabel()
+        self.changes.setWordWrap(True)
+        self.changes.setObjectName("Hint")
+        self.changes.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        layout.addWidget(self.changes)
+        buttons = QHBoxLayout()
+        note = QPushButton("הערה לגרסה…")
+        note.clicked.connect(self.add_note)
+        buttons.addWidget(note)
+        buttons.addStretch(1)
+        close = QPushButton("סגירה")
+        close.clicked.connect(self.accept)
+        buttons.addWidget(close)
+        layout.addLayout(buttons)
+        self._fill()
+        self.table.selectionModel().selectionChanged.connect(lambda *_: self._show_changes())
+        if len(self._history.revisions):
+            self.table.selectRow(len(self._history.revisions) - 1)
+        self._show_changes()
+
+    def _fill(self) -> None:
+        rows = []
+        previous = None
+        for revision in self._history.revisions:
+            label = f"⁦{revision.number}⁩"
+            if revision.number == self._accepted:
+                label += " · אושרה"
+            move = ""
+            if previous is not None:
+                delta = revision.net_price - previous.net_price
+                move = f"⁦{'+' if delta > 0 else ''}{delta:,.0f} ₪⁩" if abs(delta) >= 0.5 else "—"
+            rows.append([
+                label, f"⁦{revision.on:%d/%m/%Y}⁩", _money(revision.net_price), move,
+                revision.reason or ("ההצעה הראשונה" if previous is None else ""),
+                self.notes.get(revision.number, revision.note),
+            ])
+            previous = revision
+        self.table.set_rows(rows)
+
+    def _chosen(self) -> int:
+        model = self.table.selectionModel()
+        if model is None or not model.selectedRows():
+            return -1
+        return model.selectedRows()[0].row()
+
+    def _show_changes(self) -> None:
+        from ..quoting.revisions import compare
+
+        row = self._chosen()
+        revisions = self._history.revisions
+        if row < 0:
+            self.changes.setText("בחרו גרסה כדי לראות מה השתנה בה.")
+            return
+        if row == 0:
+            self.changes.setText(
+                f"ההצעה הראשונה: ⁦{len(revisions[0].lines)}⁩ שורות, {_money(revisions[0].net_price)} לפני מע״מ."
+            )
+            return
+        comparison = compare(revisions[row - 1], revisions[row])
+        lines = [comparison.describe()]
+        lines += [f"• {change.describe()} ₪" for change in comparison.biggest[:12]]
+        if len(comparison.changes) > 12:
+            lines.append(f"ועוד ⁦{len(comparison.changes) - 12}⁩ שינויים קטנים יותר.")
+        self.changes.setText("\n".join(lines))
+
+    def add_note(self) -> None:
+        row = self._chosen()
+        if row < 0:
+            _warn(self, "לא נבחרה גרסה", ValueError("בחרו גרסה מהרשימה"))
+            return
+        revision = self._history.revisions[row]
+        text, ok = QInputDialog.getText(
+            self, f"הערה לגרסה {revision.number}",
+            "למשל: הלקוח ביקש זכוכית מחוסמת בחדר הילדים",
+            text=self.notes.get(revision.number, revision.note),
+        )
+        if ok:
+            self.notes[revision.number] = text.strip()
+            self._fill()
+            self.table.selectRow(row)
+
+
 __all__ = [
     "JobAccountDialog", "MaterialOrderDialog", "MaterialOrdersDialog", "PriceBookDialog",
-    "PriceItemPicker", "SnagListDialog",
+    "PriceItemPicker", "RevisionsDialog", "SnagListDialog",
 ]

@@ -31,6 +31,12 @@ from ..core.logging_setup import get_logger
 _log = get_logger("quoting.revisions")
 
 
+def _amount(value: float, currency: str = "ILS", *, sign: str = "") -> str:
+    """Money inside Hebrew text: the shekel sign after the figure, isolated."""
+    mark = "₪" if currency in ("ILS", "NIS", "₪") else currency
+    return f"⁦{sign}{value:,.0f} {mark}⁩"
+
+
 @dataclass(frozen=True)
 class Line:
     """One priced line, frozen at the moment a revision was taken."""
@@ -100,7 +106,7 @@ class Revision:
             else "טיוטה"
         )
         return (
-            f"{self.label} · ⁦{self.net_price:,.0f}⁩ {self.currency} · "
+            f"{self.label} · {_amount(self.net_price, self.currency)} · "
             f"{state}" + (f" · {self.reason}" if self.reason else "")
         )
 
@@ -228,7 +234,7 @@ class Comparison:
         sign = "+" if self.price_difference > 0 else ""
         head = (
             f"מגרסה ⁦{self.earlier.number}⁩ לגרסה ⁦{self.later.number}⁩: "
-            f"⁦{sign}{self.price_difference:,.0f}⁩ {self.later.currency}"
+            + _amount(self.price_difference, self.later.currency, sign=sign)
         )
         parts = []
         for kind, word in (
@@ -290,7 +296,18 @@ def compare(earlier: Revision, later: Revision) -> Comparison:
                     ),
                 ))
 
+    # A line identical in every figure is the same line — that is not a
+    # guess. Only what is left unmatched is reported, whole.
+    remaining = list(unkeyed_after)
+    unmatched_before = []
     for line in unkeyed_before:
+        twin = next((other for other in remaining if other == line), None)
+        if twin is not None:
+            remaining.remove(twin)
+        else:
+            unmatched_before.append(line)
+    unkeyed_after = remaining
+    for line in unmatched_before:
         result.changes.append(Change(
             "removed", "", line.description, line.total, 0.0,
             detail="שורה בלי קוד — לא ניתן להתאים בין גרסאות",
@@ -372,6 +389,41 @@ class QuoteHistory:
         )
         return revision
 
+    def record_issued(
+        self, lines: Iterable[Line], net_price: float, currency: str = "ILS", *,
+        reason: str = "", by: str = "", on: date | None = None,
+    ) -> tuple[Revision, bool]:
+        """A price that went to the customer. A new version when it differs
+        from the last one — with the reason given, or else what changed, in
+        words — and the same version again when nothing did. Either way it
+        is marked sent. Returns the revision and whether it is new."""
+        lines = list(lines)
+        candidate = Revision(
+            number=(self.current.number + 1) if self.current else 1,
+            on=on or date.today(), lines=lines, net_price=round(float(net_price), 2),
+            currency=currency, by=by,
+        )
+        current = self.current
+        if current is not None and _same(current, candidate):
+            if not current.is_sent:
+                self.mark_sent(current.number, on=on)
+            return current, False
+        if current is not None and not reason.strip():
+            reason = compare(current, candidate).describe()
+        candidate.reason = reason.strip()
+        self.revisions.append(candidate)
+        candidate.sent_on = on or date.today()
+
+        from ..core.audit import Action, try_record
+
+        try_record(
+            Action.ISSUED, f"quote:{self.job_id}",
+            field_name=f"revision {candidate.number}",
+            before=current.net_price if current else None, after=candidate.net_price,
+            person=by, note=candidate.reason or "נשלחה ללקוח",
+        )
+        return candidate, True
+
     def mark_sent(self, number: int, *, on: date | None = None) -> Revision:
         revision = self.get(number)
         if revision.is_sent:
@@ -434,6 +486,31 @@ class QuoteHistory:
                 Revision.from_dict(item) for item in raw.get("revisions", [])
             ],
         )
+
+
+def _same(one: Revision, other: Revision) -> bool:
+    return (abs(one.net_price - other.net_price) < 0.5 and one.currency == other.currency
+            and sorted(map(_line_key, one.lines)) == sorted(map(_line_key, other.lines)))
+
+
+def _line_key(line: Line) -> tuple:
+    return (line.key, line.description, round(line.quantity, 6), line.unit,
+            round(line.unit_price, 4))
+
+
+def lines_of_rows(rows: Iterable[dict[str, Any]]) -> list[Line]:
+    """The lines a customer copy printed (``QuoteDraft.customer_lines``)."""
+    return [
+        Line(
+            key=str(row.get("code") or ""),
+            description=str(row.get("description", "")),
+            quantity=float(row.get("quantity", 0.0) or 0.0),
+            unit=str(row.get("unit", "")),
+            unit_price=float(row.get("unit_price", 0.0) or 0.0),
+            category="extra" if row.get("extra") else "material",
+        )
+        for row in rows
+    ]
 
 
 def _lines_of(quotation: Any) -> Iterable[Line]:
@@ -533,4 +610,5 @@ __all__ = [
     "RevisionBook",
     "compare",
     "default_revisions",
+    "lines_of_rows",
 ]

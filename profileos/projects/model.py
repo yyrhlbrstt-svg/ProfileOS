@@ -429,6 +429,9 @@ class JobFile(RoundTrips):
     quote_total: float = 0.0
     currency: str = "ILS"
     quoted_on: str = ""
+    #: The version of the quotation the customer said yes to (0: not recorded),
+    #: so "what did we agree?" has one answer however often it is reprinted.
+    accepted_revision: int = 0
 
     created: str = Field(default_factory=lambda: date.today().isoformat())
     updated: str = Field(default_factory=lambda: date.today().isoformat())

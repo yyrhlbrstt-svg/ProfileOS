@@ -309,6 +309,22 @@ class DataTable(QTableWidget):
                     item.setForeground(QColor(colours[(row_index, column_index)]))
                 self.setItem(row_index, column_index, item)
 
+    def selectRow(self, row: int) -> None:  # noqa: N802 - Qt's name
+        """Select one whole row — also before the table was ever shown.
+
+        Qt's own ``selectRow`` does nothing on a table not yet laid out in a
+        right-to-left window, so a selection made while a page or a dialog is
+        being built (the job just saved, the newest version) silently
+        vanished. The selection model does not care about the layout.
+        """
+        if not 0 <= row < self.rowCount():
+            return
+        from PySide6.QtCore import QItemSelectionModel
+
+        flags = (QItemSelectionModel.SelectionFlag.ClearAndSelect
+                 | QItemSelectionModel.SelectionFlag.Rows)
+        self.selectionModel().setCurrentIndex(self.model().index(row, 0), flags)
+
     def stretch(self, column: int) -> None:
         """Give one column the slack and size the rest to their contents.
 

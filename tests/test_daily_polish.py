@@ -295,3 +295,98 @@ class TestThePunchList:
         window.close()
         window.deleteLater()
         QCoreApplication.processEvents()
+
+
+class TestEveryQuotationKeepsItsVersion:
+    def test_the_engine(self):
+        from profileos.quoting.revisions import Line, QuoteHistory
+
+        history = QuoteHistory(job_id="J-1")
+        door = Line("D1", "דלת כניסה", 1, "יח׳", 8_000)
+        window = Line("", "חלון אמבטיה", 2, "יח׳", 1_500)   # no code: matched only if identical
+        first, new = history.record_issued([door, window], 11_000)
+        assert new and first.number == 1 and first.is_sent
+        same, new = history.record_issued([window, door], 11_000)
+        assert not new and same is first                  # nothing changed: no new version
+        bigger = Line("D1", "דלת כניסה", 1, "יח׳", 9_500)
+        second, new = history.record_issued([bigger, window], 12_500)
+        assert new and second.number == 2
+        assert "⁦+1,500 ₪⁩" in second.reason and "עודכנו במחיר ⁦1⁩" in second.reason
+        assert "הוסרו" not in second.reason                 # the identical uncoded line is the same line
+
+    def test_from_the_quotation_page_and_the_decision(self, shop):
+        pytest.importorskip("PySide6")
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PySide6.QtCore import QCoreApplication
+        from PySide6.QtWidgets import QApplication
+
+        from profileos.projects import Trade, default_store
+        from profileos.quoting.revisions import default_revisions
+        from profileos.ui import money_dialogs
+        from profileos.ui.main_window import MainWindow
+        from profileos.ui.theme import LIGHT
+
+        QApplication.instance() or QApplication([])
+        store = default_store()
+        job = store.create("דירה", trade=Trade.PLUMBING)
+        window = MainWindow(LIGHT)
+        window.session.set_job(store.load(job.job_id))
+        quote = window.go_to_page("Quotation")
+        quote.start_draft()
+        quote.draft.add_extra_line("החלפת צנרת", unit_price=10_000)
+        quote._record_in_job()
+        quote._record_in_job()                               # printed twice, same price
+        quote.draft.add_extra_line("דוד שמש", unit_price=4_000)
+        quote._record_in_job()
+        history = next(h for h in default_revisions() if h.job_id == job.job_id)
+        assert [r.number for r in history.revisions] == [1, 2]
+        assert "נוספו ⁦1⁩" in history.revisions[1].reason
+
+        page = window.go_to_page("Projects")
+        page.refresh()
+        page.jobs_table.selectRow(0)
+        page.status_combo.setCurrentIndex(page.status_combo.findData("won"))
+        page.advance_status()
+        assert store.load(job.job_id).accepted_revision == 2
+
+        shown: list[str] = []
+
+        def look(dialog):
+            dialog.table.selectRow(1)
+            shown.append(dialog.changes.text())
+            shown.append(dialog.table.model().index(1, 0).data())
+            return 0
+
+        monkeypatch = pytest.MonkeyPatch()
+        monkeypatch.setattr(money_dialogs.RevisionsDialog, "exec", look)
+        try:
+            page.show_revisions()
+        finally:
+            monkeypatch.undo()
+        assert "דוד שמש" in shown[0] and "אושרה" in shown[1]
+        window.close()
+        window.deleteLater()
+        QCoreApplication.processEvents()
+
+
+def test_a_row_chosen_before_the_table_is_shown_stays_chosen():
+    """Qt's selectRow does nothing on a hidden table in a right-to-left
+    window: the job just saved, the newest version, silently unselected."""
+    pytest.importorskip("PySide6")
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QApplication
+
+    from profileos.ui.widgets import DataTable
+
+    app = QApplication.instance() or QApplication([])
+    before = app.layoutDirection()
+    app.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
+    try:
+        table = DataTable(["א", "ב"])
+        table.set_rows([["1", "2"], ["3", "4"], ["5", "6"]])
+        table.selectRow(2)
+        assert [i.row() for i in table.selectionModel().selectedRows()] == [2]
+        assert table.currentRow() == 2
+    finally:
+        app.setLayoutDirection(before)
