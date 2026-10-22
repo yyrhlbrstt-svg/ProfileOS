@@ -661,7 +661,7 @@ def check_element(
     report = FeasibilityReport(element_id=opening.element_id)
 
     for panel in build.glass:
-        subject = panel.mark or f"{opening.element_id} pane"
+        subject = panel.mark or f"זכוכית ⁦{opening.element_id}⁩"
         report.findings.extend(check_glass(panel, limits, subject))
 
     for cell in opening.all_cells():
@@ -680,7 +680,7 @@ def check_element(
             for panel in build.glass
             if panel.cell_key == cell.key
         )
-        subject = cell.label or f"{opening.element_id} {cell.column + 1}-{cell.row + 1}"
+        subject = cell.label or f"⁦{opening.element_id}⁩ שדה ⁦{cell.column + 1}-{cell.row + 1}⁩"
         handle_height = cell.sash.handle_height
         absolute = None
         if sill_height:

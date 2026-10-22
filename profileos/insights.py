@@ -188,6 +188,12 @@ def _jobs(context: dict[str, Any], today: date) -> list[Insight]:
         and job.job_id not in open_calls
         and job_account(job, cheques).uncovered <= 0.5
     ]
+    # One line per customer: two jobs handed over to the same family are one
+    # request for a review, not two names that read like a mistake.
+    by_customer: dict[str, Any] = {}
+    for job in review:
+        by_customer.setdefault(job.customer_id or job.customer_name or job.job_id, job)
+    review = list(by_customer.values())
     if review:
         found.append(Insight(
             "info",

@@ -532,7 +532,8 @@ def build_router(state: MobileState | None = None) -> Any:
                 {
                     "severity": finding.severity.hebrew,
                     "what": finding.hebrew or finding.english,
-                    "where": finding.subject,
+                    # The opening checked on the phone has no mark of its own.
+                    "where": finding.subject.replace("⁦CHECK⁩", "").replace("CHECK", "").strip(),
                     "tone": tone[finding.severity],
                 }
                 for finding in report.sorted()

@@ -220,3 +220,29 @@ def test_a_deposit_or_a_cheque_in_the_drawer_is_enough(shop):
     assert not _deposit(_scan(jobs=[paid, promised], cheques=book))
     nothing = _job("J-24", JobStatus.IN_PRODUCTION, since=TODAY, quote_total=20_000)
     assert _deposit(_scan(jobs=[nothing], cheques=book))
+
+
+def test_two_jobs_handed_to_one_family_are_one_review_request(shop):
+    jobs = [
+        _job(f"J-{n}", JobStatus.INSTALLED, since=TODAY - timedelta(days=3),
+             customer_name="יוסי לוי", customer_id="C-1")
+        for n in (1, 2)
+    ]
+    found = [i for i in _scan(jobs=jobs) if i.key.startswith("review:")]
+    assert found and found[0].detail.count("יוסי לוי") == 1
+    assert "לקוח אחד" in found[0].title
+
+
+def test_an_ordered_job_is_worth_its_approved_extras_in_the_reports():
+    from profileos import reports
+    from profileos.projects import JobLine, LineKind
+
+    job = JobFile(job_id="J-1", name="x", customer_name="לוי", status=JobStatus.WON,
+                  quote_total=3_228.0, quoted_on=TODAY.isoformat())
+    job.lines.append(JobLine(kind=LineKind.EXTRA, description="מעקה", unit_price=200,
+                             approved="אושר בטלפון"))
+    job.lines.append(JobLine(kind=LineKind.EXTRA, description="לא אושר", unit_price=999))
+    assert reports.by_customer([job])[0].value == pytest.approx(3_428.0)
+    assert reports.pipeline([job]).open_value == pytest.approx(3_428.0)
+    period = reports.month(TODAY.month, TODAY.year)
+    assert reports.sales([job], period).won_value == pytest.approx(3_428.0)

@@ -51,6 +51,16 @@ def _won(job: JobFile) -> bool:
     )
 
 
+def _worth(job: JobFile) -> float:
+    """What a job is worth before VAT: the quotation, and once it is ordered
+    also the extras the customer approved — the figure its account shows."""
+    if not _won(job):
+        return float(job.quote_total or 0.0)
+    from .projects.account import job_account
+
+    return job_account(job, ()).total_net
+
+
 def _decided(job: JobFile) -> bool:
     """Whether the customer has answered — won or lost, not still waiting."""
     return _won(job) or job.status is JobStatus.LOST
@@ -214,7 +224,7 @@ def sales(jobs: Iterable[JobFile], period: Period) -> SalesReport:
         report.quoted_value += value
         if _won(job):
             report.won_count += 1
-            report.won_value += value
+            report.won_value += _worth(job)
         elif job.status is JobStatus.LOST:
             report.lost_count += 1
             report.lost_value += value
@@ -256,7 +266,7 @@ def by_source(jobs: Iterable[JobFile]) -> list[dict[str, Any]]:
     for source, members in groups.items():
         decided = [job for job in members if _decided(job)]
         won = [job for job in members if _won(job)]
-        won_value = sum(job.quote_total for job in won)
+        won_value = sum(_worth(job) for job in won)
         rows.append({
             "source": source,
             "enquiries": len(members),
@@ -345,7 +355,7 @@ def by_customer(
             line.last_seen = when
         if _won(job):
             line.won += 1
-            line.value += float(job.quote_total or 0.0)
+            line.value += _worth(job)
             line.cost += float(booked.get(job.job_id, 0.0))
         elif job.status is JobStatus.LOST:
             line.lost += 1
@@ -399,7 +409,7 @@ def pipeline(jobs: Iterable[JobFile], *, today: date | None = None) -> Pipeline:
             continue
         key = job.status.value
         out.counts[key] = out.counts.get(key, 0) + 1
-        out.values[key] = out.values.get(key, 0.0) + float(job.quote_total or 0.0)
+        out.values[key] = out.values.get(key, 0.0) + _worth(job)
 
         due = _as_date(job.due_date)
         if due is None:

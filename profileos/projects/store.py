@@ -184,10 +184,13 @@ class JobStore:
         return counts
 
     def backlog_value(self) -> float:
-        """Quoted value of everything won but not yet installed."""
+        """Value before VAT of everything won but not yet installed — the
+        quotation and the extras the customer approved."""
+        from .account import job_account
+
         return round(
             sum(
-                job.quote_total
+                job_account(job, ()).total_net
                 for job in self.all()
                 if job.status in (JobStatus.WON, JobStatus.IN_PRODUCTION)
             ),

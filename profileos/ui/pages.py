@@ -957,7 +957,9 @@ class HomePage(Page):
                 if job.status in (JobStatus.WON, JobStatus.IN_PRODUCTION)
             ]
             quoted_value = sum(job.quote_total for job in quoted)
-            backlog_value = sum(job.quote_total for job in backlog)
+            from ..projects.account import job_account
+
+            backlog_value = sum(job_account(job, ()).total_net for job in backlog)
             self.business.update_many({
                 "quoted": (
                     f"⁦{len(quoted)}⁩",
@@ -965,7 +967,7 @@ class HomePage(Page):
                 ),
                 "backlog": (
                     f"⁦{len(backlog)}⁩",
-                    f"⁦{backlog_value:,.0f} ₪⁩ לביצוע" if backlog_value else "אין עבודות בתור",
+                    f"⁦{backlog_value:,.0f} ₪⁩ לביצוע, לפני מע״מ" if backlog_value else "אין עבודות בתור",
                 ),
             })
 
@@ -1246,10 +1248,11 @@ class ProjectsPage(Page):
         return page
 
     def _task_book(self) -> Any:
-        if self._tasks is None:
-            from ..projects.followups import default_tasks
+        # Read fresh each time: a chase scheduled from another page or the
+        # phone must be found here when the quotation is won and settled.
+        from ..projects.followups import default_tasks
 
-            self._tasks = default_tasks()
+        self._tasks = default_tasks()
         book = self.checked_book(self._tasks, "יומן המשימות")
         if book.damaged is not None:
             self._tasks = None  # read again next time: a busy file clears
@@ -1386,7 +1389,8 @@ class ProjectsPage(Page):
         layout.addLayout(search_row)
 
         self.jobs_table = DataTable(
-            ["מספר", "שם", "לקוח", "סטטוס", "יחידות", "שווי", "עודכן", "תחום", "לגבייה"],
+            ["מספר", "שם", "לקוח", "סטטוס", "יחידות", "שווי לפני מע״מ", "עודכן", "תחום",
+             "לגבייה כולל מע״מ"],
             empty_text="אין עדיין פרויקטים — לחץ ״פרויקט חדש״ כדי לפתוח את הראשון",
         )
         self.jobs_table.itemSelectionChanged.connect(self._show_job)
@@ -1396,6 +1400,10 @@ class ProjectsPage(Page):
         self.job_summary = QLabel("לא נבחר פרויקט")
         self.job_summary.setObjectName("FieldValue")
         self.job_summary.setWordWrap(True)
+        # Right-aligned whatever the first character is: a job named in
+        # English must not swing the whole summary to the left.
+        self.job_summary.setAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignAbsolute | Qt.AlignmentFlag.AlignTop)
         detail.add(self.job_summary)
 
         row = QHBoxLayout()
@@ -1497,18 +1505,22 @@ class ProjectsPage(Page):
             self.job_summary.setText("בחרו פרויקט מהרשימה כדי לראות אותו ולפעול עליו")
             return
 
-        lines = [f"{job.job_id} · {job.name}"]
+        # The name first: a line that starts with "J-2026-0001" is laid out
+        # left-to-right, and the whole summary with it.
+        lines = [f"{job.name} · ⁦{job.job_id}⁩"]
         if job.customer_name:
             lines.append(f"לקוח: {job.customer_name}")
         if job.site_address:
             lines.append(f"אתר: {job.site_address}")
         if job.reference:
             lines.append(f"אסמכתה: {job.reference}")
-        lines.append(
-            f"סטטוס: {job.status.hebrew} · {job.unit_count} יחידות "
-            f"({job.opening_count} פתחים) · "
-            f"⁦{job.total_area:.1f} m²⁩"
-        )
+        if job.opening_count:
+            lines.append(
+                f"סטטוס: {job.status.hebrew} · ⁦{job.unit_count}⁩ יחידות "
+                f"(⁦{job.opening_count}⁩ פתחים) · ⁦{job.total_area:.1f}⁩ מ״ר"
+            )
+        else:
+            lines.append(f"סטטוס: {job.status.hebrew}")
         if job.quote_total:
             lines.append(f"הצעה אחרונה: ⁦{job.quote_total:,.0f} ₪⁩ ({job.quoted_on})")
         orders = [o for o in job.material_orders if o.state.value != "cancelled"]
@@ -2655,7 +2667,7 @@ class ProjectsPage(Page):
             ),
             "backlog": (
                 f"⁦{backlog:,.0f} ₪⁩" if backlog else "—",
-                "הוזמן וטרם הותקן",
+                "הוזמן וטרם הותקן · לפני מע״מ",
             ),
         })
 
@@ -2925,6 +2937,30 @@ class ElementPage(Page):
     hebrew = "פתח"
     subtitle = "תכנון פתח וגזירת רשימת חיתוך, זכוכית ופרזול"
 
+    def _fit_form(self) -> None:
+        """As wide as the card needs, plus room for the scroll bar: the card
+        is never squeezed under its own fields — measured again once the
+        style sheet has given the fields their real padding."""
+        scroll, card = self._form_scroll, self._form_card
+        extent = scroll.verticalScrollBar().sizeHint().width()
+        need = card.minimumSizeHint().width() + extent + 2
+        scroll.setMinimumWidth(need)
+        widest = max(METRICS.panel_width + extent + 2, need)
+        scroll.setMaximumWidth(widest)
+        # The panes are shared out again, so a form that changed width
+        # leaves no empty strip beside it.
+        splitter = getattr(self, "_splitter", None)
+        if splitter is not None:
+            total = sum(splitter.sizes())
+            if total > 0:
+                form = min(widest, max(need, splitter.sizes()[0]))
+                splitter.setSizes([form, max(0, total - form)])
+
+    def showEvent(self, event: Any) -> None:  # noqa: N802 - Qt override
+        super().showEvent(event)
+        if hasattr(self, "_form_scroll"):
+            self._fit_form()
+
     def build(self) -> None:
         # Searching the library is the first action on this screen, because
         # nobody's day starts by typing twelve numbers for a window they have
@@ -3084,11 +3120,13 @@ class ElementPage(Page):
         form_scroll.setWidgetResizable(True)
         form_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
         form_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        # As wide as the card needs, plus room for the scroll bar: the card
-        # is never squeezed under its own fields.
-        extent = form_scroll.verticalScrollBar().sizeHint().width()
-        form_scroll.setMinimumWidth(form_card.minimumSizeHint().width() + extent + 2)
-        form_scroll.setMaximumWidth(max(METRICS.panel_width, form_card.minimumSizeHint().width()) + extent + 2)
+        # A long series name must not make the whole form wider than its pane.
+        for combo in form_card.findChildren(QComboBox):
+            combo.setSizeAdjustPolicy(
+                QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+            combo.setMinimumContentsLength(12)
+        self._form_scroll, self._form_card = form_scroll, form_card
+        self._fit_form()
         splitter.addWidget(form_scroll)
 
         right = QWidget()
@@ -3224,6 +3262,7 @@ class ElementPage(Page):
         # splitter halves the space, and a form capped at its panel width
         # leaves the remainder as a hole in the middle of the screen.
         splitter.setSizes([METRICS.panel_width, METRICS.panel_width * 3])
+        self._splitter = splitter
         self.body.addWidget(splitter, 1)
 
     #: Mark prefixes, so a picked preset arrives named the way the shop names
@@ -11020,7 +11059,7 @@ class ReportsPage(Page):
         self.stats.update_many({
             "won": (
                 f"⁦{report.won_value:,.0f} ₪⁩",
-                f"⁦{report.won_count}⁩ תיקים",
+                f"⁦{report.won_count}⁩ תיקים · לפני מע״מ, עם תוספות שאושרו",
             ),
             "rate": (
                 f"⁦{rate.value:.0f}%⁩",
