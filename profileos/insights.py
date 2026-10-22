@@ -470,7 +470,7 @@ def _paperwork(context: dict[str, Any], today: date) -> list[Insight]:
     try:
         from .quoting.suppliers import all_suppliers
 
-        stale = [supplier for supplier in all_suppliers() if not supplier.is_current()]
+        stale = [supplier for supplier in all_suppliers() if not supplier.is_current]
     except Exception:  # noqa: BLE001 - no suppliers is not a finding
         stale = []
     if stale:
@@ -567,9 +567,99 @@ def _accounts(context: dict[str, Any], today: date) -> list[Insight]:
     return found
 
 
+def _catalogue(context: dict[str, Any], today: date) -> list[Insight]:
+    """New supplier files, catalogue editions waiting, and figures they made stale."""
+    from .catalogue.editions import (
+        confirmation_hits, open_jobs_on, stale_confirmation,
+    )
+
+    found: list[Insight] = []
+    jobs = context.get("jobs") or []
+    confirmations = context.get("confirmations")
+
+    findings = context.get("findings")
+    if findings is not None:
+        fresh = findings.open_findings()
+        if fresh:
+            suppliers = sorted({f.supplier for f in fresh if f.supplier})
+            found.append(Insight(
+                "warning",
+                _count(len(fresh), "ספק פרסם קובץ קטלוג חדש", "קבצי קטלוג חדשים אצל הספקים"),
+                "כדאי לבדוק אם השתנו פרופילים לפני החיתוך הבא: "
+                + _names(fresh, lambda f: f"⁦{f.name}⁩") + (
+                    f" ({', '.join(suppliers[:3])})" if suppliers else ""
+                ),
+                "Catalogue", "catalogue-files:" + ",".join(sorted(f.finding_id for f in fresh)),
+            ))
+
+    watch = context.get("watch")
+    if watch is not None:
+        for source in watch:
+            if source.last_error:
+                found.append(Insight(
+                    "info", f"לא ניתן לבדוק את {source.title}",
+                    source.last_error, "Catalogue",
+                    f"catalogue-source:{source.source_id}:{today}",
+                ))
+
+    editions = context.get("editions")
+    if editions is None:
+        return found
+    for edition in editions.pending():
+        diff = editions.diff(edition)
+        affected = open_jobs_on(edition.system_id, jobs)
+        confirmation = confirmations.get(edition.system_id) if (
+            confirmations is not None and edition.system_id
+        ) else None
+        hits = confirmation_hits(diff, confirmation)
+        detail = diff.summary()
+        if affected:
+            detail += " · " + _count(
+                len(affected), "פרויקט פתוח אחד על הסדרה", "פרויקטים פתוחים על הסדרה"
+            ) + ": " + _names(affected, lambda job: f"⁦{job.job_id}⁩")
+        if hits:
+            detail += " · נתוני החיתוך שאושרו נוגעים ל־" + ", ".join(
+                hit.describe() for hit in hits[:3]
+            )
+        severity = "danger" if hits else ("warning" if (affected and not diff.empty) else "info")
+        found.append(Insight(
+            severity, f"מהדורת קטלוג חדשה ל{edition.label} ממתינה לבדיקה",
+            detail, "Catalogue", f"edition:{edition.edition_id}",
+        ))
+
+    if confirmations is not None:
+        for confirmation in confirmations:
+            hits = stale_confirmation(editions, confirmation.entry_id, confirmation)
+            if not hits:
+                continue
+            affected = open_jobs_on(confirmation.entry_id, jobs)
+            detail = (
+                "הקטלוג החדש שאושר שינה פרופילים שנתוני החיתוך נקראו מהם: "
+                + ", ".join(hit.describe() for hit in hits[:4])
+                + ". הזינו שוב את נתוני היצרן מהקטלוג החדש לפני החיתוך הבא."
+            )
+            if affected:
+                detail += " " + _count(
+                    len(affected), "פרויקט פתוח אחד על הסדרה", "פרויקטים פתוחים על הסדרה"
+                ) + ": " + _names(affected, lambda job: f"⁦{job.job_id}⁩")
+            try:
+                from .systems import DIRECTORY
+
+                entry = DIRECTORY.get(confirmation.entry_id)
+                series = entry.display if entry is not None else confirmation.entry_id
+            except Exception:  # noqa: BLE001 - the id still says which series
+                series = confirmation.entry_id
+            found.append(Insight(
+                "danger", f"נתוני החיתוך של {series} מבוססים על קטלוג ישן",
+                detail, "Catalogue",
+                f"stale-confirmation:{confirmation.entry_id}:{confirmation.entered_at or confirmation.entered_on}",
+            ))
+    return found
+
+
 RULES: tuple[Callable[[dict[str, Any], date], list[Insight]], ...] = (
     _data_safety, _jobs, _accounts, _field, _customers, _money, _service, _tasks,
-    _paperwork, _draft,
+    _paperwork, _draft, _catalogue,
 )
 
 
@@ -673,7 +763,31 @@ def gather_context(**given: Any) -> dict[str, Any]:
 
         return default_agenda()
 
+    def editions() -> Any:
+        from .catalogue.editions import default_editions
+
+        return default_editions()
+
+    def findings() -> Any:
+        from .catalogue.watch import default_findings
+
+        return default_findings()
+
+    def watch() -> Any:
+        from .catalogue.watch import default_watch
+
+        return default_watch()
+
+    def confirmations() -> Any:
+        from .systems import default_confirmations
+
+        return default_confirmations()
+
     load("agenda", agenda)
+    load("editions", editions)
+    load("findings", findings)
+    load("watch", watch)
+    load("confirmations", confirmations)
     load("customers", customers)
     load("tasks", tasks)
     load("cheques", cheques)
@@ -737,7 +851,9 @@ def dismiss(key: str) -> None:
 _BOOK_NAMES = {
     "store": "תיקי העבודה", "jobs": "תיקי העבודה", "customers": "ספר הלקוחות",
     "tasks": "משימות המעקב", "cheques": "פנקס הצ׳קים", "service": "קריאות השירות",
-    "agenda": "יומן הביקורים",
+    "agenda": "יומן הביקורים", "editions": "מהדורות הקטלוג",
+    "findings": "ממצאי מעקב הספקים", "watch": "מקורות הספקים במעקב",
+    "confirmations": "נתוני היצרן שאושרו לחיתוך",
 }
 
 

@@ -101,6 +101,10 @@ def run(argv: Sequence[str] | None = None, *, theme: str | None = None) -> int:
     window = MainWindow(palette)
     window.auto_backup = True
     window.autosave_enabled = True
+    window.watch_enabled = True
+    from PySide6.QtCore import QTimer
+
+    QTimer.singleShot(20_000, window.watch_suppliers)
     _install_error_handler(window)
     if session is not None:
         window.set_session_owner(session)

@@ -11,6 +11,7 @@ from typing import Any, Callable
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QCompleter,
     QDateEdit,
@@ -664,6 +665,159 @@ class ConfirmSystemDialog(_FormDialog):
         }
 
 
+def _system_combo(selected: str = "") -> QComboBox:
+    """Every series in the directory, plus "none" for a source not tied to one."""
+    from ..systems import DIRECTORY
+
+    combo = QComboBox()
+    combo.addItem("לא משויך לסדרה מסוימת", "")
+    for entry in sorted(DIRECTORY, key=lambda e: (e.manufacturer, e.series)):
+        combo.addItem(entry.display, entry.id)
+    index = combo.findData(selected)
+    combo.setCurrentIndex(max(0, index))
+    return combo
+
+
+class RecordEditionDialog(_FormDialog):
+    """Keep what was just read from a catalogue as a dated edition.
+
+    Asks only what the comparison needs: where the catalogue came from (the
+    provenance, required), which series, and whether it is the whole series
+    or a partial pack — because only a whole catalogue can say a profile
+    was dropped.
+    """
+
+    accept_text = "שמירה כמהדורה"
+
+    def __init__(self, series: str = "", count: int = 0,
+                 parent: QWidget | None = None) -> None:
+        super().__init__("שמירת מהדורת קטלוג", parent)
+        self.setMinimumWidth(520)
+
+        self.source = QLineEdit()
+        self.source.setPlaceholderText("קטלוג קליל 4300, מהדורת מרץ 2026, מאתר הספק")
+        self.system = _system_combo(self._guess(series))
+        self.series = QLineEdit(series)
+        self.series.setPlaceholderText("שם הסדרה, אם אינה ברשימה")
+        self.complete = QCheckBox("זה הקטלוג המלא של הסדרה, לא עדכון חלקי")
+        self.recorded_by = QLineEdit()
+        self.recorded_by.setPlaceholderText("מי קלט")
+
+        self.grid.add("מקור", self.source)
+        self.grid.add("סדרה", self.system)
+        self.grid.add("שם הסדרה", self.series)
+        self.grid.add_span(self.complete)
+        self.grid.add("נקלט על ידי", self.recorded_by)
+
+        hint = QLabel(
+            f"⁦{count}⁩ פרופילים יישמרו כמהדורה ממתינה ויושוו למה שאושר קודם. "
+            "שום מספר לא מחליף את הספרייה עד שמאשרים את המהדורה."
+        )
+        hint.setObjectName("Hint")
+        hint.setWordWrap(True)
+        self.layout().insertWidget(1, hint)
+
+        self.source.textChanged.connect(self._update_ok)
+        self.series.textChanged.connect(self._update_ok)
+        self.system.currentIndexChanged.connect(self._update_ok)
+        self._update_ok()
+        self.source.setFocus()
+
+    @staticmethod
+    def _guess(series: str) -> str:
+        from ..systems import DIRECTORY
+
+        text = series.strip()
+        if not text:
+            return ""
+        if DIRECTORY.get(text) is not None:
+            return text
+        exact = [e for e in DIRECTORY.search(text) if e.series.casefold() == text.casefold()]
+        return exact[0].id if len(exact) == 1 else ""
+
+    def _update_ok(self, *_: Any) -> None:
+        self.ok_button.setEnabled(
+            bool(self.source.text().strip())
+            and bool(self.system.currentData() or self.series.text().strip())
+        )
+
+    def values(self) -> dict[str, Any]:
+        return {
+            "source": self.source.text().strip(),
+            "system_id": self.system.currentData() or "",
+            "series": self.series.text().strip(),
+            "complete": self.complete.isChecked(),
+            "recorded_by": self.recorded_by.text().strip(),
+        }
+
+
+class WatchSourceDialog(_FormDialog):
+    """A supplier folder or downloads page for the software to keep an eye on."""
+
+    accept_text = "הוספה למעקב"
+
+    def __init__(self, kind: str = "folder", parent: QWidget | None = None) -> None:
+        title = "מעקב אחרי תיקייה" if kind == "folder" else "מעקב אחרי אתר ספק"
+        super().__init__(title, parent)
+        self.setMinimumWidth(520)
+        self.kind = kind
+
+        self.location = QLineEdit()
+        row = QHBoxLayout()
+        row.setSpacing(METRICS.space(2))
+        row.addWidget(self.location, 1)
+        holder = QWidget()
+        holder.setLayout(row)
+        row.setContentsMargins(0, 0, 0, 0)
+        if kind == "folder":
+            self.location.setPlaceholderText("התיקייה שבה נשמרים קבצי הספק")
+            browse = QPushButton("בחירה…")
+            browse.clicked.connect(self._browse)
+            row.addWidget(browse)
+        else:
+            self.location.setPlaceholderText("כתובת דף ההורדות או הקטלוגים באתר הספק")
+            self.location.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
+        self.supplier = QLineEdit()
+        self.supplier.setPlaceholderText("קליל, אקסטל, אלומיל…")
+        self.system = _system_combo()
+
+        self.grid.add("מיקום", holder)
+        self.grid.add("ספק", self.supplier)
+        self.grid.add("סדרה", self.system)
+
+        hint = QLabel(
+            "התוכנה בודקת את המקור בעצמה ומודיעה כשמופיע בו קובץ קטלוג חדש "
+            "או מעודכן. הבדיקה הראשונה רק רושמת את מה שכבר קיים."
+            if kind == "folder" else
+            "התוכנה בודקת את הדף פעם ביום ומודיעה כשמופיע בו קישור לקובץ קטלוג "
+            "חדש, או כשקובץ קיים מתעדכן. היא לא מורידה ולא קולטת דבר בעצמה."
+        )
+        hint.setObjectName("Hint")
+        hint.setWordWrap(True)
+        self.layout().insertWidget(1, hint)
+
+        self.location.textChanged.connect(
+            lambda text: self.ok_button.setEnabled(bool(text.strip()))
+        )
+        self.ok_button.setEnabled(False)
+        self.location.setFocus()
+
+    def _browse(self) -> None:
+        from PySide6.QtWidgets import QFileDialog
+
+        folder = QFileDialog.getExistingDirectory(self, "תיקיית קבצי הספק")
+        if folder:
+            self.location.setText(folder)
+
+    def values(self) -> dict[str, Any]:
+        return {
+            "kind": self.kind,
+            "location": self.location.text().strip(),
+            "supplier": self.supplier.text().strip(),
+            "system_id": self.system.currentData() or "",
+        }
+
+
 __all__ = [
     "CloseServiceCallDialog",
     "ConfirmSystemDialog",
@@ -671,6 +825,8 @@ __all__ = [
     "NewCustomerDialog",
     "NewJobDialog",
     "NewServiceCallDialog",
+    "RecordEditionDialog",
+    "WatchSourceDialog",
 ]
 
 

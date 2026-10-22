@@ -6669,6 +6669,16 @@ class _EmptyJob:
 # Catalogue
 # --------------------------------------------------------------------------- #
 
+def _short_date(text: str) -> str:
+    """An ISO date as the shop reads it, isolated from the Hebrew around it."""
+    from datetime import date
+
+    try:
+        return f"{date.fromisoformat(str(text)[:10]):%d/%m/%Y}"
+    except ValueError:
+        return str(text)
+
+
 class CataloguePage(Page):
     """Build an owned profile library from what suppliers publish."""
 
@@ -6684,6 +6694,11 @@ class CataloguePage(Page):
         run.clicked.connect(self.run)
         self.header.add_action(run)
 
+        edition = QPushButton("שמירה כמהדורה…")
+        edition.setToolTip("לשמור את מה שנקלט ולהשוות למהדורה הקודמת של הסדרה")
+        edition.clicked.connect(self.record_edition)
+        self.header.add_action(edition)
+
         export = QPushButton("שמירה כתוסף")
         export.clicked.connect(self.export_plugin)
         self.header.add_action(export)
@@ -6697,9 +6712,545 @@ class CataloguePage(Page):
 
         tabs = QTabWidget()
         tabs.addTab(self._systems_tab(), "מערכות")
-        tabs.addTab(self._ingest_tab(), "קליטת קטלוג")
+        self.ingest_page = self._ingest_tab()
+        tabs.addTab(self.ingest_page, "קליטת קטלוג")
+        self.updates_page = self._updates_tab()
+        tabs.addTab(self.updates_page, "עדכוני ספקים")
         self.body.addWidget(tabs, 1)
         self.tabs = tabs
+        # The intake figures belong to the intake: elsewhere they are empty
+        # boxes taking the room the tables need.
+        tabs.currentChanged.connect(
+            lambda _index: self.stats.setVisible(tabs.currentWidget() is self.ingest_page)
+        )
+        self.stats.setVisible(False)
+
+    # -- supplier updates ----------------------------------------------------- #
+    def _updates_tab(self) -> QWidget:
+        """What the suppliers published, and what it changes for this shop.
+
+        Three questions, top to bottom: where do we look, what turned up
+        there, and — once a catalogue was read — what is different from the
+        figures the shop already works to, and which open jobs that touches.
+        """
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, METRICS.space(3), 0, 0)
+        layout.setSpacing(METRICS.space(3))
+
+        splitter = QSplitter(Qt.Orientation.Vertical)
+
+        sources = Card("איפה הספקים מפרסמים")
+        buttons = QHBoxLayout()
+        buttons.setSpacing(METRICS.space(2))
+        for text, handler, primary in (
+            ("בדיקה עכשיו", self.check_sources, True),
+            ("מעקב אחרי תיקייה…", lambda: self.add_source("folder"), False),
+            ("מעקב אחרי אתר ספק…", lambda: self.add_source("web"), False),
+            ("הפסקת מעקב", self.remove_source, False),
+        ):
+            button = QPushButton(text)
+            if primary:
+                button.setObjectName("Primary")
+                self.check_button = button
+            button.clicked.connect(handler)
+            buttons.addWidget(button)
+        buttons.addStretch(1)
+        sources.add_layout(buttons)
+        self.sources_table = DataTable(
+            ["ספק", "סוג", "מיקום", "נבדק", "מצב"],
+            empty_text="הוסיפו את התיקייה שאליה נשמרים קבצי הספקים, או את דף "
+                       "ההורדות באתר שלהם — והתוכנה תודיע כשמופיע קטלוג חדש",
+        )
+        sources.add(self.sources_table, 1)
+        splitter.addWidget(sources)
+
+        files = Card("קבצים חדשים אצל הספקים")
+        buttons = QHBoxLayout()
+        buttons.setSpacing(METRICS.space(2))
+        for text, handler in (
+            ("קליטה…", self.ingest_finding),
+            ("הורדה", self.download_finding),
+            ("פתיחה", self.open_finding),
+            ("סימון כטופל", self.dismiss_finding),
+        ):
+            button = QPushButton(text)
+            button.clicked.connect(handler)
+            buttons.addWidget(button)
+        self.show_handled = QCheckBox("להציג גם מה שטופל")
+        self.show_handled.toggled.connect(lambda _on: self._refresh_findings())
+        buttons.addStretch(1)
+        buttons.addWidget(self.show_handled)
+        files.add_layout(buttons)
+        self.findings_table = DataTable(
+            ["ספק", "קובץ", "מה קרה", "נמצא", "טופל"],
+            empty_text="אין קבצים חדשים",
+        )
+        files.add(self.findings_table, 1)
+        splitter.addWidget(files)
+
+        editions = Card("מהדורות קטלוג")
+        buttons = QHBoxLayout()
+        buttons.setSpacing(METRICS.space(2))
+        accept = QPushButton("אישור המהדורה")
+        accept.setObjectName("Primary")
+        accept.clicked.connect(self.accept_edition)
+        reject = QPushButton("דחייה")
+        reject.clicked.connect(self.reject_edition)
+        buttons.addWidget(accept)
+        buttons.addWidget(reject)
+        buttons.addStretch(1)
+        editions.add_layout(buttons)
+        row = QSplitter(Qt.Orientation.Horizontal)
+        self.editions_table = DataTable(
+            ["סדרה", "מקור", "התקבלה", "מצב", "שינויים", "פרויקטים פתוחים"],
+            empty_text="קלטו קטלוג בלשונית ״קליטת קטלוג״ ושמרו אותו כמהדורה — "
+                       "והשינויים מול הקודמת יופיעו כאן",
+        )
+        self.editions_table.itemSelectionChanged.connect(self._show_edition)
+        row.addWidget(self.editions_table)
+        self.edition_detail = QPlainTextEdit()
+        self.edition_detail.setReadOnly(True)
+        self.edition_detail.setPlaceholderText("בחרו מהדורה כדי לראות מה השתנה")
+        row.addWidget(self.edition_detail)
+        row.setStretchFactor(0, 3)
+        row.setStretchFactor(1, 2)
+        editions.add(row, 1)
+        splitter.addWidget(editions)
+        splitter.setStretchFactor(0, 2)
+        splitter.setStretchFactor(1, 2)
+        splitter.setStretchFactor(2, 3)
+
+        layout.addWidget(splitter, 1)
+
+        note = QLabel(
+            "התוכנה לא ממציאה ולא מורידה נתוני ספק בעצמה: היא מודיעה כשמופיע קובץ, "
+            "המספרים נכנסים רק מקובץ הספק עצמו בקליטה, והספרייה מתעדכנת רק "
+            "כשמישהו מאשר את המהדורה."
+        )
+        note.setObjectName("Hint")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+
+        self._source_ids: list[str] = []
+        self._finding_ids: list[str] = []
+        self._edition_ids: list[str] = []
+        self._from_finding = ""
+        self._checking = False
+        return page
+
+    def _books(self) -> tuple[Any, Any, Any]:
+        from ..catalogue.editions import default_editions
+        from ..catalogue.watch import default_findings, default_watch
+
+        return (
+            self.checked_book(default_watch(), "רשימת המקורות במעקב"),
+            self.checked_book(default_findings(), "רשימת הקבצים החדשים"),
+            self.checked_book(default_editions(), "מהדורות הקטלוג"),
+        )
+
+    def _refresh_updates(self) -> None:
+        self._refresh_sources()
+        self._refresh_findings()
+        self._refresh_editions()
+
+    def _refresh_sources(self) -> None:
+        from datetime import datetime
+
+        from ..catalogue.watch import Kind, default_watch
+
+        watch = self.checked_book(default_watch(), "רשימת המקורות במעקב")
+        sources = list(watch)
+        self._source_ids = [s.source_id for s in sources]
+        rows, colours = [], {}
+        for index, source in enumerate(sources):
+            checked = "עדיין לא"
+            if source.last_checked:
+                try:
+                    checked = f"⁦{datetime.fromisoformat(source.last_checked):%d/%m %H:%M}⁩"
+                except ValueError:
+                    checked = source.last_checked
+            state = source.last_error or (
+                f"⁦{len(source.known)}⁩ קבצים מוכרים" if source.last_checked else "ממתין לבדיקה"
+            )
+            rows.append([
+                source.title, Kind.HEBREW.get(source.kind, source.kind),
+                source.location, checked, state,
+            ])
+            if source.last_error:
+                colours[(index, 4)] = self.colours.warning
+        self.sources_table.set_rows(rows, colours=colours)
+
+    def _refresh_findings(self) -> None:
+        from ..catalogue.watch import Change, default_findings
+
+        findings = self.checked_book(default_findings(), "רשימת הקבצים החדשים")
+        shown = [f for f in findings if f.open or self.show_handled.isChecked()]
+        self._finding_ids = [f.finding_id for f in shown]
+        rows, colours = [], {}
+        for index, finding in enumerate(shown):
+            rows.append([
+                finding.supplier, finding.name,
+                Change.HEBREW.get(finding.change, finding.change),
+                _short_date(finding.found_on),
+                finding.handled_how or "—",
+            ])
+            if finding.open:
+                colours[(index, 2)] = self.colours.warning
+        self.findings_table.set_rows(rows, colours=colours)
+
+    def _refresh_editions(self) -> None:
+        from ..catalogue.editions import EditionState, default_editions, open_jobs_on
+
+        book = self.checked_book(default_editions(), "מהדורות הקטלוג")
+        jobs = self._open_jobs()
+        editions = list(book)
+        self._edition_ids = [e.edition_id for e in editions]
+        rows, colours = [], {}
+        tint = {
+            EditionState.PENDING: self.colours.warning,
+            EditionState.ACCEPTED: self.colours.success,
+            EditionState.REJECTED: self.colours.text_faint,
+        }
+        for index, edition in enumerate(editions):
+            affected = open_jobs_on(edition.system_id, jobs)
+            rows.append([
+                edition.label, edition.source, _short_date(edition.received_on),
+                EditionState.HEBREW.get(edition.state, edition.state),
+                book.diff(edition).summary(),
+                len(affected) or "—",
+            ])
+            colours[(index, 3)] = tint.get(edition.state, self.colours.text)
+        self.editions_table.set_rows(rows, numeric_columns=(5,), colours=colours)
+        self.edition_detail.clear()
+
+    def _open_jobs(self) -> list[Any]:
+        try:
+            from ..projects import default_store
+
+            return default_store().all()
+        except Exception:  # noqa: BLE001 - the comparison still shows without jobs
+            return []
+
+    def _selected(self, table: Any, ids: list[str]) -> str:
+        model = table.selectionModel()
+        if model is None or not model.selectedRows():
+            return ""
+        row = model.selectedRows()[0].row()
+        return ids[row] if row < len(ids) else ""
+
+    def _show_edition(self) -> None:
+        from ..catalogue.editions import (
+            EditionState, confirmation_hits, default_editions, open_jobs_on,
+        )
+
+        edition_id = self._selected(self.editions_table, self._edition_ids)
+        book = default_editions()
+        edition = book.get(edition_id)
+        if edition is None:
+            return
+        diff = book.diff(edition)
+        lines = [
+            f"{edition.label} — {edition.source}",
+            f"התקבלה ⁦{_short_date(edition.received_on)}⁩"
+            + (f" · נקלטה על ידי {edition.recorded_by}" if edition.recorded_by else "")
+            + (" · קטלוג מלא" if edition.complete else " · עדכון חלקי"),
+        ]
+        if edition.state != EditionState.PENDING:
+            lines.append(
+                f"{EditionState.HEBREW[edition.state]}"
+                + (f" על ידי {edition.decided_by}" if edition.decided_by else "")
+                + (f" — {edition.note}" if edition.note else "")
+            )
+        lines.append("")
+        lines += diff.lines()
+        affected = open_jobs_on(edition.system_id, self._open_jobs())
+        if affected:
+            lines.append("פרויקטים פתוחים על הסדרה")
+            lines += [f"  • {job.job_id} — {job.name}" for job in affected]
+            lines.append("")
+        if edition.system_id:
+            from ..systems import default_confirmations
+
+            hits = confirmation_hits(diff, default_confirmations().get(edition.system_id))
+            if hits:
+                lines.append("נתוני החיתוך שאושרו לסדרה נוגעים בפרופילים שהשתנו")
+                lines += [f"  • {hit.describe()}" for hit in hits]
+                lines.append("אחרי האישור צריך להזין אותם שוב מהקטלוג החדש.")
+        self.edition_detail.setPlainText("\n".join(lines))
+
+    # -- sources -------------------------------------------------------------- #
+    def add_source(self, kind: str) -> None:
+        from ..catalogue.watch import default_watch
+        from .dialogs import WatchSourceDialog
+
+        dialog = WatchSourceDialog(kind, parent=self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        values = dialog.values()
+        try:
+            source = default_watch().add(
+                values["kind"], values["location"],
+                supplier=values["supplier"], system_id=values["system_id"],
+            )
+        except Exception as exc:  # noqa: BLE001 - the reason is the answer
+            self.report(exc, "המקור לא נוסף")
+            return
+        self._refresh_sources()
+        self.status(f"{source.title} נוסף למעקב — בודקים עכשיו מה כבר קיים בו")
+        self.check_sources()
+
+    def remove_source(self) -> None:
+        from ..catalogue.watch import default_watch
+
+        source_id = self._selected(self.sources_table, self._source_ids)
+        if not source_id:
+            self.report(ProfileOSError("בחרו מקור מהרשימה"), "לא נבחר מקור")
+            return
+        try:
+            default_watch().remove(source_id)
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "המקור לא הוסר")
+            return
+        self._refresh_sources()
+        self.status("המעקב אחרי המקור הופסק. הקבצים שנמצאו בו נשארו ברשימה.")
+
+    def check_sources(self) -> None:
+        """Check every source now, off the screen's thread."""
+        from ..catalogue.watch import check_all
+        from .background import run_in_background
+
+        if self._checking:
+            return
+        self._checking = True
+        self.check_button.setEnabled(False)
+        self.check_button.setText("בודק…")
+
+        def done(summary: Any, error: BaseException | None) -> None:
+            self._checking = False
+            self.check_button.setEnabled(True)
+            self.check_button.setText("בדיקה עכשיו")
+            if error is not None:
+                self.report(error, "הבדיקה נכשלה")
+                return
+            self._refresh_updates()
+            self.status(summary.describe())
+
+        run_in_background(lambda: check_all(fetch=self.fetch), done)
+
+    #: Replaced in tests; ``None`` means the real network.
+    fetch = None
+
+    # -- findings ------------------------------------------------------------- #
+    def _finding(self) -> Any:
+        from ..catalogue.watch import default_findings
+
+        finding_id = self._selected(self.findings_table, self._finding_ids)
+        if not finding_id:
+            self.report(ProfileOSError("בחרו קובץ מהרשימה"), "לא נבחר קובץ")
+            return None
+        finding = default_findings().get(finding_id)
+        if finding is None:
+            self.report(ProfileOSError("הקובץ כבר לא ברשימה"), "לא נמצא")
+        return finding
+
+    def _local_file(self, finding: Any, then: Any) -> None:
+        """The finding as a file on this computer, downloading it if needed."""
+        from ..catalogue.watch import default_findings, download
+        from .background import run_in_background
+
+        if finding.local_path and Path(finding.local_path).is_file():
+            then(Path(finding.local_path))
+            return
+        if not finding.is_web:
+            path = Path(finding.where)
+            if not path.is_file():
+                self.report(ProfileOSError(f"הקובץ {finding.name} כבר לא בתיקייה"), "לא נמצא")
+                return
+            then(path)
+            return
+        self.status(f"מוריד את {finding.name}…")
+
+        def done(path: Any, error: BaseException | None) -> None:
+            if error is not None:
+                from ..catalogue.watch import in_words
+
+                self.report(ProfileOSError(in_words(error)), "ההורדה נכשלה")
+                return
+            try:
+                default_findings().set_local_path(finding.finding_id, str(path))
+            except Exception as exc:  # noqa: BLE001 - the file is there either way
+                _log.warning("Could not note the download: %s", exc)
+            self.status(f"נשמר: {path}")
+            then(Path(path))
+
+        run_in_background(lambda: download(finding, fetch=self.fetch), done)
+
+    def download_finding(self) -> None:
+        finding = self._finding()
+        if finding is not None:
+            self._local_file(finding, lambda _path: self._refresh_findings())
+
+    def open_finding(self) -> None:
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+
+        finding = self._finding()
+        if finding is None:
+            return
+        if finding.is_web and not finding.local_path:
+            QDesktopServices.openUrl(QUrl(finding.where))
+            return
+        target = Path(finding.local_path or finding.where)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(target)))
+
+    def dismiss_finding(self) -> None:
+        from ..catalogue.watch import default_findings
+
+        finding = self._finding()
+        if finding is None:
+            return
+        try:
+            default_findings().handle(finding.finding_id, "נבדק — לא רלוונטי")
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "לא סומן")
+            return
+        self._refresh_findings()
+
+    def ingest_finding(self) -> None:
+        """Take a new supplier file straight to the ingestion tab."""
+        finding = self._finding()
+        if finding is None:
+            return
+
+        def ready(path: Path) -> None:
+            from ..catalogue.watch import default_watch, unpack
+
+            suffix = path.suffix.lower()
+            if suffix == ".zip":
+                try:
+                    path = unpack(path)
+                except Exception as exc:  # noqa: BLE001
+                    self.report(exc, "הקובץ הדחוס לא נפתח")
+                    return
+                self._drawings = path
+                self.drawings_label.setText(str(path))
+            elif suffix in (".dxf", ".dwg"):
+                self._drawings = path.parent
+                self.drawings_label.setText(str(path.parent))
+            elif suffix in (".pdf", ".csv", ".tsv", ".txt"):
+                self._table = path
+                self.table_label.setText(path.name)
+            else:
+                self.report(
+                    ProfileOSError("את סוג הקובץ הזה אי אפשר לקלוט ישירות — פתחו אותו "
+                                   "ושמרו את הטבלה כ־CSV"),
+                    "לא ניתן לקלוט",
+                )
+                return
+            source = default_watch().get(finding.source_id)
+            if source is not None and source.system_id:
+                from ..systems import DIRECTORY
+
+                entry = DIRECTORY.get(source.system_id)
+                if entry is not None:
+                    self.series.setCurrentText(entry.series)
+            self._from_finding = finding.finding_id
+            self.tabs.setCurrentWidget(self.ingest_page)
+            self.status("הקובץ מוכן לקליטה — הוסיפו את השרטוטים או הטבלה המתאימים ולחצו ״קליטה״")
+
+        self._local_file(finding, ready)
+
+    # -- editions ------------------------------------------------------------- #
+    def record_edition(self) -> None:
+        """Keep the catalogue just read as a pending edition, and compare it."""
+        from ..catalogue.editions import default_editions
+        from ..catalogue.watch import default_findings
+        from .dialogs import RecordEditionDialog
+
+        report = self.session.catalogue_report
+        if report is None or not report.entries:
+            self.report(ProfileOSError("קלטו קודם קטלוג בלשונית ״קליטת קטלוג״"), "אין מה לשמור")
+            return
+        dialog = RecordEditionDialog(self.series.currentText(), len(report.entries), parent=self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        values = dialog.values()
+        book = self.checked_book(default_editions(), "מהדורות הקטלוג")
+        try:
+            edition = book.record(
+                report, source=values["source"], series=values["series"],
+                system_id=values["system_id"], complete=values["complete"],
+                recorded_by=values["recorded_by"],
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "המהדורה לא נשמרה")
+            return
+        if self._from_finding:
+            try:
+                default_findings().handle(self._from_finding, f"נקלט כמהדורה {edition.edition_id}")
+            except Exception as exc:  # noqa: BLE001 - the edition is saved either way
+                _log.warning("Could not mark the finding handled: %s", exc)
+            self._from_finding = ""
+        self._refresh_updates()
+        self.tabs.setCurrentWidget(self.updates_page)
+        if edition.edition_id in self._edition_ids:
+            self.editions_table.selectRow(self._edition_ids.index(edition.edition_id))
+        self.status(f"נשמרה מהדורה ממתינה ל{edition.label}: {book.diff(edition).summary()}")
+
+    def _decide_edition(self, accept: bool) -> None:
+        from ..catalogue.editions import confirmation_hits, default_editions
+
+        edition_id = self._selected(self.editions_table, self._edition_ids)
+        if not edition_id:
+            self.report(ProfileOSError("בחרו מהדורה מהרשימה"), "לא נבחרה מהדורה")
+            return
+        book = self.checked_book(default_editions(), "מהדורות הקטלוג")
+        edition = book.get(edition_id)
+        if edition is None:
+            return
+        diff = book.diff(edition)
+        question = (
+            f"לאשר את {edition.source} כקטלוג הנוכחי של {edition.label}?\n\n{diff.summary()}"
+            if accept else
+            f"לדחות את {edition.source}?\nהמהדורה תישמר ברשימה, אבל לא תשמש להשוואה."
+        )
+        name, ok = QInputDialog.getText(
+            self, "אישור מהדורה" if accept else "דחיית מהדורה",
+            question + "\n\nמי מחליט?",
+        )
+        if not ok:
+            return
+        try:
+            if accept:
+                book.accept(edition_id, by=name)
+            else:
+                book.reject(edition_id, by=name)
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "ההחלטה לא נשמרה")
+            return
+        self._refresh_updates()
+        self._refresh_systems()
+        if accept and edition.system_id:
+            from ..systems import default_confirmations
+
+            hits = confirmation_hits(diff, default_confirmations().get(edition.system_id))
+            if hits:
+                QMessageBox.warning(
+                    self, "נתוני החיתוך צריכים בדיקה",
+                    "המהדורה שאושרה שינתה פרופילים שנתוני החיתוך של הסדרה נקראו מהם:\n"
+                    + "\n".join(f"• {hit.describe()}" for hit in hits)
+                    + "\n\nהזינו שוב את נתוני היצרן מהקטלוג החדש (לשונית מערכות ← "
+                      "״הזן נתוני יצרן״) לפני החיתוך הבא.",
+                )
+        self.status("המהדורה אושרה" if accept else "המהדורה נדחתה")
+
+    def accept_edition(self) -> None:
+        self._decide_edition(True)
+
+    def reject_edition(self) -> None:
+        self._decide_edition(False)
+
 
     def _ingest_tab(self) -> QWidget:
         page = QWidget()
@@ -6817,7 +7368,7 @@ class CataloguePage(Page):
         layout.addLayout(controls)
 
         self.systems_table = DataTable(
-            ["סדרה", "יצרן", "שם", "משפחה", "להצעה", "לחיתוך", "מקור"],
+            ["סדרה", "יצרן", "שם", "משפחה", "להצעה", "לחיתוך", "מקור", "קטלוג מאושר"],
             empty_text="ספריית המערכות ריקה",
         )
         layout.addWidget(self.systems_table, 1)
@@ -6907,6 +7458,19 @@ class CataloguePage(Page):
 
         entries = sorted(DIRECTORY, key=lambda e: (e.manufacturer, e.series))
         self._system_ids = [entry.id for entry in entries]
+        try:
+            from ..catalogue.editions import default_editions
+
+            editions = default_editions()
+        except Exception:  # noqa: BLE001 - the directory still shows without them
+            editions = None
+
+        def catalogue(entry_id: str) -> str:
+            accepted = editions.accepted(entry_id) if editions is not None else []
+            if not accepted:
+                return "—"
+            latest = accepted[-1]
+            return f"{latest.source} ({_short_date(latest.decided_at or latest.received_on)})"
 
         colours: dict[tuple[int, int], str] = {}
         rows = []
@@ -6922,6 +7486,7 @@ class CataloguePage(Page):
                 "כן" if readiness.may_quote else "לא",
                 "כן" if readiness.may_cut else "לא",
                 entry.source or "—",
+                catalogue(entry.id),
             ])
             colours[(index, 4)] = (
                 self.colours.success if readiness.may_quote else self.colours.text_faint
@@ -7049,6 +7614,7 @@ class CataloguePage(Page):
 
     def refresh(self) -> None:
         self._refresh_systems()
+        self._refresh_updates()
 
     def export_plugin(self) -> None:
         from ..catalogue import to_plugin
@@ -7062,15 +7628,19 @@ class CataloguePage(Page):
         )
         if not path:
             return
+        from ..core.storage import atomic_write_text
+
         target = Path(path)
         payload = to_plugin(
             report,
             plugin_id=target.stem,
             name=f"ספריית פרופילים — {self.series.currentText() or 'לא ידוע'}",
         )
-        target.write_text(
-            json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8"
-        )
+        try:
+            atomic_write_text(target, json.dumps(payload, indent=2, ensure_ascii=False))
+        except OSError as exc:
+            self.report(exc, "הספרייה לא נשמרה")
+            return
         self.status(
             f"נשמרו {len(payload['profiles'])} פרופילים אל {target}; "
             f"{len(payload['excluded_for_conflict'])} הושהו בגלל סתירה"

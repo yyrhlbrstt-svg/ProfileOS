@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -131,6 +131,11 @@ class Confirmation:
     #: Who read them, so a question later has somebody to ask.
     entered_by: str = ""
     entered_on: str = field(default_factory=lambda: date.today().isoformat())
+    #: The moment, so a catalogue edition accepted the same day can tell
+    #: whether these figures were read before or after it.
+    entered_at: str = field(
+        default_factory=lambda: datetime.now().isoformat(timespec="seconds")
+    )
     values: dict[str, float] = field(default_factory=dict)
     #: Article numbers by role, when the catalogue names them.
     profiles: dict[str, str] = field(default_factory=dict)
@@ -226,6 +231,7 @@ class Confirmation:
             "source": self.source,
             "entered_by": self.entered_by,
             "entered_on": self.entered_on,
+            "entered_at": self.entered_at,
             "values": dict(self.values),
             "profiles": dict(self.profiles),
             "notes": self.notes,
@@ -238,6 +244,8 @@ class Confirmation:
             source=data.get("source", ""),
             entered_by=data.get("entered_by", ""),
             entered_on=data.get("entered_on", date.today().isoformat()),
+            # Older records have only the day.
+            entered_at=data.get("entered_at", ""),
             values={k: float(v) for k, v in (data.get("values") or {}).items()},
             profiles=dict(data.get("profiles") or {}),
             notes=data.get("notes", ""),

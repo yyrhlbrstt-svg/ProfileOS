@@ -321,6 +321,13 @@ class MainWindow(QMainWindow):
         self._backup_timer.setInterval(60 * 60 * 1000)
         self._backup_timer.timeout.connect(self._hourly_backup)
         self._backup_timer.start()
+        # Suppliers' folders and pages, checked in the background: folders
+        # hourly, websites daily (each source knows when it is due).
+        self._watch_timer = QTimer(self)
+        self._watch_timer.setInterval(30 * 60 * 1000)
+        self._watch_timer.timeout.connect(self.watch_suppliers)
+        self._watch_timer.start()
+        self._watching = False
         self._save_state = ("ok", "")
         self.session.subscribe(self._on_session_change)
         self._update_safety()
@@ -654,6 +661,35 @@ class MainWindow(QMainWindow):
 
         backup_if_due()
         self._update_safety()
+
+    #: Off for windows built by tests and scripts, like the backups: only the
+    #: real program goes to the suppliers' websites on its own.
+    watch_enabled = False
+
+    def watch_suppliers(self) -> None:
+        """Check the watched supplier sources that are due, off the screen's thread."""
+        if not self.watch_enabled or self._watching:
+            return
+        from ..catalogue.watch import check_all
+        from .background import run_in_background
+
+        self._watching = True
+
+        def done(summary: Any, error: BaseException | None) -> None:
+            self._watching = False
+            if error is not None:
+                _log.warning("Supplier check failed: %s", error)
+                return
+            if summary.new:
+                self.statusBar().showMessage(
+                    f"נמצאו ⁦{len(summary.new)}⁩ קבצי קטלוג חדשים אצל הספקים — ראו קטלוג ← עדכוני ספקים",
+                    15000,
+                )
+                home = next((p for p in self.pages if p.title == "Home"), None)
+                if home is not None and home.isVisible():
+                    home.refresh()
+
+        run_in_background(lambda: check_all(only_due=True), done)
 
     # -- data safety ---------------------------------------------------------- #
     #: Off for windows built by tests and scripts; the application entry point
