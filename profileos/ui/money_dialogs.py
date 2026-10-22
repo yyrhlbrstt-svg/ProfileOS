@@ -97,6 +97,8 @@ class PriceItemPicker(QDialog):
         self.price.setDecimals(2)
         self.price.setSuffix(" ₪")
         grid.add("מחיר ליחידה", self.price)
+        self.update_book = QCheckBox("לשמור את המחיר הזה גם במחירון")
+        grid.add("", self.update_book)
         layout.addWidget(grid)
         self.note = QLabel("")
         self.note.setObjectName("FieldWarning")
@@ -136,6 +138,9 @@ class PriceItemPicker(QDialog):
         if item is None:
             return
         self.price.setValue(item.price)
+        # A first price goes into the book by default; changing an existing
+        # one for a single customer does not, unless asked.
+        self.update_book.setChecked(not item.priced)
         self.note.setVisible(not item.priced)
         self.note.setText(
             "לפריט הזה עוד לא הוזן מחיר במחירון. הקלידו מחיר — הוא יישמר גם במחירון."
@@ -219,6 +224,9 @@ class PriceBookDialog(QDialog):
             if not item.priced:
                 colours[(index, 3)] = _warning_colour(self)
         self.table.set_rows(rows, numeric_columns=(3,), colours=colours)
+        if getattr(self._book, "damaged", None) is not None:
+            self.summary.setText("המחירון לא נקרא — מוצג ריק לקריאה בלבד, ושום דבר לא יישמר")
+            return
         missing = len(self._book.unpriced())
         self.summary.setText(
             f"⁦{len(self._book)}⁩ פריטים במחירון"
@@ -475,7 +483,7 @@ class JobAccountDialog(QDialog):
             if line.kind.value == "extra" and not line.approved:
                 colours[(index, 5)] = _warning_colour(self)
         self.lines_table.set_rows([
-            [line.kind.hebrew, line.description, f"⁦{line.quantity:g} {line.unit}⁩",
+            [line.kind.hebrew, line.description, f"⁦{line.quantity:g}⁩ {line.unit}",
              _money(line.unit_price), _money(line.total),
              line.approved or ("לא אושרה" if line.kind.value == "extra" else "—"),
              line.added_on]
@@ -501,11 +509,11 @@ class JobAccountDialog(QDialog):
             f"עיכבון שמוחזק אצל הקבלן: ⁦{held:,.0f} ₪⁩ — לגבות במסירה" if held else ""
         )
 
-        missing = {invoice.number for invoice in invoices_missing_allocation(job)}
+        missing = {id(invoice) for invoice in invoices_missing_allocation(job)}
         self.invoices_table.set_rows([
             [invoice.number, invoice.issued_on, _money(invoice.net),
              "כן" if invoice.business_customer else "לא",
-             invoice.allocation_number or ("חסר!" if invoice.number in missing else "—")]
+             invoice.allocation_number or ("חסר!" if id(invoice) in missing else "—")]
             for invoice in job.invoices
         ], numeric_columns=(2,))
 
@@ -527,7 +535,7 @@ class JobAccountDialog(QDialog):
             return
         item = picker.item()
         price = picker.price.value()
-        if price != item.price and price > 0:
+        if picker.update_book.isChecked() and price > 0 and price != item.price:
             try:
                 book.set_price(item.code, price)
             except Exception:  # noqa: BLE001 - the line still carries the price
@@ -697,7 +705,14 @@ class JobAccountDialog(QDialog):
         buttons.accepted.connect(dialog.accept)
         buttons.rejected.connect(dialog.reject)
         layout.addWidget(buttons)
-        if dialog.exec() != QDialog.DialogCode.Accepted or not number.text().strip():
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        if not number.text().strip():
+            _warn(self, "החשבונית לא נרשמה", ValueError("חסר מספר חשבונית"))
+            return
+        if any(existing.number == number.text().strip() for existing in self.job().invoices):
+            _warn(self, "החשבונית לא נרשמה",
+                  ValueError(f"חשבונית מספר {number.text().strip()} כבר רשומה בפרויקט"))
             return
         invoice = InvoiceRecord(
             number=number.text().strip(), net=round(net.value(), 2),

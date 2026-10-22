@@ -618,12 +618,19 @@ class HomePage(Page):
         upcoming = next_working_day(today)
         try:
             agenda = self._agenda()
+            if agenda.damaged is not None:
+                raise agenda.damaged
         except Exception as exc:  # noqa: BLE001
             self.field_headline.setText(f"היומן לא נקרא: {exc}")
             self.field_table.set_rows([])
             self._field = []
             return
-        self._field = [a for a in agenda.on_day(today) if not a.done] + agenda.on_day(upcoming)
+        # Today's remaining visits, then every day up to the next working day —
+        # a Friday visit is on the list on Thursday.
+        self._field = [
+            a for a in agenda
+            if (a.on == today and not a.done) or today < a.on <= upcoming
+        ]
         colours = {}
         rows = []
         for index, item in enumerate(self._field):
@@ -1341,11 +1348,17 @@ class ProjectsPage(Page):
 
     # -- money ------------------------------------------------------------------ #
     def _cheques_for_accounts(self) -> list[Any]:
+        """The drawer, for adding up what jobs are owed. A drawer that cannot
+        be read is said so — the 'to collect' figures would overstate."""
         try:
             from ..erp.collection import default_cheques
 
-            return list(default_cheques())
-        except Exception:  # noqa: BLE001 - the list still shows without cheques
+            return list(self.checked_book(default_cheques(), "מגירת הצ׳קים"))
+        except Exception as exc:  # noqa: BLE001
+            told = self.__dict__.setdefault("_told_damaged", set())
+            if "cheques-load" not in told:
+                told.add("cheques-load")
+                self.report(exc, "מגירת הצ׳קים לא נקראה — סכומי הגבייה לא כוללים צ׳קים")
             return []
 
     @staticmethod
@@ -1473,11 +1486,13 @@ class ProjectsPage(Page):
             self.session._notify("builds")
         for problem in problems[:3]:
             self.status(problem)
-        self.status(
-            f"נפתח {job.job_id} — {len(self.session.builds)} פתחים נטענו"
-            if self.session.builds
-            else f"נפתח {job.job_id} — עדיין אין בו פתחים"
-        )
+        if self.session.builds:
+            opened = f"נפתח {job.job_id} — {len(self.session.builds)} פתחים נטענו"
+        elif job.trade.value == "plumbing":
+            opened = f"נפתח {job.job_id} — עבודת אינסטלציה"
+        else:
+            opened = f"נפתח {job.job_id} — עדיין אין בו פתחים"
+        self.status(opened)
         self.refresh()
 
     def _ask_about_unfiled(self, job: Any) -> list[Any] | None:
@@ -1531,13 +1546,9 @@ class ProjectsPage(Page):
         # status change made meanwhile from another screen is kept.
         store = self._store()
         try:
+            # Only the design. The quoted figure is recorded when a quotation
+            # is issued — the openings-only price here would overwrite it.
             job = self.session.save_design_to_job(store)
-            if self.session.quote is not None:
-                job.record_quote(
-                    float(self.session.quote.net_price),
-                    getattr(self.session.quote, "currency", "ILS"),
-                )
-                store.save(job)
         except Exception as exc:  # noqa: BLE001
             self.report(exc, "השמירה נכשלה — העבודה עדיין על המסך, נסה שוב")
             return
@@ -3946,22 +3957,48 @@ class QuotePage(Page):
 
         self.draft: Any = None
         self._loading = False
+        #: The job the draft was started for. A draft never follows the
+        #: session into another job: its lines and total belong to this one.
+        self._draft_job_id = ""
+        self.session.subscribe(self._session_changed)
+
+    def _session_changed(self, what: str) -> None:
+        if what != "job" or self.draft is None:
+            return
+        job = self.session.job
+        if (job.job_id if job is not None else "") != self._draft_job_id:
+            self.drop_draft()
+
+    def drop_draft(self) -> None:
+        """Forget the draft on screen — it belonged to another job."""
+        self.draft = None
+        self._draft_job_id = ""
+        self.lines.set_rows([])
+        self.options.set_rows([])
 
     # -- the draft ----------------------------------------------------------- #
     # -- work lines from the price book ---------------------------------------- #
     def _load_work_lines(self, job: Any) -> None:
-        """The job's quoted work lines come with it into a new quotation."""
+        """The job's quoted work lines come with it into a new quotation —
+        read from the job on disk, not the copy the session opened with,
+        which may predate a line added in the job's account since."""
         if self.draft is None or job is None:
             return
+        from ..projects import default_store
         from ..quoting.editor import ExtraLine
 
-        for index, line in enumerate(
-            (line for line in job.lines if line.kind.value == "quoted"), start=1
-        ):
+        try:
+            fresh = default_store().load(job.job_id)
+        except Exception:  # noqa: BLE001 - a job never saved has only what is in hand
+            fresh = job
+        quoted = [line for line in fresh.lines if line.kind.value == "quoted"]
+        # Remembered, so issuing removes a line taken out of this quotation.
+        self.draft.loaded_line_ids = [line.line_id for line in quoted]
+        for index, line in enumerate(quoted, start=1):
             self.draft.extra_lines.append(ExtraLine(
                 code=f"X-{index:02d}", description=line.description,
                 quantity=line.quantity, unit=line.unit, unit_price=line.unit_price,
-                item_code=line.item_code,
+                item_code=line.item_code, job_line_id=line.line_id, origin=line.origin,
             ))
 
     def _pricebook(self) -> Any:
@@ -3993,7 +4030,7 @@ class QuotePage(Page):
             return
         item = picker.item()
         price = picker.price.value()
-        if price > 0 and price != item.price:
+        if picker.update_book.isChecked() and price > 0 and price != item.price:
             try:
                 book.set_price(item.code, price)
             except Exception:  # noqa: BLE001 - the line still carries its price
@@ -4068,6 +4105,7 @@ class QuotePage(Page):
             )
             self.draft.set_margin(self.margin.value())
             self._apply_display()
+            self._draft_job_id = job.job_id if job is not None else ""
             self._load_work_lines(job)
         except Exception as exc:  # noqa: BLE001
             self.report(exc, "התמחור נכשל")
@@ -4221,9 +4259,31 @@ class QuotePage(Page):
         finally:
             self._loading = False
 
+    def _unpriced_ok(self) -> bool:
+        """A line at ⁦0 ₪⁩ in front of a customer is work given away: asked first."""
+        missing = self.draft.unpriced_extras() if self.draft is not None else []
+        if not missing:
+            return True
+        box = QMessageBox(self)
+        box.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle("יש שורות בלי מחיר")
+        names = ", ".join(line.description for line in missing[:4])
+        box.setText(
+            f"⁦{len(missing)}⁩ שורות בהצעה בלי מחיר ({names}) — הן יופיעו ללקוח ב־⁦0 ₪⁩.\n\n"
+            "לחצו פעמיים על המחיר בשורה כדי להזין אותו."
+        )
+        fix = box.addButton("חזרה להזנת מחירים", QMessageBox.ButtonRole.RejectRole)
+        box.addButton("להפיק בכל זאת", QMessageBox.ButtonRole.AcceptRole)
+        box.setDefaultButton(fix)
+        box.exec()
+        return box.clickedButton() is not fix
+
     def save_documents(self) -> None:
         if self.draft is None:
             self.report(ProfileOSError("תמחר את הפרויקט קודם"), "אין מה להפיק")
+            return
+        if not self._unpriced_ok():
             return
         from ..quoting.document import render_quotation
 
@@ -4274,6 +4334,8 @@ class QuotePage(Page):
 
         if self.draft is None:
             self.report(ProfileOSError("תמחר את הפרויקט קודם"), "אין מה לשלוח")
+            return
+        if not self._unpriced_ok():
             return
         quote = self.draft.quotation
         folder = self._quote_folder()
@@ -4327,20 +4389,38 @@ class QuotePage(Page):
         totals = self.draft.totals()
         try:
             store = default_store()
+            if job.job_id != self._draft_job_id:
+                raise ProfileOSError(
+                    "ההצעה שעל המסך תומחרה לפרויקט אחר — תמחרו מחדש לפרויקט הפתוח"
+                )
             job = self.session.save_design_to_job(store)
             job.record_quote(float(totals["net"]), self.draft.quotation.currency)
-            # The work lines quoted are the job's quoted lines from now on;
-            # extras added on site are left exactly as they are.
+            # The draft's work lines replace exactly the lines it was started
+            # with. A quoted line added to the job since (in its account) is
+            # kept, unmarked, and counted on top of this quotation; extras
+            # from site are never touched.
             from ..projects import JobLine, LineKind
 
-            job.lines = [line for line in job.lines if line.kind is not LineKind.QUOTED] + [
-                JobLine(
+            quote_id = self.draft.quotation.quote_id
+            loaded = {extra.job_line_id for extra in self.draft.extra_lines if extra.job_line_id}
+            started_with = getattr(self.draft, "loaded_line_ids", None)
+            replaced = set(started_with) if started_with is not None else loaded
+            kept = [
+                line for line in job.lines
+                if line.kind is not LineKind.QUOTED or line.line_id not in replaced
+            ]
+            issued = []
+            for extra in self.draft.extra_lines:
+                values = dict(
                     kind=LineKind.QUOTED, description=extra.description,
                     quantity=extra.quantity, unit=extra.unit,
                     unit_price=extra.unit_price, item_code=extra.item_code,
+                    in_quote=quote_id, origin=extra.origin,
                 )
-                for extra in self.draft.extra_lines
-            ]
+                if extra.job_line_id:
+                    values["line_id"] = extra.job_line_id
+                issued.append(JobLine(**values))
+            job.lines = kept + issued
             if job.status is JobStatus.ENQUIRY:
                 job.advance(JobStatus.QUOTED, "הצעה הופקה מהמערכת")
             store.save(job)
@@ -5551,15 +5631,18 @@ class PlumbingPage(Page):
         # The open job's own fixture counts, once per job, so this page shows
         # the plumbing of the job that is open rather than the last typed.
         job = self.session.job
-        spec = getattr(job, "plumbing", None) if job is not None else None
-        if job is not None and spec is not None and self._loaded_for != job.job_id:
-            self._loaded_for = job.job_id
+        job_id = job.job_id if job is not None else ""
+        if job is not None and job_id != self._loaded_for:
+            # Another job: its own counts, or an empty schedule — never the
+            # previous job's fixtures waiting to be saved into this one.
+            self._loaded_for = job_id
+            spec = getattr(job, "plumbing", None)
             self.dwellings.blockSignals(True)
-            self.dwellings.setValue(max(1, spec.dwellings))
+            self.dwellings.setValue(max(1, spec.dwellings) if spec is not None else 1)
             self.dwellings.blockSignals(False)
             for fixture_id, box in self.counts.items():
                 box.blockSignals(True)
-                box.setValue(int(spec.fixtures.get(fixture_id, 0)))
+                box.setValue(int(spec.fixtures.get(fixture_id, 0)) if spec is not None else 0)
                 box.blockSignals(False)
         self._recount()
 
@@ -5578,7 +5661,7 @@ class PlumbingPage(Page):
             return False
         try:
             store = default_store()
-            fresh = store.load(job.job_id)
+            fresh = store.load(job.job_id) if store.path_for(job.job_id).exists() else job
             fresh.plumbing = PlumbingSpec(fixtures=self._counts(), dwellings=self.dwellings.value())
             if fresh.trade is Trade.ALUMINIUM:
                 fresh.trade = Trade.BOTH
@@ -5618,21 +5701,25 @@ class PlumbingPage(Page):
         if not hasattr(window, "go_to_page"):
             return
         quote = window.go_to_page("Quotation")
-        if quote.draft is None:
+        if quote.draft is None or quote._draft_job_id != self.session.job.job_id:
             quote.start_draft()
         if quote.draft is None:
             return
+        # The fixtures' lines replace the ones an earlier send put there, so
+        # sending again after changing a count never doubles the quotation.
         unpriced = 0
+        lines = []
         for fixture_id, count in counts.items():
             item = book.for_fixture(fixture_id)
             if item is not None:
-                quote.draft.add_extra_line(item.name, quantity=count, unit=item.unit,
-                                           unit_price=item.price, item_code=item.code)
+                lines.append(dict(description=item.name, quantity=count, unit=item.unit,
+                                  unit_price=item.price, item_code=item.code))
                 unpriced += 0 if item.priced else 1
             else:
-                quote.draft.add_extra_line(f"התקנת {names.get(fixture_id, fixture_id)}",
-                                           quantity=count)
+                lines.append(dict(description=f"התקנת {names.get(fixture_id, fixture_id)}",
+                                  quantity=count))
                 unpriced += 1
+        quote.draft.replace_origin("plumbing-fixtures", lines, by="desktop")
         quote.refresh_draft()
         self.status(
             "הכלים הועברו להצעת המחיר"
@@ -5789,7 +5876,15 @@ class ServicePage(Page):
         dialog = AppointmentDialog(self, kind=kind)
         dialog.customer.setText(call.customer_name)
         dialog.phone.setText(call.phone)
-        dialog.address.setText(call.site)
+        address = call.site
+        if not address and call.job_id:
+            try:
+                from ..projects import default_store
+
+                address = default_store().load(call.job_id).site_address
+            except Exception:  # noqa: BLE001 - typed by hand instead
+                address = ""
+        dialog.address.setText(address)
         dialog.note.setText(call.symptom.hebrew + (f" — {call.description}" if call.description else ""))
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
@@ -7220,22 +7315,27 @@ class SystemPage(Page):
         from ..core.config import get_settings, save_settings
 
         settings = get_settings()
+        # Every date is read first; nothing changes unless all of them are good.
+        values: dict[str, str] = {}
         for field_name, edit in self._cert_fields.items():
             text = edit.text().strip()
             if not text:
-                setattr(settings, field_name, "")
+                values[field_name] = ""
                 continue
+            value = None
             for pattern in ("%d/%m/%Y", "%d.%m.%Y", "%Y-%m-%d", "%d/%m/%y"):
                 try:
                     value = datetime.strptime(text, pattern).date()
                     break
                 except ValueError:
-                    value = None
+                    continue
             if value is None:
                 self.report(ProfileOSError(f"״{text}״ אינו תאריך — כתבו למשל 31/03/2027"),
-                            "התאריך לא נשמר")
+                            "התאריכים לא נשמרו")
                 return
-            setattr(settings, field_name, value.isoformat())
+            values[field_name] = value.isoformat()
+        for field_name, value in values.items():
+            setattr(settings, field_name, value)
         try:
             save_settings(settings)
         except Exception as exc:  # noqa: BLE001

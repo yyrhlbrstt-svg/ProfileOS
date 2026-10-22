@@ -130,7 +130,7 @@ def test_a_materials_order_reads_down_a_phone_screen():
          ("fitting", "ברז כדורי 3/4", "2", "יח׳", "פליז")],
         brand_name="דאדי", job_name="וילה", site="בית אל",
     )
-    assert "⁦24 מ׳⁩ — צינור PPR 25" in message
+    assert "⁦24⁩ מ׳ — צינור PPR 25" in message
     assert "זווית" not in message  # nothing to order
     assert "(פליז)" in message and "בית אל" in message
 
@@ -272,3 +272,154 @@ class TestProgressBills:
         job.progress_bills.append(next_bill(job, 40))
         with pytest.raises(ProfileOSError):
             next_bill(job, 35)
+
+
+class TestReviewFindings:
+    """Each of these lost or misstated money before it was fixed."""
+
+    def _window(self):
+        from PySide6.QtWidgets import QApplication
+
+        from profileos.ui.main_window import MainWindow
+        from profileos.ui.theme import LIGHT
+
+        QApplication.instance() or QApplication([])
+        return MainWindow(LIGHT)
+
+    @staticmethod
+    def _close(window):
+        from PySide6.QtCore import QCoreApplication
+
+        window.close()
+        window.deleteLater()
+        QCoreApplication.processEvents()
+
+    def test_issuing_keeps_a_line_added_to_the_job_after_the_draft_started(self, shop):
+        pytest.importorskip("PySide6")
+        from profileos.projects import JobLine, LineKind, default_store
+
+        store = default_store()
+        job = store.create("דירה", trade=Trade.PLUMBING)
+        window = self._window()
+        window.session.set_job(store.load(job.job_id))
+        quote = window.go_to_page("Quotation")
+        quote.start_draft()
+        quote.draft.add_extra_line("החלפת דוד", unit_price=2_400)
+
+        later = store.load(job.job_id)  # added from the account window meanwhile
+        later.lines.append(JobLine(kind=LineKind.QUOTED, description="פירוק", unit_price=2_000))
+        store.save(later)
+
+        quote._record_in_job()
+        saved = store.load(job.job_id)
+        assert sorted(line.description for line in saved.lines) == ["החלפת דוד", "פירוק"]
+        account = job_account(saved)
+        assert account.contract_net == 2_400 + 2_000  # the late line on top, once
+        self._close(window)
+
+    def test_a_draft_never_writes_into_another_job(self, shop):
+        pytest.importorskip("PySide6")
+        from profileos.projects import JobLine, LineKind, default_store
+
+        store = default_store()
+        b = store.create("ב", trade=Trade.PLUMBING)
+        c = store.create("ג", trade=Trade.PLUMBING)
+        c.lines.append(JobLine(kind=LineKind.QUOTED, description="סתימה", unit_price=300))
+        store.save(c)
+        window = self._window()
+        window.session.set_job(store.load(b.job_id))
+        quote = window.go_to_page("Quotation")
+        quote.start_draft()
+        quote.draft.add_extra_line("דוד B", unit_price=3_000)
+        window.session.set_job(store.load(c.job_id))
+        assert quote.draft is None  # dropped with the job it belonged to
+        saved = store.load(c.job_id)
+        assert [line.description for line in saved.lines] == ["סתימה"]
+        assert saved.quote_total == 0
+        self._close(window)
+
+    def test_sending_fixtures_twice_does_not_double_the_quotation(self, shop):
+        pytest.importorskip("PySide6")
+        from profileos.projects import default_store
+
+        store = default_store()
+        job = store.create("דירה", trade=Trade.PLUMBING)
+        window = self._window()
+        window.session.set_job(store.load(job.job_id))
+        plumbing = window.go_to_page("Plumbing")
+        plumbing.counts["basin"].setValue(2)
+        plumbing.send_to_quote()
+        plumbing = window.go_to_page("Plumbing")
+        plumbing.counts["basin"].setValue(3)
+        plumbing.send_to_quote()
+        lines = [l for l in window.page("Quotation").draft.extra_lines
+                 if l.origin == "plumbing-fixtures"]
+        basins = [l for l in lines if l.description == "התקנת כיור רחצה"]
+        assert len(basins) == 1 and basins[0].quantity == 3
+        self._close(window)
+
+    def test_one_jobs_fixtures_do_not_carry_into_the_next(self, shop):
+        pytest.importorskip("PySide6")
+        from profileos.projects import default_store
+
+        store = default_store()
+        plumbing_job = store.create("אינסטלציה", trade=Trade.PLUMBING)
+        window_job = store.create("חלונות")
+        window = self._window()
+        window.session.set_job(store.load(plumbing_job.job_id))
+        page = window.go_to_page("Plumbing")
+        page.counts["basin"].setValue(2)
+        page.save_to_job()
+        window.session.set_job(store.load(window_job.job_id))
+        page = window.go_to_page("Plumbing")
+        assert page._counts() == {}
+        self._close(window)
+
+    def test_a_quoted_line_added_after_the_quotation_is_counted(self):
+        job = JobFile(job_id="J-1", name="x", quote_total=10_000, lines=[
+            JobLine(kind=LineKind.QUOTED, description="בהצעה", unit_price=1_000, in_quote="Q-1"),
+            JobLine(kind=LineKind.QUOTED, description="נוסף אחר כך", unit_price=500),
+        ])
+        assert job_account(job).contract_net == 10_500
+
+    def test_a_bill_already_sent_does_not_change_when_an_extra_is_approved(self):
+        from profileos.projects.progress import bill_figures, next_bill
+
+        job = JobFile(job_id="J-2", name="x", quote_total=100_000)
+        job.progress_bills.append(next_bill(job, 50))
+        before = bill_figures(job)[0].this_net
+        job.lines.append(JobLine(kind=LineKind.EXTRA, description="תוספת",
+                                 unit_price=20_000, approved="אושר"))
+        assert bill_figures(job)[0].this_net == before == 50_000
+
+
+class TestQAFindings:
+    def test_a_price_changed_without_a_source_drops_the_old_source(self, tmp_path):
+        book = PriceBook(tmp_path / "p.json").load()
+        book.save()
+        book.set_price("PL-BLOCKAGE", 350, source="מחירון ספק X 2025")
+        book.set_price("PL-BLOCKAGE", 420)
+        assert "ספק X" not in book.get("PL-BLOCKAGE").source
+
+    def test_an_invoice_exactly_at_the_threshold_needs_allocation(self):
+        job = JobFile(job_id="J-1", name="x")
+        job.invoices = [InvoiceRecord(number="1", net=5_000, business_customer=True)]
+        assert invoices_missing_allocation(job)
+
+    def test_switching_job_in_the_visit_dialog_replaces_its_customer(self):
+        pytest.importorskip("PySide6")
+        from PySide6.QtWidgets import QApplication
+
+        from profileos.ui.dialogs import AppointmentDialog
+
+        QApplication.instance() or QApplication([])
+        a = JobFile(job_id="J-A", name="א", customer_name="משה", site_address="עפרה")
+        b = JobFile(job_id="J-B", name="ב", customer_name="דוד", site_address="שילה",
+                    trade=Trade.PLUMBING)
+        dialog = AppointmentDialog(jobs=[a, b], customer_lookup=lambda job_id: {
+            "J-A": "050-111-1111", "J-B": "052-222-2222"}[job_id])
+        dialog.job.setCurrentIndex(dialog.job.findData("J-A"))
+        dialog.job.setCurrentIndex(dialog.job.findData("J-B"))
+        visit = dialog.appointment()
+        assert (visit.customer_name, visit.address, visit.phone) == ("דוד", "שילה", "052-222-2222")
+        assert visit.kind.value == "plumbing"

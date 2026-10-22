@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from ..core.errors import ProfileOSError
-from .account import VAT_RATE, job_account
+from .account import job_account
 
 
 @dataclass(frozen=True)
@@ -35,12 +35,21 @@ class BillFigures:
         return round(self.this_net + self.vat - self.retention - self.withholding, 2)
 
 
-def bill_figures(job: Any, *, vat_rate: float = VAT_RATE) -> list[BillFigures]:
-    """Every interim bill on the job, in order, with its money worked out."""
-    contract = job_account(job, vat_rate=vat_rate).total_net
+def bill_figures(job: Any, *, vat_rate: float | None = None) -> list[BillFigures]:
+    """Every interim bill on the job, in order, with its money worked out.
+
+    Each bill is worked out on the job's value *when it was made*, so a bill
+    already sent to the contractor reads the same tomorrow.
+    """
+    if vat_rate is None:
+        from .account import current_vat_rate
+
+        vat_rate = current_vat_rate()
+    current = job_account(job, vat_rate=vat_rate).total_net
     figures: list[BillFigures] = []
     previous = 0.0
     for bill in sorted(job.progress_bills, key=lambda b: b.number):
+        contract = bill.contract_net or current
         cumulative = round(contract * bill.cumulative_pct / 100.0, 2)
         this = round(cumulative - previous, 2)
         figures.append(BillFigures(
@@ -77,6 +86,7 @@ def next_bill(job: Any, cumulative_pct: float, *, retention_pct: float = 5.0,
     return ProgressBill(
         number=number, cumulative_pct=cumulative_pct, retention_pct=retention_pct,
         withholding_pct=withholding_pct, approved_by=approved_by,
+        contract_net=job_account(job).total_net,
     )
 
 

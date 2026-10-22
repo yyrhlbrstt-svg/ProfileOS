@@ -80,15 +80,32 @@ class JobAccount:
         )
 
 
-def job_account(job: Any, cheques: Iterable[Any] = (), *, vat_rate: float = VAT_RATE) -> JobAccount:
+def current_vat_rate() -> float:
+    """The rate the quotations are printed at today — one source for both."""
+    from datetime import date
+
+    try:
+        from ..erp.sales import vat_rate
+
+        return vat_rate(date.today())
+    except Exception:  # noqa: BLE001 - the recorded history is the source; this is a fallback
+        return VAT_RATE
+
+
+def job_account(job: Any, cheques: Iterable[Any] = (), *, vat_rate: float | None = None) -> JobAccount:
     """Add up one job from its own records and the cheques that name it."""
     from .model import LineKind
 
+    if vat_rate is None:
+        vat_rate = current_vat_rate()
+
     lines = list(getattr(job, "lines", []) or [])
-    quoted_lines = sum(line.total for line in lines if line.kind is LineKind.QUOTED)
-    # The quotation already includes the quoted work lines when one was issued
-    # from this job; with no quotation the lines are the agreement.
-    contract = float(getattr(job, "quote_total", 0.0) or 0.0) or quoted_lines
+    quoted = [line for line in lines if line.kind is LineKind.QUOTED]
+    # The issued quotation already includes the lines it was issued with
+    # (marked ``in_quote``); a quoted line added since is on top of it.
+    quote_total = float(getattr(job, "quote_total", 0.0) or 0.0)
+    outside_quote = sum(line.total for line in quoted if not line.in_quote)
+    contract = (quote_total + outside_quote) if quote_total else sum(l.total for l in quoted)
     extras = sum(line.total for line in lines if line.kind is LineKind.EXTRA and line.approved)
     pending = sum(line.total for line in lines if line.kind is LineKind.EXTRA and not line.approved)
     net = contract + extras
@@ -136,7 +153,7 @@ def invoices_missing_allocation(job: Any) -> list[Any]:
     threshold = DEFAULT_ALLOCATION_RULE.threshold
     return [
         invoice for invoice in getattr(job, "invoices", []) or []
-        if invoice.business_customer and invoice.net > threshold
+        if invoice.business_customer and invoice.net >= threshold
         and not invoice.allocation_number.strip()
     ]
 

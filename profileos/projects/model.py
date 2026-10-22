@@ -117,6 +117,11 @@ class JobLine(RoundTrips):
     added_on: str = Field(default_factory=lambda: date.today().isoformat())
     #: "אושר בוואטסאפ 12/10", "אושר בטלפון" — empty for an extra not yet agreed.
     approved: str = ""
+    #: The quotation whose total already includes this line. Empty means the
+    #: line is on top of any quotation and is counted on its own.
+    in_quote: str = ""
+    #: What put it here, e.g. "plumbing-fixtures", so a repeat replaces it.
+    origin: str = ""
 
     @property
     def total(self) -> float:
@@ -200,6 +205,9 @@ class ProgressBill(RoundTrips):
     cumulative_pct: float
     retention_pct: float = 5.0
     withholding_pct: float = 0.0
+    #: The job's value (net) when this bill was made. Kept, so a bill already
+    #: sent never changes when an extra is approved later.
+    contract_net: float = 0.0
     approved_by: str = ""
     note: str = ""
 

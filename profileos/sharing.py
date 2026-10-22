@@ -151,7 +151,7 @@ def material_list_message(
         if not str(quantity).strip() or str(quantity).strip() in ("0", "0.0"):
             continue
         count += 1
-        text = f"• ⁦{quantity} {unit}⁩ — {description}"
+        text = f"• ⁦{quantity}⁩ {unit} — {description}"
         if note:
             text += f" ({note})"
         lines.append(text)

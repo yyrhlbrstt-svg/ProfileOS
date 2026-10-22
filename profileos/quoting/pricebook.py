@@ -197,8 +197,14 @@ class PriceBook(MergingBook):
             raise ProfileOSError(f"אין במחירון פריט {code}")
         if price < 0:
             raise ProfileOSError("מחיר לא יכול להיות שלילי")
+        changed = round(float(price), 2) != item.price
         item.price = round(float(price), 2)
-        item.source = source.strip() or item.source or f"עודכן {date.today():%d/%m/%Y}"
+        # A price changed without saying where from no longer has the old
+        # source: that source vouched for a different number.
+        if source.strip():
+            item.source = source.strip()
+        elif changed or not item.source:
+            item.source = f"עודכן ידנית {date.today():%d/%m/%Y}"
         item.updated = date.today().isoformat()
         self.save()
         return item

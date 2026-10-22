@@ -357,7 +357,8 @@ def _field(context: dict[str, Any], today: date) -> list[Insight]:
     if agenda is None:
         return []
     day = next_working_day(today)
-    waiting = agenda.unreminded(day)
+    # Every day up to the next working day: on Thursday, Friday's visits too.
+    waiting = [a for a in agenda if today < a.on <= day and not a.reminded_on and not a.done]
     if not waiting:
         return []
     return [Insight(

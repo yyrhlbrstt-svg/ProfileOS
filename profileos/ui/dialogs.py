@@ -776,6 +776,10 @@ class AppointmentDialog(_FormDialog):
         self.crew.addItems(["", "צוות א׳", "צוות ב׳", "טכנאי שירות", "אינסטלטור"])
         self.note = QLineEdit()
         self.note.setPlaceholderText("להביא סולם, קומה 3 בלי מעלית…")
+        for widget in (self.customer, self.phone, self.address):
+            widget.textEdited.connect(
+                lambda _text, w=widget: w.setProperty("from_job", False)
+            )
 
         for label, widget in (
             ("תאריך", self.on), ("שעה", self.time), ("סוג", self.kind),
@@ -798,18 +802,33 @@ class AppointmentDialog(_FormDialog):
         job = next((item for item in self._jobs if item.job_id == wanted), None)
         if job is None:
             return
-        if job.customer_name and not self.customer.text().strip():
-            self.customer.setText(job.customer_name)
-        if job.site_address and not self.address.text().strip():
-            self.address.setText(job.site_address)
-        if not self.phone.text().strip() and self._lookup is not None:
+        # Choosing a job fills its customer in — and choosing another job
+        # replaces what the first one filled, so a visit never goes out with
+        # one customer's name and another's address. What was typed by hand
+        # stays.
+        phone = ""
+        if self._lookup is not None:
             try:
                 phone = self._lookup(job.job_id) or ""
             except Exception:  # noqa: BLE001 - typed by hand instead
                 phone = ""
-            self.phone.setText(phone)
-        if job.trade.value == "plumbing" and self.kind.currentData() == "other":
+        for widget, value in ((self.customer, job.customer_name),
+                              (self.address, job.site_address), (self.phone, phone)):
+            if not widget.text().strip() or widget.property("from_job"):
+                widget.setText(value or "")
+                widget.setProperty("from_job", True)
+        if job.trade.value == "plumbing" and self.kind.currentData() in ("other", "installation"):
             self.kind.setCurrentIndex(self.kind.findData("plumbing"))
+
+    def accept(self) -> None:  # noqa: D401 - Qt override
+        """A visit nobody can find is refused: it needs a job, a name or an address."""
+        if not (self.job.currentData() or self.customer.text().strip()
+                or self.address.text().strip()):
+            from PySide6.QtWidgets import QMessageBox
+
+            QMessageBox.warning(self, "חסרים פרטים", "לאן יוצאים? בחרו פרויקט או כתבו לקוח או כתובת.")
+            return
+        super().accept()
 
     def appointment(self) -> Any:
         from ..projects.agenda import Appointment, VisitKind

@@ -189,6 +189,11 @@ class ExtraLine:
     unit_price: float = 0.0
     #: The price-book item it came from, if any.
     item_code: str = ""
+    #: The job line it was loaded from, so issuing replaces that line and no
+    #: other; empty for a line added in this quotation.
+    job_line_id: str = ""
+    #: What added it ("plumbing-fixtures"), so adding again replaces it.
+    origin: str = ""
 
     @property
     def total(self) -> float:
@@ -770,7 +775,7 @@ class QuoteDraft:
     # -- work lines beyond the openings -------------------------------------------
     def add_extra_line(
         self, description: str, *, quantity: float = 1.0, unit: str = "יח׳",
-        unit_price: float = 0.0, item_code: str = "", by: str = "",
+        unit_price: float = 0.0, item_code: str = "", by: str = "", origin: str = "",
     ) -> ExtraLine:
         if not description.strip():
             raise QuoteEditError("לשורה חייב להיות תיאור")
@@ -785,7 +790,7 @@ class QuoteDraft:
         line = ExtraLine(
             code=f"X-{serial:02d}", description=description.strip(),
             quantity=float(quantity), unit=unit, unit_price=round(float(unit_price), 2),
-            item_code=item_code,
+            item_code=item_code, origin=origin,
         )
         self.extra_lines.append(line)
 
@@ -807,6 +812,13 @@ class QuoteDraft:
             self.extra_lines.insert(index, line)
 
         self._record(f"שורה הוסרה: {line.description}", line.total, None, revert, by)
+
+    def replace_origin(self, origin: str, lines: list[dict[str, Any]], *, by: str = "") -> None:
+        """Drop the lines an earlier pass added, and add these instead."""
+        for old in [line for line in self.extra_lines if line.origin == origin]:
+            self.remove_extra_line(old.code, by=by)
+        for values in lines:
+            self.add_extra_line(**values, origin=origin, by=by)
 
     def unpriced_extras(self) -> list[ExtraLine]:
         return [line for line in self.extra_lines if line.unit_price <= 0]
