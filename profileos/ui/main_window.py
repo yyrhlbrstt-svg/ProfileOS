@@ -678,7 +678,15 @@ class MainWindow(QMainWindow):
         def done(summary: Any, error: BaseException | None) -> None:
             self._watching = False
             if error is not None:
+                # Not only the log: a shop that believes its suppliers are
+                # watched when they are not is worse off than one that knows.
+                from ..catalogue.watch import in_words
+
                 _log.warning("Supplier check failed: %s", error)
+                self.statusBar().showMessage(
+                    "בדיקת קבצי הספקים נכשלה: " + in_words(error)
+                    + " — נסו ״בדיקה עכשיו״ במסך קטלוג ← עדכוני ספקים", 30000,
+                )
                 return
             if summary.new:
                 self.statusBar().showMessage(

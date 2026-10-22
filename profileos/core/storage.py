@@ -36,9 +36,11 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
+from uuid import uuid4
 
 from .errors import ProfileOSError
 from .logging_setup import get_logger
@@ -76,24 +78,55 @@ def _fsync_folder(folder: Path) -> None:
         os.close(handle)
 
 
+_LOCKS: dict[str, threading.RLock] = {}
+_LOCKS_GUARD = threading.Lock()
+
+
+def path_lock(path: Path | str) -> threading.RLock:
+    """One lock per file, for every thread in this program.
+
+    The screen and a background check may save the same book at the same
+    moment. Without this, one save's previous-version copy can be taken from
+    the other's half-finished file — the file and its ``.bak`` both torn.
+    Re-entrant, so a merge can hold it across its read and its write.
+    """
+    key = os.path.normcase(os.path.abspath(str(path)))
+    with _LOCKS_GUARD:
+        lock = _LOCKS.get(key)
+        if lock is None:
+            lock = _LOCKS[key] = threading.RLock()
+        return lock
+
+
 def _write_durably(target: Path, data: bytes) -> None:
     target = Path(target)
     target.parent.mkdir(parents=True, exist_ok=True)
-    temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")
-    with open(temporary, "wb") as handle:
-        handle.write(data)
-        handle.flush()
-        os.fsync(handle.fileno())
-    if target.is_file() and target.stat().st_size > 0:
-        bak = backup_path(target)
+    with path_lock(target):
+        # Unique per write, not per program: two threads never share it.
+        temporary = target.with_name(
+            f".{target.name}.{os.getpid()}.{threading.get_ident()}.{uuid4().hex[:8]}.tmp"
+        )
         try:
-            shutil.copy2(target, bak)
-            with open(bak, "rb+") as handle:
+            with open(temporary, "wb") as handle:
+                handle.write(data)
+                handle.flush()
                 os.fsync(handle.fileno())
-        except OSError as exc:  # a missing .bak must not stop the save itself
-            _log.warning("Could not keep the previous version of %s: %s", target.name, exc)
-    os.replace(temporary, target)
-    _fsync_folder(target.parent)
+            if target.is_file() and target.stat().st_size > 0:
+                bak = backup_path(target)
+                try:
+                    shutil.copy2(target, bak)
+                    with open(bak, "rb+") as handle:
+                        os.fsync(handle.fileno())
+                except OSError as exc:  # a missing .bak must not stop the save itself
+                    _log.warning("Could not keep the previous version of %s: %s", target.name, exc)
+            os.replace(temporary, target)
+        except BaseException:
+            try:
+                temporary.unlink()
+            except OSError:
+                pass
+            raise
+        _fsync_folder(target.parent)
 
 
 def atomic_write_bytes(path: Path | str, data: bytes) -> None:
@@ -309,6 +342,12 @@ class MergingBook:
     def _save_merged(self, path: Path, extra: dict[str, Any] | None = None) -> None:
         if self.damaged is not None:
             raise self.damaged
+        # The re-read and the write are one step: another thread saving the
+        # same book in between would have its change merged away.
+        with path_lock(path):
+            self._save_merged_locked(path, extra)
+
+    def _save_merged_locked(self, path: Path, extra: dict[str, Any] | None) -> None:
         loaded: dict[str, Any] = getattr(self, "_loaded", {})
         current = {key: self._to_raw(record) for key, record in self._records().items()}
 
@@ -363,6 +402,7 @@ def _note_recovery(path: Path, damaged: Path) -> None:
 
 __all__ = [
     "discard",
+    "path_lock",
     "stored",
     "MergingBook",
     "RECOVERED",

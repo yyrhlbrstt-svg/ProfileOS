@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import threading
 import urllib.error
 import urllib.request
 from dataclasses import asdict, dataclass, field
@@ -34,7 +35,7 @@ from datetime import date, datetime, timedelta
 from html import unescape
 from pathlib import Path
 from typing import Any, Callable, Iterable
-from urllib.parse import unquote, urljoin, urlparse
+from urllib.parse import parse_qsl, unquote, urljoin, urlparse
 from uuid import uuid4
 
 from ..core.errors import ProfileOSError
@@ -82,10 +83,18 @@ class WatchedSource:
     system_id: str = ""
     added_on: str = field(default_factory=lambda: date.today().isoformat())
     last_checked: str = ""
+    #: When a check last *succeeded*. Until one has, the next good check only
+    #: records what is there — a first look that failed (the drive was not
+    #: mounted, the line was down) must not turn into hundreds of findings.
+    last_ok: str = ""
     #: The last check's failure, in words, shown on the page until it passes.
     last_error: str = ""
     #: What was there at the last check: name or address → fingerprint.
     known: dict[str, str] = field(default_factory=dict)
+
+    @property
+    def first_look(self) -> bool:
+        return not self.last_ok and not self.known
 
     @property
     def title(self) -> str:
@@ -333,6 +342,9 @@ def http_fetch(url: str, method: str = "GET", limit: int = MAX_PAGE_BYTES) -> tu
     request = urllib.request.Request(url, method=method, headers={"User-Agent": USER_AGENT})
     with urllib.request.urlopen(request, timeout=TIMEOUT_SECONDS) as response:  # noqa: S310 - scheme checked above
         headers = {key.lower(): value for key, value in response.headers.items()}
+        # Where the server actually answered from, after any redirect, so a
+        # relative link on the page is resolved the way a browser would.
+        headers["x-final-url"] = response.geturl()
         if method == "HEAD":
             return b"", headers
         declared = int(headers.get("content-length") or 0)
@@ -372,21 +384,48 @@ def in_words(exc: BaseException) -> str:
 _HREF = re.compile(r"""href\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s>]+))""", re.IGNORECASE)
 
 
+def _file_in(address: str) -> str:
+    """The catalogue file a link is for: in its path, or named in its query
+    (``download.php?file=K4300.pdf``). Empty when it is not one."""
+    parsed = urlparse(address)
+    name = Path(unquote(parsed.path)).name
+    if Path(name).suffix.lower() in CATALOGUE_SUFFIXES:
+        return name
+    for _key, value in parse_qsl(parsed.query):
+        candidate = Path(unquote(value)).name
+        if Path(candidate).suffix.lower() in CATALOGUE_SUFFIXES:
+            return candidate
+    return ""
+
+
+def link_key(address: str) -> str:
+    """One file however the page links it today.
+
+    ``cat.pdf?v=1729…`` and ``cat.pdf?v=1730…`` are the same file with a
+    cache-buster; when the path itself names the file the query is dropped
+    from the key, so the file is not "new" on every visit.
+    """
+    parsed = urlparse(address.split("#", 1)[0])
+    if Path(unquote(parsed.path)).suffix.lower() in CATALOGUE_SUFFIXES:
+        return parsed._replace(query="", fragment="").geturl()
+    return parsed._replace(fragment="").geturl()
+
+
 def catalogue_links(page_url: str, html: str) -> list[str]:
-    """Every link on a page that points at a catalogue-type file."""
+    """Every link on a page that points at a catalogue-type file, once each."""
     found: list[str] = []
+    keys: set[str] = set()
     for match in _HREF.finditer(html):
         href = unescape(next(group for group in match.groups() if group)).strip()
         if href.startswith(("mailto:", "javascript:", "#", "tel:")):
             continue
-        address = urljoin(page_url, href)
-        parsed = urlparse(address)
-        if parsed.scheme not in ("http", "https"):
+        address = urljoin(page_url, href).split("#", 1)[0]
+        if urlparse(address).scheme not in ("http", "https") or not _file_in(address):
             continue
-        if Path(unquote(parsed.path)).suffix.lower() in CATALOGUE_SUFFIXES:
-            address = address.split("#", 1)[0]
-            if address not in found:
-                found.append(address)
+        key = link_key(address)
+        if key not in keys:
+            keys.add(key)
+            found.append(address)
     return found
 
 
@@ -401,7 +440,7 @@ def _signature(headers: dict[str, str]) -> str:
 
 
 def link_name(address: str) -> str:
-    return unquote(Path(urlparse(address).path).name) or address
+    return _file_in(address) or unquote(Path(urlparse(address).path).name) or address
 
 
 # --------------------------------------------------------------------------- #
@@ -418,6 +457,10 @@ class CheckResult:
     found: list[tuple[str, str, str]] = field(default_factory=list)
     error: str = ""
     baseline: bool = False
+    #: Files that could not be read this time (open in another program).
+    skipped: int = 0
+    #: Links the server gives no way of telling whether they changed.
+    unverifiable: int = 0
     checked_at: str = field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
 
 
@@ -429,20 +472,34 @@ def _file_fingerprint(path: Path) -> str:
     return f"{path.stat().st_size}:{digest.hexdigest()}"
 
 
+def _ignored(relative: Path) -> bool:
+    """Hidden folders, our own trash, Office lock files, macOS metadata."""
+    return any(
+        part.startswith((".", "~$")) or part == "__MACOSX" for part in relative.parts
+    )
+
+
 def check_folder(source: WatchedSource) -> CheckResult:
-    result = CheckResult(source.source_id, baseline=not source.known and not source.last_checked)
+    result = CheckResult(source.source_id, baseline=source.first_look)
     root = Path(source.location)
     try:
         if not root.is_dir():
             raise FileNotFoundError(str(root))
-        for path in sorted(root.rglob("*")):
+        paths = sorted(root.rglob("*"))
+    except Exception as exc:  # noqa: BLE001 - shown on the source, not raised
+        result.error = in_words(exc)
+        result.known = dict(source.known)
+        return result
+    for path in paths:
+        try:
             if path.suffix.lower() not in CATALOGUE_SUFFIXES or not path.is_file():
                 continue
-            if any(part.startswith(".") for part in path.relative_to(root).parts):
-                continue  # our own trash and hidden folders
-            name = str(path.relative_to(root))
-            stat = path.stat()
+            relative = path.relative_to(root)
+            if _ignored(relative):
+                continue
+            name = str(relative)
             before = source.known.get(name, "")
+            stat = path.stat()
             quick = f"{stat.st_size}:{stat.st_mtime_ns}"
             # The cheap fingerprint first; the content only when it moved,
             # so a folder of four hundred drawings is not read every hour.
@@ -450,61 +507,101 @@ def check_folder(source: WatchedSource) -> CheckResult:
                 result.known[name] = before
                 continue
             content = _file_fingerprint(path)
-            result.known[name] = f"{quick}|{content}"
-            if result.baseline:
-                continue
-            if not before:
-                result.found.append((name, str(path), Change.NEW))
-            elif before.split("|", 1)[-1] != content:
-                result.found.append((name, str(path), Change.CHANGED))
-    except Exception as exc:  # noqa: BLE001 - shown on the source, not raised
-        result.error = in_words(exc)
-        result.known = dict(source.known)
+        except OSError as exc:
+            # One file open in another program, or deleted mid-check, does
+            # not stop the rest; it is looked at again next time.
+            _log.info("Skipped %s this time: %s", path, exc)
+            name = str(path.relative_to(root))
+            if name in source.known:
+                result.known[name] = source.known[name]
+            result.skipped += 1
+            continue
+        result.known[name] = f"{quick}|{content}"
+        if result.baseline:
+            continue
+        if not before:
+            result.found.append((name, str(path), Change.NEW))
+        elif before.split("|", 1)[-1] != content:
+            result.found.append((name, str(path), Change.CHANGED))
     return result
+
+
+#: Consecutive unanswered requests after which a check of a slow site stops
+#: for today rather than holding the queue for a quarter of an hour.
+MAX_FAILED_REQUESTS = 3
+#: Files the server gives no change marker for are fetched and fingerprinted,
+#: a few per check, so a file replaced at the same address is still noticed.
+MAX_CONTENT_CHECKS = 3
+
+
+def _decode(body: bytes, headers: dict[str, str]) -> str:
+    match = re.search(r"charset=([\w-]+)", headers.get("content-type", ""))
+    charset = match.group(1) if match else "utf-8"
+    try:
+        return body.decode(charset, errors="replace")
+    except LookupError:  # a charset Python does not know
+        return body.decode("utf-8", errors="replace")
 
 
 def check_web(source: WatchedSource, fetch: Fetcher | None = None) -> CheckResult:
     fetch = fetch or http_fetch
-    result = CheckResult(source.source_id, baseline=not source.known and not source.last_checked)
+    result = CheckResult(source.source_id, baseline=source.first_look)
     try:
         body, headers = fetch(source.location, "GET", MAX_PAGE_BYTES)
-        charset = "utf-8"
-        match = re.search(r"charset=([\w-]+)", headers.get("content-type", ""))
-        if match:
-            charset = match.group(1)
-        html = body.decode(charset, errors="replace")
-        links = catalogue_links(source.location, html)
+        page_url = headers.get("x-final-url") or source.location
+        links = catalogue_links(page_url, _decode(body, headers))
+        if not links:
+            raise ProfileOSError(
+                "בדף לא נמצא אף קישור לקובץ קטלוג. ייתכן שהכתובת השתנתה, או שהדף "
+                "נבנה בדפדפן ואי אפשר לקרוא אותו כך — עקבו במקום זה אחרי התיקייה "
+                "שאליה נשמרים הקבצים."
+            )
+        by_key = {link_key(address): address for address in links}
         # Files new to us are asked about first, then the known ones in turn,
         # a different slice each day, so a page of three hundred files is
         # covered within the week without three hundred requests at once.
-        fresh = [a for a in links if a not in source.known]
-        seen = [a for a in links if a in source.known]
+        fresh = [key for key in by_key if key not in source.known]
+        seen = [key for key in by_key if key in source.known]
         if seen:
             start = (date.today().toordinal() * MAX_HEAD_REQUESTS) % len(seen)
             seen = seen[start:] + seen[:start]
-        asked = 0
-        for address in fresh + seen:
-            before = source.known.get(address)
+        asked = failed = contents = 0
+        for key in fresh + seen:
+            address = by_key[key]
+            before = source.known.get(key)
             signature = before or ""
-            if asked < MAX_HEAD_REQUESTS:
+            if asked < MAX_HEAD_REQUESTS and failed < MAX_FAILED_REQUESTS:
                 asked += 1
                 try:
                     _, head = fetch(address, "HEAD", 0)
                     signature = _signature(head)
+                    failed = 0
+                    if not signature:
+                        if not result.baseline and before is not None \
+                                and contents < MAX_CONTENT_CHECKS:
+                            contents += 1
+                            content, _ = fetch(address, "GET", MAX_FILE_BYTES)
+                            signature = "sha:" + hashlib.sha256(content).hexdigest()
+                        else:
+                            signature = before or ""
                 except Exception as exc:  # noqa: BLE001 - one file, not the page
-                    _log.info("HEAD %s failed: %s", address, exc)
+                    _log.info("Request for %s failed: %s", address, exc)
+                    failed += 1
                     signature = before or ""
-            result.known[address] = signature
+            if not signature:
+                result.unverifiable += 1
+            result.known[key] = signature
             if result.baseline:
                 continue
             if before is None:
                 result.found.append((link_name(address), address, Change.NEW))
-            elif before and signature and before != signature:
+            elif before and signature and before != signature \
+                    and before.startswith("sha:") == signature.startswith("sha:"):
                 result.found.append((link_name(address), address, Change.CHANGED))
         # A link that left the page is remembered, so it is not "new" again
         # the day it comes back with the same file behind it.
-        for address, signature in source.known.items():
-            result.known.setdefault(address, signature)
+        for key, signature in source.known.items():
+            result.known.setdefault(key, signature)
     except Exception as exc:  # noqa: BLE001 - shown on the source, not raised
         result.error = in_words(exc)
         result.known = dict(source.known)
@@ -523,6 +620,8 @@ class CheckSummary:
     new: list[Finding] = field(default_factory=list)
     errors: list[tuple[str, str]] = field(default_factory=list)
     baselines: list[tuple[str, int]] = field(default_factory=list)
+    skipped: int = 0
+    unverifiable: int = 0
 
     def describe(self) -> str:
         if not self.checked:
@@ -536,6 +635,8 @@ class CheckSummary:
             parts.append(f"{title}: נרשמו ⁦{count}⁩ קבצים קיימים")
         for title, error in self.errors:
             parts.append(f"{title}: {error}")
+        if self.skipped:
+            parts.append(f"⁦{self.skipped}⁩ קבצים פתוחים בתוכנה אחרת — ייבדקו בפעם הבאה")
         return " · ".join(parts)
 
 
@@ -548,6 +649,15 @@ def apply_results(results: Iterable[CheckResult], *, watch_path: Path,
     here, a source removed meanwhile stays removed, and only new findings are
     added — an existing one is never touched by a check.
     """
+    from ..core.storage import path_lock
+
+    # Held from the fresh read to the last write, so a source removed or a
+    # finding dealt with on the screen meanwhile cannot slip in between.
+    with path_lock(findings_path), path_lock(watch_path):
+        return _apply(results, watch_path, findings_path)
+
+
+def _apply(results: Iterable[CheckResult], watch_path: Path, findings_path: Path) -> CheckSummary:
     watch = WatchBook(watch_path).load()
     findings = FindingBook(findings_path).load()
     summary = CheckSummary()
@@ -563,6 +673,9 @@ def apply_results(results: Iterable[CheckResult], *, watch_path: Path,
         if result.error:
             summary.errors.append((source.title, result.error))
             continue
+        source.last_ok = result.checked_at
+        summary.skipped += result.skipped
+        summary.unverifiable += result.unverifiable
         if result.baseline:
             summary.baselines.append((source.title, len(result.known)))
         for name, where, change in result.found:
@@ -578,9 +691,11 @@ def apply_results(results: Iterable[CheckResult], *, watch_path: Path,
             )
             findings._items[finding.finding_id] = finding
             summary.new.append(finding)
-    watch.save()
+    # The findings first: once a file is in ``known`` it is never reported
+    # again, so if its finding cannot be written, neither may that.
     if summary.new:
         findings.save()
+    watch.save()
     return summary
 
 
@@ -590,11 +705,17 @@ def check_all(*, fetch: Fetcher | None = None, only_due: bool = False,
     """Check every watched source (or only those due) and record the results."""
     watch_path = watch_path or default_watch_path()
     findings_path = findings_path or default_findings_path()
-    sources = [s for s in WatchBook(watch_path).load() if not only_due or s.due(now)]
-    results = [check_source(source, fetch) for source in sources]
-    if not results:
-        return CheckSummary()
-    return apply_results(results, watch_path=watch_path, findings_path=findings_path)
+    # One check at a time, whoever asked for it — the hourly one and the
+    # button — so two never add the same finding twice.
+    with _CHECKING:
+        sources = [s for s in WatchBook(watch_path).load() if not only_due or s.due(now)]
+        results = [check_source(source, fetch) for source in sources]
+        if not results:
+            return CheckSummary()
+        return apply_results(results, watch_path=watch_path, findings_path=findings_path)
+
+
+_CHECKING = threading.Lock()
 
 
 def download(finding: Finding, *, fetch: Fetcher | None = None,
@@ -611,22 +732,39 @@ def download(finding: Finding, *, fetch: Fetcher | None = None,
     body, _ = fetch(finding.where, "GET", MAX_FILE_BYTES)
     if not body:
         raise ProfileOSError("הספק החזיר קובץ ריק")
-    supplier = re.sub(r'[\\/:*?"<>|]+', "-", finding.supplier or "ספק").strip() or "ספק"
-    target_dir = (folder or downloads_dir()) / supplier
+    target_dir = (folder or downloads_dir()) / _safe_name(finding.supplier, "ספק")
     target_dir.mkdir(parents=True, exist_ok=True)
-    name = re.sub(r'[\\/:*?"<>|]+', "-", finding.name) or "catalogue"
-    target = target_dir / name
-    if target.exists():
-        if target.read_bytes() == body:
-            return target
-        stem, suffix = target.stem, target.suffix
-        target = target_dir / f"{stem} {date.today():%Y-%m-%d}{suffix}"
-        serial = 2
-        while target.exists():
-            target = target_dir / f"{stem} {date.today():%Y-%m-%d} ({serial}){suffix}"
-            serial += 1
-    atomic_write_bytes(target, body)
+    name = _safe_name(finding.name, "catalogue")
+    stem, suffix = Path(name).stem, Path(name).suffix
+    # Choosing the name and writing the file are one step: two downloads at
+    # once (a double click, two editions with one file name) must never
+    # land on the same name, or the older catalogue is gone.
+    with _DOWNLOADING:
+        candidates = [target_dir / name] + [
+            target_dir / f"{stem} {date.today():%Y-%m-%d}{'' if n == 1 else f' ({n})'}{suffix}"
+            for n in range(1, 1000)
+        ]
+        for target in candidates:
+            if not target.exists():
+                break
+            try:
+                if target.read_bytes() == body:
+                    return target  # the same file, already here
+            except OSError:
+                continue
+        else:
+            raise ProfileOSError("יותר מדי גרסאות של הקובץ בתיקייה — פנו מקום ונסו שוב")
+        atomic_write_bytes(target, body)
     return target
+
+
+_DOWNLOADING = threading.Lock()
+
+
+def _safe_name(text: str, fallback: str) -> str:
+    """A name that is one folder or file, inside the folder it is put in."""
+    cleaned = re.sub(r'[\\/:*?"<>|\x00-\x1f]+', "-", text or "").strip(" .")
+    return cleaned or fallback
 
 
 #: A drawing pack is a few megabytes; refuse a zip that says it is much more.
@@ -634,30 +772,45 @@ MAX_UNPACKED_BYTES = 512 * 1024 * 1024
 
 
 def unpack(archive: Path, folder: Path | None = None) -> Path:
-    """Open a supplier's ZIP of drawings into a folder of its own, beside it.
+    """Open a supplier's ZIP of drawings into a folder this program owns.
 
-    Every name in the archive is checked before anything is written: one
-    that climbs out of the folder (``../``) or is absolute is refused, and so
+    Never beside the archive: that may be the supplier folder being watched,
+    or a shared drive, and four hundred drawings appearing there would be
+    four hundred findings. The same archive opened twice is opened once —
+    the earlier folder is reused. Every name is checked before anything is
+    written: one that climbs out (``../``) or is absolute is refused, and so
     is an archive whose contents add up to more than a drawing pack could.
-    An existing folder of the same name is left alone; the pack goes beside it.
     """
     import zipfile
+    from pathlib import PurePosixPath, PureWindowsPath
 
     archive = Path(archive)
-    target = (folder or archive.parent) / archive.stem
+    base = folder if folder is not None else downloads_dir() / "חבילות"
+    fingerprint = _file_fingerprint(archive).split(":", 1)[1]
+    if base.is_dir():
+        for earlier in sorted(base.glob(f"{archive.stem}*")):
+            marker = earlier / ".archive-sha256"
+            try:
+                if marker.read_text(encoding="utf-8").strip() == fingerprint:
+                    return earlier
+            except OSError:
+                continue
+    target = base / archive.stem
     serial = 2
     while target.exists():
-        target = (folder or archive.parent) / f"{archive.stem} ({serial})"
+        target = base / f"{archive.stem} ({serial})"
         serial += 1
     try:
         with zipfile.ZipFile(archive) as pack:
-            members = [info for info in pack.infolist() if not info.is_dir()]
+            members = [
+                info for info in pack.infolist()
+                if not info.is_dir() and not _ignored(PurePosixPath(info.filename.replace("\\", "/")))
+                and not PurePosixPath(info.filename).name.startswith("._")
+            ]
             total = sum(info.file_size for info in members)
             if total > MAX_UNPACKED_BYTES:
                 raise ProfileOSError("הקובץ הדחוס גדול מדי לחבילת שרטוטים — פתחו אותו ידנית")
-            from pathlib import PurePosixPath, PureWindowsPath
-
-            for info in members:
+            for info in pack.infolist():
                 posix, windows = PurePosixPath(info.filename), PureWindowsPath(info.filename)
                 if (posix.is_absolute() or windows.is_absolute() or windows.drive
                         or ".." in posix.parts or ".." in windows.parts):
@@ -668,6 +821,21 @@ def unpack(archive: Path, folder: Path | None = None) -> Path:
                 atomic_write_bytes(destination, pack.read(info))
     except zipfile.BadZipFile as exc:
         raise ProfileOSError("הקובץ הדחוס פגום או שלא הורד עד הסוף") from exc
+    target.mkdir(parents=True, exist_ok=True)
+    atomic_write_bytes(target / ".archive-sha256", fingerprint.encode("ascii"))
+    return target
+
+
+def stage(path: Path) -> Path:
+    """A single drawing in a folder of its own, ready to be read in.
+
+    Reading "the folder it is in" would read every other drawing there too —
+    last year's edition of the same article among them.
+    """
+    path = Path(path)
+    target = downloads_dir() / "לקליטה" / f"{datetime.now():%Y%m%d-%H%M%S}-{uuid4().hex[:4]}"
+    target.mkdir(parents=True, exist_ok=True)
+    atomic_write_bytes(target / path.name, path.read_bytes())
     return target
 
 
@@ -696,6 +864,8 @@ __all__ = [
     "http_fetch",
     "in_words",
     "link_name",
+    "link_key",
     "normalise_address",
+    "stage",
     "unpack",
 ]

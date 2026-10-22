@@ -587,15 +587,19 @@ class ConfirmSystemDialog(_FormDialog):
 
     Laid out in the order a catalogue prints them, each with the place to look
     for it, so somebody can work down the page with the book open beside them
-    instead of hunting for each field.
+    instead of hunting for each field. Every field starts empty: a number is
+    in the record only because somebody read it off the page.
     """
 
     accept_text = "אשר את הסדרה"
+    #: Shown in a field nothing has been typed into.
+    EMPTY = "לא הוזן"
 
     def __init__(
         self,
         series: str,
         existing: Any = None,
+        editions: Any = (),
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(f"נתוני יצרן — {series}", parent)
@@ -603,31 +607,46 @@ class ConfirmSystemDialog(_FormDialog):
 
         from ..systems import FIGURES
 
+        editions = list(editions)
         self.source = QLineEdit()
         self.source.setPlaceholderText("קטלוג קליל 7300, מהדורת 2026, עמ׳ 41")
         self.entered_by = QLineEdit()
         self.entered_by.setPlaceholderText("מי קרא את המספרים")
+        self.edition = QComboBox()
+        self.edition.addItem("לא מתוך מהדורה שנקלטה בתוכנה", "")
+        for edition in editions:
+            revision = getattr(edition, "revision", "")
+            self.edition.addItem(
+                edition.source + (f" · {revision}" if revision else ""), edition.edition_id
+            )
+        if editions:
+            self.edition.setCurrentIndex(1)  # the newest accepted, listed first
 
         self.grid.add("מקור", self.source)
+        self.grid.add("נקרא מתוך", self.edition)
         self.grid.add("הוזן על ידי", self.entered_by)
 
         self.figures: dict[str, QDoubleSpinBox] = {}
+        self._unset: dict[str, float] = {}
         for figure in FIGURES:
             box = QDoubleSpinBox()
-            box.setRange(figure.minimum, figure.maximum)
+            # One step below the range means "not entered", shown in words.
+            unset = round(figure.minimum - 0.1, 1)
+            box.setRange(unset, figure.maximum)
             box.setDecimals(1)
             box.setSuffix(f" {figure.unit}")
+            box.setSpecialValueText(self.EMPTY)
             box.setToolTip(figure.where)
-            if figure.default is not None:
-                box.setValue(figure.default)
+            box.setValue(unset)
             self.figures[figure.key] = box
+            self._unset[figure.key] = unset
             label = figure.hebrew if figure.required else f"{figure.hebrew} (לא חובה)"
             self.grid.add(label, box)
 
         self.profiles: dict[str, QLineEdit] = {}
         for role, label in (
             ("frame", "מק״ט משקוף"), ("sash", "מק״ט כנף"),
-            ("mullion", "מק״ט זקף"), ("bead", "מק״ט סרגל"),
+            ("mullion", "מק״ט זקף"), ("transom", "מק״ט קורה"), ("bead", "מק״ט סרגל"),
         ):
             field = QLineEdit()
             field.setPlaceholderText("מספר הפריט בקטלוג")
@@ -643,6 +662,10 @@ class ConfirmSystemDialog(_FormDialog):
             for role, code in existing.profiles.items():
                 if role in self.profiles:
                     self.profiles[role].setText(code)
+            read_from = getattr(existing, "edition_id", "")
+            index = self.edition.findData(read_from) if read_from else -1
+            if index >= 0:
+                self.edition.setCurrentIndex(index)
 
         # A source is the one field with no sensible default: a confirmed
         # figure with no record of where it came from is not confirmed.
@@ -656,7 +679,13 @@ class ConfirmSystemDialog(_FormDialog):
         return {
             "source": self.source.text().strip(),
             "entered_by": self.entered_by.text().strip(),
-            "figures": {key: box.value() for key, box in self.figures.items()},
+            "edition_id": self.edition.currentData() or "",
+            # Only what was typed: a field left at "not entered" is missing,
+            # and a missing required figure is refused by name.
+            "figures": {
+                key: round(box.value(), 1) for key, box in self.figures.items()
+                if box.value() > self._unset[key] + 1e-9
+            },
             "profiles": {
                 role: field.text().strip()
                 for role, field in self.profiles.items()
@@ -699,6 +728,8 @@ class RecordEditionDialog(_FormDialog):
         self.system = _system_combo(self._guess(series))
         self.series = QLineEdit(series)
         self.series.setPlaceholderText("שם הסדרה, אם אינה ברשימה")
+        self.revision = QLineEdit()
+        self.revision.setPlaceholderText("כפי שמודפס בקטלוג: מהדורה 3, 03/2026")
         self.complete = QCheckBox("זה הקטלוג המלא של הסדרה, לא עדכון חלקי")
         self.recorded_by = QLineEdit()
         self.recorded_by.setPlaceholderText("מי קלט")
@@ -706,6 +737,7 @@ class RecordEditionDialog(_FormDialog):
         self.grid.add("מקור", self.source)
         self.grid.add("סדרה", self.system)
         self.grid.add("שם הסדרה", self.series)
+        self.grid.add("מהדורת הספק", self.revision)
         self.grid.add_span(self.complete)
         self.grid.add("נקלט על ידי", self.recorded_by)
 
@@ -748,6 +780,7 @@ class RecordEditionDialog(_FormDialog):
             "series": self.series.text().strip(),
             "complete": self.complete.isChecked(),
             "recorded_by": self.recorded_by.text().strip(),
+            "revision": self.revision.text().strip(),
         }
 
 

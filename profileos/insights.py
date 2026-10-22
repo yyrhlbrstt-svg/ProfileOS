@@ -623,9 +623,12 @@ def _catalogue(context: dict[str, Any], today: date) -> list[Insight]:
             )
         stock = stock_of_removed(diff, context.get("stocktakes") or [])
         if stock:
-            detail += " · במלאי מפרופילים שיצאו: " + ", ".join(
+            detail += " · במלאי מפרופילים שלא נמצאו בקטלוג החדש: " + ", ".join(
                 left.describe() for left in stock[:3]
             )
+        if not edition.system_id:
+            detail += (" · המהדורה לא שויכה לסדרה מהרשימה, ולכן לא נבדקו "
+                       "פרויקטים ונתוני חיתוך")
         severity = "danger" if hits else ("warning" if (affected and not diff.empty) else "info")
         found.append(Insight(
             severity, f"מהדורת קטלוג חדשה ל{edition.label} ממתינה לבדיקה",
@@ -634,19 +637,9 @@ def _catalogue(context: dict[str, Any], today: date) -> list[Insight]:
 
     if confirmations is not None:
         for confirmation in confirmations:
-            hits = stale_confirmation(editions, confirmation.entry_id, confirmation)
-            if not hits:
+            stale = stale_confirmation(editions, confirmation.entry_id, confirmation)
+            if not stale:
                 continue
-            affected = open_jobs_on(confirmation.entry_id, jobs)
-            detail = (
-                "הקטלוג החדש שאושר שינה פרופילים שנתוני החיתוך נקראו מהם: "
-                + ", ".join(hit.describe() for hit in hits[:4])
-                + ". הזינו שוב את נתוני היצרן מהקטלוג החדש לפני החיתוך הבא."
-            )
-            if affected:
-                detail += " " + _count(
-                    len(affected), "פרויקט פתוח אחד על הסדרה", "פרויקטים פתוחים על הסדרה"
-                ) + ": " + _names(affected, lambda job: f"⁦{job.job_id}⁩")
             try:
                 from .systems import DIRECTORY
 
@@ -654,10 +647,30 @@ def _catalogue(context: dict[str, Any], today: date) -> list[Insight]:
                 series = entry.display if entry is not None else confirmation.entry_id
             except Exception:  # noqa: BLE001 - the id still says which series
                 series = confirmation.entry_id
+            detail = (
+                f"הנתונים נקראו מ״{confirmation.source}״, ומאז אושר "
+                f"״{stale.latest.source}״. בדקו בקטלוג החדש את טבלאות החיתוך "
+                "והזיגוג והזינו את נתוני היצרן מחדש, עם המהדורה שממנה נקראו."
+            )
+            if stale.hits:
+                detail += " השתנו פרופילים שהנתונים נשענים עליהם: " + ", ".join(
+                    hit.describe() for hit in stale.hits[:4]
+                ) + "."
+            elif stale.no_articles:
+                detail += (" לנתונים לא צוינו מק״טים, ולכן אי אפשר לדעת אילו "
+                           "פרופילים נוגעים בהם.")
+            affected = open_jobs_on(confirmation.entry_id, jobs)
+            if affected:
+                detail += " " + _count(
+                    len(affected), "פרויקט פתוח אחד על הסדרה", "פרויקטים פתוחים על הסדרה"
+                ) + ": " + _names(affected, lambda job: f"⁦{job.job_id}⁩") + "."
             found.append(Insight(
-                "danger", f"נתוני החיתוך של {series} מבוססים על קטלוג ישן",
+                "danger" if stale.hits else "warning",
+                f"נתוני החיתוך של {series} נקראו מקטלוג קודם",
                 detail, "Catalogue",
-                f"stale-confirmation:{confirmation.entry_id}:{confirmation.entered_at or confirmation.entered_on}",
+                f"stale-confirmation:{confirmation.entry_id}:"
+                f"{getattr(confirmation, 'edition_id', '') or confirmation.entered_at or confirmation.entered_on}:"
+                f"{stale.latest.edition_id}",
             ))
     return found
 

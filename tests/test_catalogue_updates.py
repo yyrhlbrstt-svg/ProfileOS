@@ -99,16 +99,84 @@ class TestEditions:
         assert [s.profile_id for s in diff.added] == ["4304"]
         assert [s.profile_id for s in diff.removed] == ["4303"]
         assert diff.unchanged == 1
-        assert "חדשים" in diff.summary() and "השתנו" in diff.summary() and "הוסרו" in diff.summary()
+        assert "חדשים" in diff.summary() and "השתנו" in diff.summary() and "לא נמצאו" in diff.summary()
+        # Absence is a question for the supplier, not a verdict.
+        assert any("לברר מול הספק" in line for line in diff.lines())
 
-    def test_rounding_is_not_a_change(self, book):
+    def test_a_printed_digit_that_changed_is_a_change(self, book):
         first_accepted(book)
-        nearly = {code: dict(values) for code, values in BASE.items()}
-        nearly["4301"]["mass_per_metre"] = 1.3865   # within half a percent
-        nearly["4301"]["width"] = 45.04              # within a twentieth of a mm
-        edition = book.record(report(nearly), source="סריקה חוזרת", system_id="klil-4300",
+        same = {code: dict(values) for code, values in BASE.items()}
+        edition = book.record(report(same), source="סריקה חוזרת", system_id="klil-4300",
                               complete=True)
         assert book.diff(edition).empty
+        # One printed digit: the supplier recalculated. No tolerance for that.
+        nearly = {code: dict(values) for code, values in BASE.items()}
+        nearly["4301"]["mass_per_metre"] = 1.387
+        edition = book.record(report(nearly), source="2026", system_id="klil-4300",
+                              complete=True)
+        assert [c.profile_id for c in book.diff(edition).changed] == ["4301"]
+
+    def test_measured_figures_allow_for_how_the_outline_was_drawn(self):
+        old = ProfileSnapshot("4301", measured={"area": 512.0, "width": 45.0})
+        assert compare_profile(old, ProfileSnapshot("4301", measured={"area": 513.0, "width": 45.03})) is None
+        change = compare_profile(old, ProfileSnapshot("4301", measured={"area": 540.0, "width": 45.0}))
+        assert change and "נמדד מהשרטוט" in change.describe()
+
+    def test_every_figure_the_table_prints_is_kept(self, book):
+        rows = {"4301": {"mass_per_metre": 1.0, "wall_thickness": 1.4, "perimeter": 250.0}}
+        edition = book.record(report(rows), source="2025", system_id="klil-4300", complete=True)
+        assert edition.profiles["4301"].published == rows["4301"]
+        book.accept(edition.edition_id)
+        thinner = {"4301": {"mass_per_metre": 1.0, "wall_thickness": 1.2, "perimeter": 250.0}}
+        edition = book.record(report(thinner), source="2026", system_id="klil-4300", complete=True)
+        [change] = book.diff(edition).changed
+        assert "עובי דופן" in change.describe() and "-0.20" in change.describe()
+
+    def test_figures_read_as_the_catalogue_prints_them(self):
+        from profileos.catalogue.editions import FigureChange
+
+        text = FigureChange("ixx", 452300.0, 456500.0).describe()
+        assert "45.23" in text and "45.65" in text and "ס״מ⁴" in text and "e+" not in text
+
+    def test_nothing_to_compare_is_not_unchanged(self, book):
+        edition = book.record(report({"4301": {"mass_per_metre": 1.386}}), source="טבלה",
+                              system_id="klil-4300", complete=True)
+        book.accept(edition.edition_id)
+        drawings_only = report({"4301": {}})
+        drawings_only.entries[0].published = {}
+        drawings_only.entries[0].measured = None
+        edition = book.record(drawings_only, source="שרטוטים", system_id="klil-4300")
+        diff = book.diff(edition)
+        assert diff.unchanged == 0 and diff.uncompared == ["4301"]
+        assert "לא ניתנו להשוואה" in diff.summary()
+
+    def test_a_catalogue_that_did_not_read_fully_cannot_be_complete(self, book):
+        partial_read = report(BASE)
+        partial_read.errors.append("page 12: no text")
+        with pytest.raises(ProfileOSError, match="קטלוג מלא"):
+            book.record(partial_read, source="2026", system_id="klil-4300", complete=True)
+        edition = book.record(partial_read, source="2026", system_id="klil-4300")
+        assert any("לא נקראו" in warning for warning in edition.warnings)
+
+    def test_two_codes_that_read_the_same_are_named(self, book):
+        edition = book.record(report({"43-101": {"width": 1.0}, "431-01": {"width": 2.0}}),
+                              source="2026", system_id="klil-4300")
+        assert len(edition.profiles) == 1
+        assert any("אותו מק״ט" in warning for warning in edition.warnings)
+
+    def test_the_suppliers_own_edition_is_kept(self, book, tmp_path):
+        edition = book.record(report(BASE), source="קטלוג", system_id="klil-4300",
+                              revision="מהדורה 3, 03/2026")
+        assert EditionBook(tmp_path / "editions.json").load().get(edition.edition_id).revision \
+            == "מהדורה 3, 03/2026"
+
+    def test_a_decision_made_on_another_computer_stands(self, book, tmp_path):
+        edition = book.record(report(BASE), source="קטלוג", system_id="klil-4300")
+        EditionBook(tmp_path / "editions.json").load().accept(edition.edition_id, by="א")
+        with pytest.raises(ProfileOSError):
+            book.reject(edition.edition_id, by="ב")
+        assert EditionBook(tmp_path / "editions.json").load().get(edition.edition_id).state \
+            == EditionState.ACCEPTED
 
     def test_a_partial_pack_does_not_drop_the_rest(self, book):
         first_accepted(book)
@@ -140,7 +208,7 @@ class TestEditions:
                               complete=True)
         assert book.diff(edition).empty
 
-    def test_a_redrawn_profile_is_noticed(self, tmp_path, book):
+    def test_a_drawing_saved_again_is_not_a_change(self, tmp_path, book):
         old_dxf = tmp_path / "old.dxf"
         new_dxf = tmp_path / "new.dxf"
         old_dxf.write_text("0\nSECTION\n")
@@ -150,9 +218,9 @@ class TestEditions:
         book.accept(edition.edition_id)
         edition = book.record(report(BASE, {"4301": str(new_dxf)}), source="2026",
                               system_id="klil-4300", complete=True)
-        diff = book.diff(edition)
-        assert [c.profile_id for c in diff.changed] == ["4301"]
-        assert diff.changed[0].redrawn and "השרטוט עודכן" in diff.changed[0].describe()
+        # The bytes differ (a DXF header carries its save date); the figures
+        # do not. Only a change in what the outline measures is a change.
+        assert book.diff(edition).empty
 
     def test_printed_is_compared_with_printed_only(self):
         printed = ProfileSnapshot("4301", published={"width": 45.0})
@@ -221,7 +289,7 @@ class TestWhoItHurts:
         described = sorted(hit.describe() for hit in hits)
         assert len(hits) == 2
         assert any("משקוף" in text and "השתנה" in text for text in described)
-        assert any("כנף" in text and "הוסר" in text for text in described)
+        assert any("כנף" in text and "לא נמצא" in text for text in described)
 
     def test_figures_entered_before_the_new_catalogue_are_stale(self, book):
         confirmation = SimpleNamespace(
@@ -233,15 +301,34 @@ class TestWhoItHurts:
         changed["4301"] = {"mass_per_metre": 1.5, "width": 45.0, "height": 70.0}
         edition = book.record(report(changed), source="2026", system_id="klil-4300",
                               complete=True)
-        assert stale_confirmation(book, "klil-4300", confirmation) == []  # still pending
+        stale = stale_confirmation(book, "klil-4300", confirmation)
+        # Only the first catalogue is accepted, and it is newer than the figures.
+        assert stale and stale.hits == []
         book.accept(edition.edition_id)
-        hits = stale_confirmation(book, "klil-4300", confirmation)
-        assert [hit.article for hit in hits] == ["4301"]
+        stale = stale_confirmation(book, "klil-4300", confirmation)
+        assert [hit.article for hit in stale.hits] == ["4301"]
+        assert stale.latest.edition_id == edition.edition_id
         # Entered again after the decision: no longer stale.
         later = datetime.now() + timedelta(seconds=5)
         confirmation.entered_at = later.isoformat(timespec="seconds")
         confirmation.entered_on = later.date().isoformat()
-        assert stale_confirmation(book, "klil-4300", confirmation) == []
+        assert not stale_confirmation(book, "klil-4300", confirmation)
+
+    def test_any_newer_catalogue_asks_for_the_figures_again(self, book):
+        """Deductions live in the cutting tables: a new gasket changes them
+        with every extrusion as it was, so no article has to change."""
+        first_accepted(book)
+        [first] = book.accepted("klil-4300")
+        confirmation = SimpleNamespace(profiles={}, edition_id=first.edition_id,
+                                       entered_at="", entered_on="")
+        assert not stale_confirmation(book, "klil-4300", confirmation)
+        same = book.record(report(BASE), source="2026", system_id="klil-4300", complete=True)
+        book.accept(same.edition_id)
+        stale = stale_confirmation(book, "klil-4300", confirmation)
+        assert stale and stale.hits == [] and stale.no_articles
+        # Read again from the new edition: settled.
+        confirmation.edition_id = same.edition_id
+        assert not stale_confirmation(book, "klil-4300", confirmation)
 
     def test_an_old_record_with_only_a_day_is_asked_about(self, book):
         first_accepted(book)
@@ -252,7 +339,7 @@ class TestWhoItHurts:
         book.accept(edition.edition_id)
         today = datetime.now().date().isoformat()
         confirmation = SimpleNamespace(profiles={"frame": "4301"}, entered_on=today, entered_at="")
-        assert stale_confirmation(book, "klil-4300", confirmation)
+        assert stale_confirmation(book, "klil-4300", confirmation).hits
 
     def test_a_confirmation_keeps_its_moment(self):
         from profileos.systems.confirmation import Confirmation
@@ -442,14 +529,23 @@ class TestDownloads:
         assert second != first and second.read_bytes() == b"%PDF 2026"
         assert first.read_bytes() == b"%PDF 2025"
 
-    def test_a_drawing_pack_is_unpacked_beside_itself(self, tmp_path):
-        archive = tmp_path / "4300.zip"
+    def test_a_drawing_pack_is_unpacked_into_our_own_folder_once(self, tmp_path):
+        supplier = tmp_path / "supplier"
+        supplier.mkdir()
+        archive = supplier / "4300.zip"
         with zipfile.ZipFile(archive, "w") as pack:
             pack.writestr("dxf/4301.dxf", "0\nEOF\n")
             pack.writestr("dxf/4302.dxf", "0\nEOF\n")
-        folder = unpack(archive)
+            pack.writestr("__MACOSX/dxf/._4301.dxf", "junk")
+        ours = tmp_path / "ours"
+        folder = unpack(archive, ours)
+        assert folder.parent == ours
         assert sorted(p.name for p in folder.rglob("*.dxf")) == ["4301.dxf", "4302.dxf"]
-        assert unpack(archive) != folder  # a second time goes beside, not over
+        assert [p.name for p in supplier.iterdir()] == ["4300.zip"]  # nothing beside it
+        assert unpack(archive, ours) == folder                       # the same pack: reused
+        with zipfile.ZipFile(archive, "w") as pack:
+            pack.writestr("dxf/4301.dxf", "0\nEOF revised\n")
+        assert unpack(archive, ours) != folder                       # a new pack: beside
 
     @pytest.mark.parametrize("name", ["../evil.dxf", "/etc/evil.dxf", "..\\evil.dxf", "C:\\evil.dxf"])
     def test_a_pack_that_climbs_out_is_refused(self, tmp_path, name):
@@ -458,15 +554,46 @@ class TestDownloads:
             pack.writestr("ok.dxf", "x")
             pack.writestr(name, "x")
         with pytest.raises(ProfileOSError):
-            unpack(archive)
+            unpack(archive, tmp_path / "out")
         assert not (tmp_path / "evil.dxf").exists()
-        assert not any((tmp_path / "bad").rglob("*"))  # nothing half-written
+        assert not any((tmp_path / "out").rglob("*"))  # nothing half-written
 
     def test_a_broken_zip(self, tmp_path):
         archive = tmp_path / "cut.zip"
         archive.write_bytes(b"PK\x03\x04 cut off")
         with pytest.raises(ProfileOSError):
-            unpack(archive)
+            unpack(archive, tmp_path / "out")
+
+    def test_two_downloads_at_once_never_share_a_name(self, tmp_path):
+        import threading
+
+        from profileos.catalogue.watch import Finding
+
+        urls = [f"https://klil.example/{year}/catalogue.pdf" for year in (2025, 2026)]
+        web = FakeWeb("", {url: (url, url.encode()) for url in urls})
+        results: list[Path] = []
+
+        def get(url):
+            finding = Finding(finding_id=url, source_id="S", name="catalogue.pdf",
+                              where=url, supplier="קליל")
+            results.append(download(finding, fetch=web, folder=tmp_path))
+
+        threads = [threading.Thread(target=get, args=(url,)) for url in urls]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        assert len(set(results)) == 2
+        assert {path.read_bytes() for path in results} == {url.encode() for url in urls}
+
+    def test_a_supplier_name_cannot_leave_the_folder(self, tmp_path):
+        from profileos.catalogue.watch import Finding
+
+        url = "https://x.example/price.csv"
+        finding = Finding(finding_id="F", source_id="S", name="price.csv", where=url,
+                          supplier="..")
+        path = download(finding, fetch=FakeWeb("", {url: ("1", b"a,b")}), folder=tmp_path / "d")
+        assert (tmp_path / "d") in path.parents
 
 
 # --------------------------------------------------------------------------- #
@@ -531,8 +658,9 @@ def test_stale_cutting_figures_are_a_danger(shop):
                           complete=True)
     book.accept(edition.edition_id)
 
-    stale = [i for i in scan() if "קטלוג ישן" in i.title]
+    stale = [i for i in scan() if "נקראו מקטלוג קודם" in i.title]
     assert stale and stale[0].severity == "danger"
+    assert "טבלאות החיתוך" in stale[0].detail
     assert "משקוף" in stale[0].detail
 
 
@@ -585,6 +713,11 @@ def test_the_supplier_updates_tab(shop, tmp_path, monkeypatch):
     page.check_sources()
     assert page.findings_table.rowCount() == 1
     assert page.findings_table.item(0, 1).text() == "4300-2026.zip"
+
+    # A refresh never leaves a selection pointing at whatever moved into the row.
+    page.findings_table.selectRow(0)
+    page._refresh_findings()
+    assert not page.findings_table.selectionModel().selectedRows()
 
     page.findings_table.selectRow(0)
     page.ingest_finding()
@@ -673,7 +806,197 @@ class TestStockAndTeam:
         hit = SimpleNamespace(describe=lambda: "משקוף ⁦4301⁩ השתנה")
         text = catalogue_change_message(edition, diff, brand_name="דאדי בע״מ",
                                         jobs=[job], hits=[hit])
-        assert "קטלוג 2026" in text and "יצאו מהקטלוג" in text and "4303" in text
+        assert "קטלוג 2026" in text and "לא נמצאו בקטלוג החדש" in text and "4303" in text
         assert "J-2026-0007" in text and "לקרוא שוב" in text
-        assert "היה ⁦1.386⁩, עכשיו ⁦1.5⁩" in text
+        assert "היה ⁦1.386⁩, עכשיו ⁦1.5⁩" in text, text
         assert text.endswith("דאדי בע״מ")
+
+
+class TestWhatTheReviewFound:
+    """Each of these lost a supplier's file, flooded the list, or misled."""
+
+    def paths(self, tmp_path):
+        return dict(watch_path=tmp_path / "w.json", findings_path=tmp_path / "f.json")
+
+    def test_a_finding_that_cannot_be_saved_is_reported_next_time(self, tmp_path):
+        folder = tmp_path / "s"
+        folder.mkdir()
+        WatchBook(tmp_path / "w.json").load().add(Kind.FOLDER, str(folder))
+        check_all(**self.paths(tmp_path))
+        (folder / "new.pdf").write_bytes(b"%PDF")
+        (tmp_path / "f.json").write_text("{damaged", encoding="utf-8")
+        with pytest.raises(Exception):
+            check_all(**self.paths(tmp_path))
+        (tmp_path / "f.json").unlink()
+        (tmp_path / "f.json.bak").unlink(missing_ok=True)
+        assert [f.name for f in check_all(**self.paths(tmp_path)).new] == ["new.pdf"]
+
+    def test_a_failed_first_look_does_not_flood_the_list(self, tmp_path):
+        import urllib.error
+
+        page = "".join(f'<a href="/c/{n}.pdf">x</a>' for n in range(30))
+        web = FakeWeb(page, {f"https://k.example/c/{n}.pdf": (str(n), b"x") for n in range(30)})
+
+        def offline(url, method="GET", limit=0):
+            raise urllib.error.URLError("down")
+
+        WatchBook(tmp_path / "w.json").load().add(Kind.WEB, "https://k.example/downloads")
+        check_all(fetch=offline, **self.paths(tmp_path))
+        summary = check_all(fetch=web, **self.paths(tmp_path))
+        assert summary.new == [] and summary.baselines
+
+    def test_a_missing_drive_at_first_look_does_not_flood_either(self, tmp_path):
+        folder = tmp_path / "s"
+        folder.mkdir()
+        WatchBook(tmp_path / "w.json").load().add(Kind.FOLDER, str(folder))
+        folder.rmdir()
+        check_all(**self.paths(tmp_path))
+        folder.mkdir()
+        for n in range(5):
+            (folder / f"{n}.pdf").write_bytes(b"x")
+        assert check_all(**self.paths(tmp_path)).new == []
+
+    def test_lock_files_and_unreadable_files_do_not_stop_the_rest(self, tmp_path, monkeypatch):
+        from profileos.catalogue import watch as module
+
+        folder = tmp_path / "s"
+        folder.mkdir()
+        WatchBook(tmp_path / "w.json").load().add(Kind.FOLDER, str(folder))
+        check_all(**self.paths(tmp_path))
+        (folder / "~$prices.xlsx").write_bytes(b"lock")
+        (folder / "open.pdf").write_bytes(b"in use")
+        (folder / "good.pdf").write_bytes(b"fine")
+        real = module._file_fingerprint
+
+        def busy(path):
+            if path.name == "open.pdf":
+                raise PermissionError("in use")
+            return real(path)
+
+        monkeypatch.setattr(module, "_file_fingerprint", busy)
+        summary = check_all(**self.paths(tmp_path))
+        assert [f.name for f in summary.new] == ["good.pdf"] and summary.skipped == 1
+        assert not summary.errors
+        monkeypatch.setattr(module, "_file_fingerprint", real)
+        assert [f.name for f in check_all(**self.paths(tmp_path)).new] == ["open.pdf"]
+
+    def test_links_in_a_query_and_cache_busters(self):
+        from profileos.catalogue.watch import link_key, link_name
+
+        html = ('<a href="download.php?file=K4300.pdf">a</a>'
+                '<a href="/cat.pdf?v=1729">b</a><a href="/cat.pdf?v=1730">c</a>')
+        links = catalogue_links("https://k.example/d/", html)
+        assert len(links) == 2
+        assert link_name(links[0]) == "K4300.pdf"
+        assert link_key("https://k.example/cat.pdf?v=1") == link_key("https://k.example/cat.pdf?v=2")
+
+    def test_links_are_resolved_where_the_server_answered(self, tmp_path):
+        class Redirecting(FakeWeb):
+            def __call__(self, url, method="GET", limit=0):
+                body, headers = super().__call__(url, method, limit)
+                if url == "https://k.example/downloads":
+                    headers = {**headers, "x-final-url": "https://k.example/downloads/"}
+                return body, headers
+
+        web = Redirecting('<a href="files/a.pdf">a</a>',
+                          {"https://k.example/downloads/files/a.pdf": ("1", b"x")})
+        WatchBook(tmp_path / "w.json").load().add(Kind.WEB, "https://k.example/downloads")
+        check_all(fetch=web, **self.paths(tmp_path))
+        [source] = list(WatchBook(tmp_path / "w.json").load())
+        assert list(source.known) == ["https://k.example/downloads/files/a.pdf"]
+
+    def test_an_unknown_charset_and_a_page_without_links(self, tmp_path):
+        page = '<a href="/a.pdf">x</a>'.encode()
+
+        def odd(url, method="GET", limit=0):
+            if method == "HEAD":
+                return b"", {"etag": "1"}
+            return page, {"content-type": "text/html; charset=x-unknown-cs"}
+
+        WatchBook(tmp_path / "w.json").load().add(Kind.WEB, "https://k.example/d")
+        assert not check_all(fetch=odd, **self.paths(tmp_path)).errors
+
+        def empty(url, method="GET", limit=0):
+            return b"<html><script>build()</script></html>", {}
+
+        summary = check_all(fetch=empty, **self.paths(tmp_path))
+        assert summary.errors and "לא נמצא אף קישור" in summary.errors[0][1]
+
+    def test_a_file_replaced_at_the_same_address_without_markers(self, tmp_path):
+        files = {"https://k.example/a.pdf": b"2025"}
+
+        def plain(url, method="GET", limit=0):
+            if url in files:
+                return (b"" if method == "HEAD" else files[url]), {}
+            return b'<a href="/a.pdf">a</a>', {}
+
+        WatchBook(tmp_path / "w.json").load().add(Kind.WEB, "https://k.example/d")
+        check_all(fetch=plain, **self.paths(tmp_path))      # first look
+        assert check_all(fetch=plain, **self.paths(tmp_path)).new == []  # fingerprinted
+        files["https://k.example/a.pdf"] = b"2026"
+        [finding] = check_all(fetch=plain, **self.paths(tmp_path)).new
+        assert finding.change == Change.CHANGED
+
+    def test_the_screen_and_the_background_saving_at_once(self, tmp_path):
+        import threading
+
+        folder = tmp_path / "s"
+        folder.mkdir()
+        paths = self.paths(tmp_path)
+        WatchBook(paths["watch_path"]).load().add(Kind.FOLDER, str(folder))
+        added: list[str] = []
+        errors: list[BaseException] = []
+
+        def screen():
+            try:
+                for n in range(15):
+                    extra = tmp_path / f"extra{n}"
+                    extra.mkdir()
+                    added.append(WatchBook(paths["watch_path"]).load().add(
+                        Kind.FOLDER, str(extra)).source_id)
+            except BaseException as exc:  # noqa: BLE001
+                errors.append(exc)
+
+        def background():
+            try:
+                for _ in range(15):
+                    check_all(**paths)
+            except BaseException as exc:  # noqa: BLE001
+                errors.append(exc)
+
+        threads = [threading.Thread(target=screen), threading.Thread(target=background)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        assert not errors
+        kept = {s.source_id for s in WatchBook(paths["watch_path"]).load()}
+        assert set(added) <= kept and len(kept) == 16
+
+
+def test_the_cutting_figure_form_starts_empty(shop):
+    pytest.importorskip("PySide6")
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication
+
+    from profileos.systems import FIGURES, Confirmation
+    from profileos.ui.dialogs import ConfirmSystemDialog
+
+    QApplication.instance() or QApplication([])
+    edition = SimpleNamespace(edition_id="ED-1", source="קטלוג קליל 2026", revision="מהדורה 3")
+    dialog = ConfirmSystemDialog("קליל 4300", editions=[edition])
+    values = dialog.values()
+    # Nothing is there that nobody typed.
+    assert values["figures"] == {} and values["edition_id"] == "ED-1"
+    confirmation = Confirmation(entry_id="klil-4300", source="קטלוג", values=values["figures"])
+    assert len(confirmation.missing()) == sum(1 for f in FIGURES if f.required)
+    first = FIGURES[0]
+    dialog.figures[first.key].setValue(first.minimum)
+    assert dialog.values()["figures"] == {first.key: first.minimum}
+    dialog.deleteLater()
+
+
+def test_the_bench_form_has_no_figures_in_it():
+    from profileos.systems import template
+
+    assert all(value is None for value in template("klil-4300")["values"].values())

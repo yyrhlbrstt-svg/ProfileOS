@@ -253,7 +253,10 @@ def catalogue_change_message(edition: Any, diff: Any, *, brand_name: str,
     and by how much, which are gone, which open jobs are on the series, and
     whether the deductions the saw works to have to be read again.
     """
-    lines = [f"עדכון קטלוג — {edition.label}", edition.source, ""]
+    lines = [f"עדכון קטלוג — {edition.label}", edition.source]
+    if getattr(edition, "revision", ""):
+        lines.append(f"מהדורת הספק: {edition.revision}")
+    lines.append("")
     lines.append(diff.summary())
     if diff.changed:
         lines += ["", "השתנו:"]
@@ -261,7 +264,7 @@ def catalogue_change_message(edition: Any, diff: Any, *, brand_name: str,
         if len(diff.changed) > 12:
             lines.append(f"ועוד ⁦{len(diff.changed) - 12}⁩")
     if diff.removed:
-        lines += ["", "יצאו מהקטלוג:"]
+        lines += ["", "לא נמצאו בקטלוג החדש (לברר מול הספק):"]
         lines += [f"• ⁦{s.profile_id}⁩ {s.name}".rstrip() for s in diff.removed[:12]]
     if diff.added:
         lines += ["", f"חדשים: ⁦{len(diff.added)}⁩"]
@@ -275,7 +278,7 @@ def catalogue_change_message(edition: Any, diff: Any, *, brand_name: str,
         lines += [f"• {hit.describe()}" for hit in hits]
     stock = list(stock)
     if stock:
-        lines += ["", "במלאי מפרופילים שיצאו מהקטלוג:"]
+        lines += ["", "במלאי מפרופילים שלא נמצאו בקטלוג החדש:"]
         lines += [f"• {left.describe()}" for left in stock]
     lines += ["", brand_name]
     return "\n".join(lines).rstrip()

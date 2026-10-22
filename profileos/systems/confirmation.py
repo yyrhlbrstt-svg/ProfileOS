@@ -43,6 +43,9 @@ class Figure:
     unit: str = "מ״מ"
     minimum: float = 0.0
     maximum: float = 500.0
+    #: A typical value, for tests and examples only. It is never put into a
+    #: form or a template: a value already there would be saved as read
+    #: from the catalogue whether anybody read it or not.
     default: float | None = None
     #: Whether the series simply cannot be cut without it.
     required: bool = True
@@ -140,6 +143,10 @@ class Confirmation:
     #: Article numbers by role, when the catalogue names them.
     profiles: dict[str, str] = field(default_factory=dict)
     notes: str = ""
+    #: The catalogue edition the figures were read from, when it was taken in
+    #: (see :mod:`profileos.catalogue.editions`). A newer accepted edition
+    #: then asks for them to be read again.
+    edition_id: str = ""
 
     def missing(self) -> list[Figure]:
         return [
@@ -235,6 +242,7 @@ class Confirmation:
             "values": dict(self.values),
             "profiles": dict(self.profiles),
             "notes": self.notes,
+            "edition_id": self.edition_id,
         }
 
     @classmethod
@@ -249,6 +257,7 @@ class Confirmation:
             values={k: float(v) for k, v in (data.get("values") or {}).items()},
             profiles=dict(data.get("profiles") or {}),
             notes=data.get("notes", ""),
+            edition_id=data.get("edition_id", "") or "",
         )
 
 
@@ -266,7 +275,9 @@ def template(entry_id: str) -> dict[str, Any]:
             "מלאו את הערכים מהקטלוג של הספק. ״source״ חייב לומר איזה קטלוג "
             "ואיזו מהדורה. שדות שאינם חובה אפשר להשאיר ריקים."
         ),
-        "values": {figure.key: figure.default for figure in FIGURES},
+        # Empty, every one: a value already in the form would be saved as
+        # read from the catalogue whether anybody read it or not.
+        "values": {figure.key: None for figure in FIGURES},
         "_הסבר": {
             figure.key: f"{figure.hebrew} [{figure.unit}] — {figure.where}"
             for figure in FIGURES

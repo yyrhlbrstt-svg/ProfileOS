@@ -51,7 +51,11 @@ CONFIG_ASIDE = ".לפני-שחזור"
 #: crash leaves behind. Restoring a stale lock would greet somebody with a
 #: message about a machine that no longer exists.
 SKIP_SUFFIXES = (".tmp", ".lock", ".pyc")
-SKIP_DIRECTORIES = ("__pycache__", "output", "logs")
+SKIP_DIRECTORIES = ("__pycache__", "output", "logs", "חבילות", "לקליטה")
+#: ``חבילות`` and ``לקליטה`` (under the catalogue downloads) are working copies
+#: unpacked or staged from a supplier file that is itself kept and backed up;
+#: they can be made again from it, and a drawing pack is hundreds of
+#: megabytes that would otherwise ride in every daily archive.
 
 
 @dataclass

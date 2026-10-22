@@ -44,11 +44,14 @@ class CheckStatus(StrEnum):
 
 #: Relative tolerance per property, as a fraction.
 #:
-#: These are not arbitrary. EN 12020-2 allows a mass deviation of a few percent
-#: on a precision extrusion, and a catalogue's second moments are themselves
-#: usually computed from a nominal drawing rather than a measured one, so a
-#: small spread between a published figure and one integrated from the DXF is
-#: normal. A spread beyond these is not, and it is what the report is for.
+#: They compare a figure the supplier printed with one integrated from the
+#: supplier's own drawing of the same section. The two are computed in
+#: different ways — the table from the supplier's nominal model, often with
+#: rounded fillets, the measurement from the outline as drawn — so a small
+#: spread is expected; these are this software's working limits for "the same
+#: section", not a figure from a standard. A spread beyond them means the
+#: drawing and the table do not describe the same extrusion, which is what
+#: the report is for.
 DEFAULT_TOLERANCES: dict[str, float] = {
     "area": 0.03,
     "mass_per_metre": 0.03,

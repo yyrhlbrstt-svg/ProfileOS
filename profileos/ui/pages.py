@@ -6841,6 +6841,7 @@ class CataloguePage(Page):
         self._edition_ids: list[str] = []
         self._from_finding = ""
         self._checking = False
+        self._downloading: set[str] = set()
         return page
 
     def _books(self) -> tuple[Any, Any, Any]:
@@ -6883,6 +6884,7 @@ class CataloguePage(Page):
             ])
             if source.last_error:
                 colours[(index, 4)] = self.colours.warning
+        self.sources_table.clearSelection()
         self.sources_table.set_rows(rows, colours=colours)
 
     def _refresh_findings(self) -> None:
@@ -6901,6 +6903,9 @@ class CataloguePage(Page):
             ])
             if finding.open:
                 colours[(index, 2)] = self.colours.warning
+        # The rows move when the list changes; a selection kept by position
+        # would quietly point at a different file.
+        self.findings_table.clearSelection()
         self.findings_table.set_rows(rows, colours=colours)
 
     def _refresh_editions(self) -> None:
@@ -6925,6 +6930,7 @@ class CataloguePage(Page):
                 len(affected) or "—",
             ])
             colours[(index, 3)] = tint.get(edition.state, self.colours.text)
+        self.editions_table.clearSelection()
         self.editions_table.set_rows(rows, numeric_columns=(5,), colours=colours)
         self.edition_detail.clear()
 
@@ -6943,31 +6949,48 @@ class CataloguePage(Page):
         row = model.selectedRows()[0].row()
         return ids[row] if row < len(ids) else ""
 
-    def _edition_facts(self, edition: Any) -> tuple[Any, list[Any], list[Any], list[Any]]:
-        """The comparison, the open jobs, the cutting figures and the stock it touches."""
+    def _edition_facts(self, edition: Any) -> tuple[Any, list[Any], list[Any], list[Any], list[str]]:
+        """The comparison, the open jobs, the cutting figures and the stock it
+        touches — and, by name, any book that could not be read, so "nothing
+        affected" is never said when nothing could be looked at."""
         from ..catalogue.editions import (
             confirmation_hits, default_editions, open_jobs_on, stock_of_removed,
         )
 
+        unread: list[str] = []
         diff = default_editions().diff(edition)
-        affected = open_jobs_on(edition.system_id, self._open_jobs())
+        try:
+            from ..projects import default_store
+
+            affected = open_jobs_on(edition.system_id, default_store().all())
+        except Exception as exc:  # noqa: BLE001 - named below instead
+            _log.warning("Jobs unreadable: %s", exc)
+            affected, unread = [], unread + ["תיקי העבודה"]
         hits: list[Any] = []
         if edition.system_id:
             try:
                 from ..systems import default_confirmations
 
-                hits = confirmation_hits(diff, default_confirmations().get(edition.system_id))
-            except Exception as exc:  # noqa: BLE001 - the rest still shows
+                book = default_confirmations()
+                if getattr(book, "damaged", None) is not None:
+                    unread.append("נתוני היצרן שאושרו לחיתוך")
+                hits = confirmation_hits(diff, book.get(edition.system_id))
+            except Exception as exc:  # noqa: BLE001
                 _log.warning("Confirmations unreadable: %s", exc)
+                unread.append("נתוני היצרן שאושרו לחיתוך")
         stock: list[Any] = []
         if diff.removed:
             try:
                 from ..erp.stocktake import default_stocktakes
 
-                stock = stock_of_removed(diff, default_stocktakes())
+                sheets = default_stocktakes()
+                if getattr(sheets, "damaged", None) is not None:
+                    unread.append("ספירות המלאי")
+                stock = stock_of_removed(diff, sheets)
             except Exception as exc:  # noqa: BLE001
                 _log.warning("Stocktakes unreadable: %s", exc)
-        return diff, affected, hits, stock
+                unread.append("ספירות המלאי")
+        return diff, affected, hits, stock, unread
 
     def _show_edition(self) -> None:
         from ..catalogue.editions import EditionState, default_editions
@@ -6976,13 +6999,17 @@ class CataloguePage(Page):
         edition = default_editions().get(edition_id)
         if edition is None:
             return
-        diff, affected, hits, stock = self._edition_facts(edition)
+        diff, affected, hits, stock, unread = self._edition_facts(edition)
         lines = [
             f"{edition.label} — {edition.source}",
             f"התקבלה ⁦{_short_date(edition.received_on)}⁩"
             + (f" · נקלטה על ידי {edition.recorded_by}" if edition.recorded_by else "")
             + (" · קטלוג מלא" if edition.complete else " · עדכון חלקי"),
         ]
+        if edition.revision:
+            lines.append(f"מהדורת הספק: {edition.revision}")
+        if not edition.system_id:
+            lines.append("לא שויכה לסדרה מהרשימה — לא נבדקו פרויקטים ונתוני חיתוך")
         if edition.state != EditionState.PENDING:
             lines.append(
                 f"{EditionState.HEBREW[edition.state]}"
@@ -6990,6 +7017,13 @@ class CataloguePage(Page):
                 + (f" — {edition.note}" if edition.note else "")
             )
         lines.append("")
+        if unread:
+            lines.append("לא נבדק — הקובץ לא נקרא: " + ", ".join(unread))
+            lines.append("")
+        if edition.warnings:
+            lines.append("שימו לב")
+            lines += [f"  • {warning}" for warning in edition.warnings]
+            lines.append("")
         lines += diff.lines()
         if affected:
             lines.append("פרויקטים פתוחים על הסדרה")
@@ -7001,7 +7035,7 @@ class CataloguePage(Page):
             lines.append("אחרי האישור צריך להזין אותם שוב מהקטלוג החדש.")
             lines.append("")
         if stock:
-            lines.append("במלאי מפרופילים שיצאו מהקטלוג")
+            lines.append("במלאי מפרופילים שלא נמצאו בקטלוג החדש")
             lines += [f"  • {left.describe()}" for left in stock]
         self.edition_detail.setPlainText("\n".join(lines).rstrip())
 
@@ -7020,7 +7054,14 @@ class CataloguePage(Page):
         if edition is None:
             self.report(ProfileOSError("בחרו מהדורה מהרשימה"), "לא נבחרה מהדורה")
             return
-        diff, affected, hits, stock = self._edition_facts(edition)
+        diff, affected, hits, stock, unread = self._edition_facts(edition)
+        if unread:
+            self.report(
+                ProfileOSError("לא ניתן היה לקרוא את " + ", ".join(unread)
+                               + " — ההודעה הייתה חסרה. בדקו במסך מערכת ← גיבוי ושחזור."),
+                "ההודעה לא נשלחה",
+            )
+            return
         message = catalogue_change_message(
             edition, diff, brand_name=active_brand().display_name,
             jobs=affected, hits=hits, stock=stock,
@@ -7080,7 +7121,9 @@ class CataloguePage(Page):
             self.check_button.setEnabled(True)
             self.check_button.setText("בדיקה עכשיו")
             if error is not None:
-                self.report(error, "הבדיקה נכשלה")
+                from ..catalogue.watch import in_words
+
+                self.report(ProfileOSError(in_words(error)), "הבדיקה נכשלה")
                 return
             self._refresh_updates()
             self.status(summary.describe())
@@ -7103,7 +7146,7 @@ class CataloguePage(Page):
             self.report(ProfileOSError("הקובץ כבר לא ברשימה"), "לא נמצא")
         return finding
 
-    def _local_file(self, finding: Any, then: Any) -> None:
+    def _local_file(self, finding: Any, then: Any, failed: Any = None) -> None:
         """The finding as a file on this computer, downloading it if needed."""
         from ..catalogue.watch import default_findings, download
         from .background import run_in_background
@@ -7124,6 +7167,8 @@ class CataloguePage(Page):
             if error is not None:
                 from ..catalogue.watch import in_words
 
+                if failed is not None:
+                    failed()
                 self.report(ProfileOSError(in_words(error)), "ההורדה נכשלה")
                 return
             try:
@@ -7137,8 +7182,18 @@ class CataloguePage(Page):
 
     def download_finding(self) -> None:
         finding = self._finding()
-        if finding is not None:
-            self._local_file(finding, lambda _path: self._refresh_findings())
+        if finding is None:
+            return
+        if finding.finding_id in self._downloading:
+            self.status("ההורדה כבר בדרך")
+            return
+        self._downloading.add(finding.finding_id)
+
+        def done(_path: Path) -> None:
+            self._downloading.discard(finding.finding_id)
+            self._refresh_findings()
+
+        self._local_file(finding, done, failed=lambda: self._downloading.discard(finding.finding_id))
 
     def open_finding(self) -> None:
         from PySide6.QtCore import QUrl
@@ -7172,31 +7227,15 @@ class CataloguePage(Page):
         if finding is None:
             return
 
-        def ready(path: Path) -> None:
-            from ..catalogue.watch import default_watch, unpack
+        def use(path: Path, *, drawings: bool) -> None:
+            from ..catalogue.watch import default_watch
 
-            suffix = path.suffix.lower()
-            if suffix == ".zip":
-                try:
-                    path = unpack(path)
-                except Exception as exc:  # noqa: BLE001
-                    self.report(exc, "הקובץ הדחוס לא נפתח")
-                    return
+            if drawings:
                 self._drawings = path
                 self.drawings_label.setText(str(path))
-            elif suffix in (".dxf", ".dwg"):
-                self._drawings = path.parent
-                self.drawings_label.setText(str(path.parent))
-            elif suffix in (".pdf", ".csv", ".tsv", ".txt"):
+            else:
                 self._table = path
                 self.table_label.setText(path.name)
-            else:
-                self.report(
-                    ProfileOSError("את סוג הקובץ הזה אי אפשר לקלוט ישירות — פתחו אותו "
-                                   "ושמרו את הטבלה כ־CSV"),
-                    "לא ניתן לקלוט",
-                )
-                return
             source = default_watch().get(finding.source_id)
             if source is not None and source.system_id:
                 from ..systems import DIRECTORY
@@ -7207,6 +7246,45 @@ class CataloguePage(Page):
             self._from_finding = finding.finding_id
             self.tabs.setCurrentWidget(self.ingest_page)
             self.status("הקובץ מוכן לקליטה — הוסיפו את השרטוטים או הטבלה המתאימים ולחצו ״קליטה״")
+
+        def ready(path: Path) -> None:
+            from ..catalogue.watch import downloads_dir, stage, unpack
+            from .background import run_in_background
+
+            suffix = path.suffix.lower()
+            if suffix == ".zip":
+                folder = downloads_dir() / "חבילות"
+                self.status(f"פותח את {path.name}…")
+
+                def opened(target: Any, error: BaseException | None) -> None:
+                    if error is not None:
+                        from ..catalogue.watch import in_words
+
+                        self.report(ProfileOSError(in_words(error)), "הקובץ הדחוס לא נפתח")
+                        return
+                    use(Path(target), drawings=True)
+
+                run_in_background(lambda: unpack(path, folder), opened)
+            elif suffix == ".dxf":
+                # Only this drawing: its folder may hold last year's too.
+                try:
+                    use(stage(path), drawings=True)
+                except OSError as exc:
+                    self.report(exc, "הקובץ לא הועתק לקליטה")
+            elif suffix in (".pdf", ".csv", ".tsv", ".txt"):
+                use(path, drawings=False)
+            elif suffix == ".dwg":
+                self.report(
+                    ProfileOSError("קובץ DWG צריך לשמור קודם כ־DXF (בתוכנת השרטוט, "
+                                   "״שמירה בשם״) ואז לקלוט אותו."),
+                    "לא ניתן לקלוט",
+                )
+            else:
+                self.report(
+                    ProfileOSError("את סוג הקובץ הזה אי אפשר לקלוט ישירות — פתחו אותו "
+                                   "ושמרו את הטבלה כ־CSV"),
+                    "לא ניתן לקלוט",
+                )
 
         self._local_file(finding, ready)
 
@@ -7230,7 +7308,7 @@ class CataloguePage(Page):
             edition = book.record(
                 report, source=values["source"], series=values["series"],
                 system_id=values["system_id"], complete=values["complete"],
-                recorded_by=values["recorded_by"],
+                recorded_by=values["recorded_by"], revision=values["revision"],
             )
         except Exception as exc:  # noqa: BLE001
             self.report(exc, "המהדורה לא נשמרה")
@@ -7283,14 +7361,20 @@ class CataloguePage(Page):
         if accept and edition.system_id:
             from ..systems import default_confirmations
 
-            hits = confirmation_hits(diff, default_confirmations().get(edition.system_id))
-            if hits:
+            confirmation = default_confirmations().get(edition.system_id)
+            if confirmation is not None:
+                hits = confirmation_hits(diff, confirmation)
                 QMessageBox.warning(
-                    self, "נתוני החיתוך צריכים בדיקה",
-                    "המהדורה שאושרה שינתה פרופילים שנתוני החיתוך של הסדרה נקראו מהם:\n"
-                    + "\n".join(f"• {hit.describe()}" for hit in hits)
-                    + "\n\nהזינו שוב את נתוני היצרן מהקטלוג החדש (לשונית מערכות ← "
-                      "״הזן נתוני יצרן״) לפני החיתוך הבא.",
+                    self, "נתוני החיתוך צריכים קריאה מחדש",
+                    f"נתוני החיתוך של {edition.label} נקראו מ״{confirmation.source}״.\n"
+                    "ניכויי חיתוך וזיגוג נמצאים בטבלאות של הקטלוג, ויכולים להשתנות גם "
+                    "כשהפרופילים עצמם לא השתנו.\n"
+                    + ("\nהשתנו פרופילים שהנתונים נשענים עליהם:\n"
+                       + "\n".join(f"• {hit.describe()}" for hit in hits) + "\n"
+                       if hits else "")
+                    + "\nבדקו את טבלאות החיתוך והזיגוג בקטלוג החדש והזינו את נתוני "
+                      "היצרן מחדש (לשונית מערכות ← ״הזן נתוני יצרן״), עם המהדורה "
+                      "שממנה נקראו.",
                 )
         self.status("המהדורה אושרה" if accept else "המהדורה נדחתה")
 
@@ -7459,9 +7543,16 @@ class CataloguePage(Page):
 
         entry = DIRECTORY.get(entry_id)
         book = default_confirmations()
+        try:
+            from ..catalogue.editions import default_editions
+
+            editions = list(reversed(default_editions().accepted(entry_id)))
+        except Exception:  # noqa: BLE001 - the figures can still be entered
+            editions = []
         dialog = ConfirmSystemDialog(
             entry.display if entry else entry_id,
             existing=book.get(entry_id),
+            editions=editions,
             parent=self,
         )
         if dialog.exec() != QDialog.DialogCode.Accepted:
@@ -7474,6 +7565,7 @@ class CataloguePage(Page):
             entered_by=values["entered_by"],
             values=values["figures"],
             profiles=values["profiles"],
+            edition_id=values["edition_id"],
         )
         try:
             book.record(confirmation)
@@ -7555,6 +7647,7 @@ class CataloguePage(Page):
         if folder:
             self._drawings = Path(folder)
             self.drawings_label.setText(str(self._drawings))
+            self._from_finding = ""  # chosen by hand: not the file from the list
 
     def _pick_table(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
@@ -7563,6 +7656,7 @@ class CataloguePage(Page):
         if path:
             self._table = Path(path)
             self.table_label.setText(self._table.name)
+            self._from_finding = ""
 
     def run(self) -> None:
         from ..catalogue import ingest
