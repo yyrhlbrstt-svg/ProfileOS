@@ -1880,9 +1880,19 @@ class ProjectsPage(Page):
         dialog = JobAccountDialog(
             job.job_id, self._store(), self,
             cheques=self._cheques_for_accounts, pricebook=self._pricebook,
+            take_cheques=self._take_cheques,
         )
         dialog.exec()
         self.refresh()
+
+    def _take_cheques(self, job: Any) -> int:
+        """Cheques for this job, into the drawer — the collection page does it,
+        so there is one way cheques are recorded."""
+        window = self.window()
+        collection = window.page("Collection") if hasattr(window, "page") else None
+        if collection is None:
+            return 0
+        return collection.new_cheque(job=job)
 
     def _pricebook(self) -> Any:
         from ..quoting.pricebook import default_pricebook
@@ -6763,7 +6773,7 @@ class CollectionPage(Page):
     subtitle = "צ׳קים דחויים, מה נפרע ומה חזר"
 
     def build(self) -> None:
-        add = QPushButton("צ׳ק חדש")
+        add = QPushButton("קבלת צ׳קים")
         add.setObjectName("Primary")
         add.clicked.connect(self.new_cheque)
         self.header.add_action(add)
@@ -6771,6 +6781,12 @@ class CollectionPage(Page):
         deposit = QPushButton("הפקדה")
         deposit.clicked.connect(self.deposit)
         self.header.add_action(deposit)
+
+        # Money that landed is told apart from money that is only promised.
+        cleared = QPushButton("נפרע")
+        cleared.setToolTip("הכסף נכנס לחשבון")
+        cleared.clicked.connect(self.mark_cleared)
+        self.header.add_action(cleared)
 
         bounce = QPushButton("סימון כחוזר")
         bounce.clicked.connect(self.bounce)
@@ -6871,33 +6887,78 @@ class CollectionPage(Page):
             return False
         return True
 
-    def new_cheque(self) -> None:
+    @staticmethod
+    def _jobs_for_cheques() -> list[Any]:
+        """The jobs a cheque can be for: open ones and recent ones, newest first."""
+        try:
+            from ..projects import JobStatus, default_store
+
+            jobs = [job for job in default_store().all() if job.status is not JobStatus.LOST]
+        except Exception:  # noqa: BLE001 - a cheque can be taken without a job
+            return []
+        return sorted(jobs, key=lambda job: job.updated or "", reverse=True)
+
+    def new_cheque(self, *, job: Any = None) -> int:
+        """Take one cheque or a whole series. Returns how many were recorded."""
         from .dialogs import NewChequeDialog
 
-        dialog = NewChequeDialog(self)
+        dialog = NewChequeDialog(self, jobs=self._jobs_for_cheques(), job=job)
         if dialog.exec() != QDialog.DialogCode.Accepted:
-            return
-        from ..erp.collection import Cheque
-
-        values = dialog.values()
+            return 0
         try:
-            cheque = Cheque(
-                customer=values["customer"],
-                amount=values["amount"],
-                due=values["due"],
-                bank=values["bank"],
-                number=values["number"],
-                job_id=values["job_id"],
-            )
-            self.book().add(cheque)
+            cheques = dialog.series()
+            for cheque in cheques:
+                self.book().add(cheque)
         except Exception as exc:  # noqa: BLE001
-            self.report(exc, "לא ניתן לרשום את הצ׳ק")
-            return
+            self.report(exc, "לא ניתן לרשום את הצ׳קים")
+            return 0
         if not self._save():
             self.refresh()
-            return
+            return 0
         self.refresh()
-        self.status(f"נרשם צ׳ק ⁦{cheque.amount:,.0f} ₪⁩ מ{cheque.customer}")
+        total = sum(c.amount for c in cheques)
+        self.status(
+            f"נרשם צ׳ק ⁦{total:,.0f} ₪⁩ מ{cheques[0].customer}" if len(cheques) == 1
+            else f"נרשמו ⁦{len(cheques)}⁩ צ׳קים, סה״כ ⁦{total:,.0f} ₪⁩, מ{cheques[0].customer}"
+        )
+        return len(cheques)
+
+    def mark_cleared(self) -> None:
+        """The selected cheque cleared — or, with none selected, every cheque
+        deposited up to yesterday (the bank shows a batch as one line)."""
+        from datetime import date, timedelta
+
+        cheque = self._selected()
+        if cheque is not None and cheque.state.value == "deposited":
+            try:
+                cheque.clear()
+            except Exception as exc:  # noqa: BLE001
+                self.report(exc, "לא ניתן לסמן")
+                return
+            self._save()
+            self.refresh()
+            self.status(f"נפרע: ⁦{cheque.amount:,.0f} ₪⁩ מ{cheque.customer}")
+            return
+        up_to = date.today() - timedelta(days=1)
+        waiting = [c for c in self.book().deposited()
+                   if c.deposited_on is not None and c.deposited_on <= up_to]
+        if not waiting:
+            self.report(ProfileOSError(
+                "בחרו צ׳ק שהופקד — או שאין צ׳קים שהופקדו עד אתמול ועוד לא סומנו כנפרעו"
+            ), "אין מה לסמן")
+            return
+        total = sum(c.amount for c in waiting)
+        answer = QMessageBox.question(
+            self, "סימון כנפרעו",
+            f"⁦{len(waiting)}⁩ צ׳קים שהופקדו עד אתמול, סה״כ ⁦{total:,.0f} ₪⁩. "
+            "לסמן את כולם כנפרעו (הכסף נכנס לחשבון)?",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        self.book().clear_deposited(up_to=up_to)
+        self._save()
+        self.refresh()
+        self.status(f"סומנו כנפרעו ⁦{len(waiting)}⁩ צ׳קים, ⁦{total:,.0f} ₪⁩")
 
     def _selected(self) -> Any:
         model = self.cheques_table.selectionModel()

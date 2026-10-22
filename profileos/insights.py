@@ -405,6 +405,22 @@ def _money(context: dict[str, Any], today: date) -> list[Insight]:
             f"בסך ⁦{total:,.0f} ₪⁩", "Collection",
             "week:" + ",".join(sorted(c.cheque_id for c in week)),
         ))
+    # Deposited a week ago and never marked cleared: either it cleared and
+    # nobody ticked it (the balance still counts it as only promised), or it
+    # came back and the bank's letter has not been opened yet.
+    unconfirmed = [
+        cheque for cheque in getattr(cheques, "deposited", lambda: [])()
+        if cheque.deposited_on is not None and (today - cheque.deposited_on).days >= 7
+    ]
+    if unconfirmed:
+        total = sum(cheque.amount for cheque in unconfirmed)
+        found.append(Insight(
+            "info",
+            _count(len(unconfirmed), "צ׳ק אחד הופקד לפני שבוע ולא סומן כנפרע",
+                   "צ׳קים הופקדו לפני שבוע ולא סומנו כנפרעו"),
+            f"בסך ⁦{total:,.0f} ₪⁩ — בדקו בחשבון הבנק: נפרעו (״נפרע״) או חזרו (״סימון כחוזר״).",
+            "Collection", "unconfirmed:" + ",".join(sorted(c.cheque_id for c in unconfirmed)),
+        ))
     bounced = cheques.bounced()
     if bounced:
         total = sum(cheque.amount for cheque in bounced)

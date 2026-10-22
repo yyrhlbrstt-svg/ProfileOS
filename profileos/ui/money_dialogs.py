@@ -306,8 +306,10 @@ class JobAccountDialog(QDialog):
 
     def __init__(self, job_id: str, store: Any, parent: QWidget | None = None, *,
                  cheques: Callable[[], Any] | None = None,
-                 pricebook: Callable[[], Any] | None = None) -> None:
+                 pricebook: Callable[[], Any] | None = None,
+                 take_cheques: Callable[[Any], int] | None = None) -> None:
         super().__init__(parent)
+        self._take_cheques = take_cheques
         self._job_id = job_id
         self._store = store
         self._cheques = cheques or (lambda: [])
@@ -338,6 +340,10 @@ class JobAccountDialog(QDialog):
         close.rejected.connect(self.reject)
         layout.addWidget(close)
         self.refresh()
+
+    def take_cheques(self) -> None:
+        if self._take_cheques is not None and self._take_cheques(self.job()):
+            self.refresh()
 
     # -- the job, always the copy on disk ------------------------------------- #
     def job(self) -> Any:
@@ -392,7 +398,12 @@ class JobAccountDialog(QDialog):
         add.setObjectName("Primary")
         add.clicked.connect(self.add_payment)
         row.addWidget(add)
-        hint = QLabel("צ׳קים נרשמים בעמוד ״גבייה״ עם מספר הפרויקט, ומחושבים כאן לבד.")
+        if self._take_cheques is not None:
+            cheques = QPushButton("קבלת צ׳קים")
+            cheques.setToolTip("צ׳ק אחד או סדרה (אחד לכל חודש) — נרשמים למגירה עם הפרויקט הזה")
+            cheques.clicked.connect(self.take_cheques)
+            row.addWidget(cheques)
+        hint = QLabel("צ׳קים נרשמים למגירה (עמוד ״גבייה״) ונספרים כאן לבד.")
         hint.setObjectName("Hint")
         row.addWidget(hint, 1)
         layout.addLayout(row)

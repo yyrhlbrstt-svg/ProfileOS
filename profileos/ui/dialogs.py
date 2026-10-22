@@ -535,18 +535,40 @@ class CloseServiceCallDialog(_FormDialog):
 
 
 class NewChequeDialog(_FormDialog):
-    """Take a cheque into the drawer."""
+    """Take cheques into the drawer — one, or the whole series a customer
+    hands over at once (one a month, consecutive numbers from one book).
 
-    accept_text = "רישום צ׳ק"
+    The project is picked from the list, never typed: a mistyped job number
+    left a cheque that never reached the job's balance, and the home page
+    then chased money that was already in the drawer. Picking it fills in
+    the customer.
+    """
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    accept_text = "רישום"
+
+    def __init__(self, parent: QWidget | None = None, *, jobs: list[Any] | None = None,
+                 job: Any = None) -> None:
         from datetime import date
 
-        super().__init__("צ׳ק חדש", parent)
+        super().__init__("קבלת צ׳קים", parent)
+        self.setMinimumWidth(480)
 
+        self.job = QComboBox()
+        self.job.addItem("— בלי פרויקט —", "")
+        for item in jobs or ([job] if job is not None else []):
+            label = f"{item.job_id} · {item.name}"
+            if item.customer_name:
+                label += f" · {item.customer_name}"
+            self.job.addItem(label, item.job_id)
+            self.job.setItemData(self.job.count() - 1, item.customer_name, Qt.ItemDataRole.UserRole + 1)
         self.customer = QLineEdit()
+        self.count = QSpinBox()
+        self.count.setRange(1, 60)
+        self.count.setValue(1)
+        self.count.setSuffix(" צ׳קים")
         self.amount = QDoubleSpinBox()
         self.amount.setRange(0.01, 10_000_000)
+        self.amount.setDecimals(2)
         self.amount.setValue(1000.0)
         self.amount.setSuffix(" ₪")
         self.due = QDateEdit()
@@ -554,22 +576,71 @@ class NewChequeDialog(_FormDialog):
         self.due.setDisplayFormat("dd/MM/yyyy")
         self.due.setDate(date.today())
         self.bank = QLineEdit()
+        self.bank.setPlaceholderText("למשל: 12 הפועלים")
+        self.branch = QLineEdit()
         self.number = QLineEdit()
-        self.number.setPlaceholderText("מספר הצ׳ק")
-        self.job_id = QLineEdit()
+        self.number.setPlaceholderText("מספר הצ׳ק (הראשון בסדרה)")
+        self.preview = QLabel("")
+        self.preview.setObjectName("Hint")
+        self.preview.setWordWrap(True)
 
         for label, widget in (
-            ("לקוח", self.customer), ("סכום", self.amount),
-            ("תאריך פירעון", self.due), ("בנק", self.bank),
-            ("מספר", self.number), ("פרויקט", self.job_id),
+            ("פרויקט", self.job), ("לקוח", self.customer), ("כמה צ׳קים", self.count),
+            ("סכום לכל צ׳ק", self.amount), ("פירעון (הראשון)", self.due),
+            ("בנק", self.bank), ("סניף", self.branch), ("מספר", self.number),
         ):
             self.grid.add(label, widget)
+        self.grid.add("", self.preview)
 
+        self.job.currentIndexChanged.connect(self._job_chosen)
+        for signal in (self.count.valueChanged, self.amount.valueChanged,
+                       self.due.dateChanged, self.number.textChanged):
+            signal.connect(lambda *_: self._show_preview())
         self.customer.textChanged.connect(
             lambda text: self.ok_button.setEnabled(bool(text.strip()))
         )
         self.ok_button.setEnabled(False)
+        if job is not None:
+            self.job.setCurrentIndex(max(0, self.job.findData(job.job_id)))
+            self._job_chosen()
+        self._show_preview()
         self.customer.setFocus()
+
+    def _job_chosen(self) -> None:
+        customer = self.job.currentData(Qt.ItemDataRole.UserRole + 1)
+        if customer and not self.customer.text().strip():
+            self.customer.setText(str(customer))
+
+    def series(self) -> list[Any]:
+        """The cheques as they will be recorded (dates and numbers worked out)."""
+        from ..erp.collection import cheque_series
+
+        values = self.values()
+        return cheque_series(
+            count=values["count"], amount=values["amount"], first_due=values["due"],
+            first_number=values["number"], customer=values["customer"] or "—",
+            job_id=values["job_id"], bank=values["bank"], branch=values["branch"],
+        )
+
+    def _show_preview(self) -> None:
+        count = self.count.value()
+        if count == 1:
+            self.preview.setText("")
+            return
+        try:
+            cheques = self.series()
+        except Exception as exc:  # noqa: BLE001 - said in the dialog
+            self.preview.setText(str(exc))
+            return
+        total = sum(c.amount for c in cheques)
+        last = cheques[-1]
+        numbers = (f" · מספרים ⁦{cheques[0].number}⁩–⁦{last.number}⁩"
+                   if cheques[0].number and last.number else
+                   (" · מספרים: רק הראשון נרשם (המספר אינו ספרות בלבד)" if cheques[0].number else ""))
+        self.preview.setText(
+            f"⁦{count}⁩ צ׳קים של ⁦{self.amount.value():,.0f} ₪⁩ — סה״כ ⁦{total:,.0f} ₪⁩ · "
+            f"פירעון כל חודש, מ־⁦{cheques[0].due:%d/%m/%Y}⁩ עד ⁦{last.due:%d/%m/%Y}⁩{numbers}"
+        )
 
     def values(self) -> dict[str, Any]:
         return {
@@ -577,8 +648,10 @@ class NewChequeDialog(_FormDialog):
             "amount": self.amount.value(),
             "due": self.due.date().toPython(),
             "bank": self.bank.text().strip(),
+            "branch": self.branch.text().strip(),
             "number": self.number.text().strip(),
-            "job_id": self.job_id.text().strip(),
+            "job_id": str(self.job.currentData() or ""),
+            "count": self.count.value(),
         }
 
 

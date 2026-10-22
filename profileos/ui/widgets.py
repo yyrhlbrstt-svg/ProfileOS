@@ -112,6 +112,14 @@ class StatTile(QFrame):
             self.value.style().polish(self.value)
 
 
+def _reversed_sections(display_format: str) -> str:
+    """'dd/MM/yyyy' → 'yyyy/MM/dd': the same sections and separators, in the
+    opposite order."""
+    import re
+
+    return "".join(reversed(re.split(r"([^dMyhHmsapAP]+)", display_format)))
+
+
 class _NumberFieldPolish(QObject):
     """Sit every number field's text on the right, away from its arrows.
 
@@ -129,6 +137,16 @@ class _NumberFieldPolish(QObject):
                 | Qt.AlignmentFlag.AlignAbsolute
                 | Qt.AlignmentFlag.AlignVCenter
             )
+            from PySide6.QtWidgets import QDateTimeEdit
+
+            if isinstance(watched, QDateTimeEdit) and not watched.property("rtl_date"):
+                # Qt lays a date's sections out in the application's direction:
+                # in a right-to-left program "dd/MM/yyyy" came out as
+                # "2026/11/01". Handing it the sections reversed makes it show
+                # (and read back) the date the way it is written here.
+                if QApplication.isRightToLeft():
+                    watched.setDisplayFormat(_reversed_sections(watched.displayFormat()))
+                watched.setProperty("rtl_date", True)
         return False
 
 

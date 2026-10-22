@@ -134,6 +134,12 @@ class Cheque:
         return self
 
     def clear(self, on: date | None = None) -> "Cheque":
+        """The money is in the account. Only a cheque that went to the bank
+        can come back as money — one still in the drawer is not."""
+        if self.state is not ChequeState.DEPOSITED:
+            raise ProfileOSError(
+                f"הצ׳ק {self.state.hebrew} — רק צ׳ק שהופקד יכול להיפרע"
+            )
         self.state = ChequeState.CLEARED
         self.cleared_on = on or date.today()
         return self
@@ -291,6 +297,18 @@ class ChequeBook(MergingBook):
             if day <= horizon
         )
 
+    def deposited(self) -> list[Cheque]:
+        return [c for c in self._cheques.values() if c.state is ChequeState.DEPOSITED]
+
+    def clear_deposited(self, *, up_to: date, on: date | None = None) -> list[Cheque]:
+        """Every cheque deposited on or before ``up_to`` is money now — the
+        bank statement's one line for a batch, ticked in one go."""
+        cleared = [c for c in self.deposited()
+                   if c.deposited_on is not None and c.deposited_on <= up_to]
+        for cheque in cleared:
+            cheque.clear(on)
+        return cleared
+
     def due_between(self, start: date, end: date) -> list[Cheque]:
         return [cheque for cheque in self.expected() if start <= cheque.due <= end]
 
@@ -341,6 +359,45 @@ class ChequeBook(MergingBook):
         }
 
 
+def add_months(day: date, months: int) -> date:
+    """The same day ``months`` later; the 31st becomes the month's last day."""
+    import calendar
+
+    month = day.month - 1 + months
+    year = day.year + month // 12
+    month = month % 12 + 1
+    return date(year, month, min(day.day, calendar.monthrange(year, month)[1]))
+
+
+def next_number(number: str, step: int) -> str:
+    """Cheque numbers in a book run on: '0012345' + 2 → '0012347'. A number
+    that is not all digits is left empty for the person to fill in."""
+    text = number.strip()
+    if not text.isdigit():
+        return ""
+    return str(int(text) + step).zfill(len(text))
+
+
+def cheque_series(
+    *, count: int, amount: float, first_due: date, first_number: str = "",
+    customer: str = "", job_id: str = "", bank: str = "", branch: str = "",
+    account: str = "", every_months: int = 1,
+) -> list[Cheque]:
+    """The cheques a customer hands over at once — usually one a month, with
+    consecutive numbers from the same book."""
+    if count < 1:
+        raise ProfileOSError("צריך לפחות צ׳ק אחד")
+    return [
+        Cheque(
+            customer=customer, amount=amount,
+            due=add_months(first_due, index * every_months),
+            number=first_number.strip() if index == 0 else next_number(first_number, index),
+            job_id=job_id, bank=bank, branch=branch, account=account,
+        )
+        for index in range(count)
+    ]
+
+
 def default_cheques() -> ChequeBook:
     """The shop's own drawer, from its data folder.
 
@@ -353,4 +410,7 @@ def default_cheques() -> ChequeBook:
     return ChequeBook(path=get_settings().data_dir / "cheques.json").load()
 
 
-__all__ = ["Cheque", "ChequeBook", "ChequeState", "PaymentMethod", "default_cheques"]
+__all__ = [
+    "Cheque", "ChequeBook", "ChequeState", "PaymentMethod", "add_months", "cheque_series",
+    "default_cheques", "next_number",
+]
