@@ -72,6 +72,11 @@ class MeasurementRequest(BaseModel):
     diagonals: list[float] | None = None
     note: str = ""
     project_id: str = ""
+    #: Set by the phone, so a measurement sent twice is kept once.
+    client_id: str = ""
+    #: When it was taken, by the phone's clock — a measurement kept on the
+    #: phone without signal and sent hours later keeps the time it was made.
+    measured_at: str = ""
 
 
 class CheckRequest(BaseModel):
@@ -274,6 +279,24 @@ def build_router(state: MobileState | None = None) -> Any:
         }
 
     # -- site measuring ----------------------------------------------------- #
+    def _when_taken(text: str) -> Any:
+        """The phone's time for the measurement, if it is a believable one:
+        not in the future, not older than a month."""
+        from datetime import datetime, timedelta, timezone
+
+        if not text:
+            return None
+        try:
+            taken = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        if taken.tzinfo is None:
+            taken = taken.replace(tzinfo=timezone.utc)
+        now = datetime.now(timezone.utc)
+        if taken > now + timedelta(minutes=5) or taken < now - timedelta(days=31):
+            return None
+        return taken
+
     def _triple(values: list[float]) -> tuple[float, float, float]:
         padded = list(values[:3]) + [0.0] * (3 - len(values[:3]))
         return (padded[0], padded[1], padded[2])
@@ -285,6 +308,15 @@ def build_router(state: MobileState | None = None) -> Any:
         x_device_token: str | None = Header(default=None),
     ) -> dict[str, Any]:
         device = device_for(x_device_id, x_device_token, "measure")
+        already = current().measurements.by_client_id(request.client_id.strip())
+        if already is not None:
+            return {
+                "reference": already.reference,
+                "width": round(already.width),
+                "height": round(already.height),
+                "problems": already.problems(),
+                "duplicate": True,
+            }
         if not request.reference.strip():
             raise HTTPException(
                 status_code=422,
@@ -303,7 +335,11 @@ def build_router(state: MobileState | None = None) -> Any:
             note=request.note,
             measured_by=device.name,
             device=device.device_id,
+            client_id=request.client_id.strip()[:64],
         )
+        taken = _when_taken(request.measured_at)
+        if taken is not None:
+            record.measured_at = taken
         if record.width <= 0 or record.height <= 0:
             raise HTTPException(
                 status_code=422,

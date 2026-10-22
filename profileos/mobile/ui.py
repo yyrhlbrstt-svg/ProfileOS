@@ -99,6 +99,7 @@ nav svg{width:22px;height:22px;stroke:currentColor;fill:none;stroke-width:1.7}
 .msg.on{display:block}
 .msg.ok{background:rgba(63,166,114,.15);color:#8FD9B2}
 .msg.bad{background:rgba(222,93,93,.15);color:#F0A8A8}
+.msg.wait{background:rgba(217,177,59,.15);color:#EBD27F}
 .big{font-size:34px;font-weight:700;letter-spacing:.16em;text-align:center}
 .empty{color:var(--muted);font-size:14px;text-align:center;padding:26px 8px}
 svg.dwg{width:100%;height:auto;background:#fff;border-radius:10px}
@@ -149,6 +150,7 @@ svg.dwg{width:100%;height:auto;background:#fff;border-radius:10px}
     <div class="card">
       <h2 data-t="mobile.site_measure"></h2>
       <p class="note" data-t="mobile.measure_help"></p>
+      <div id="m-outbox" class="msg"></div>
       <label for="mref" data-t="mobile.opening_ref"></label>
       <input id="mref" autocapitalize="characters" placeholder="W-01">
       <label data-t="mobile.widths"></label>
@@ -281,10 +283,23 @@ async function api(path, options){
   const opts = Object.assign({headers:{}}, options || {});
   opts.headers["Content-Type"] = "application/json";
   if(TOKEN){ opts.headers["X-Device-Id"] = DEVICE; opts.headers["X-Device-Token"] = TOKEN; }
-  const response = await fetch(API + path, opts);
+  let response;
+  try{
+    response = await fetch(API + path, opts);
+  }catch(err){
+    // No answer at all: no signal, or the office machine is off. Said apart
+    // from a refusal, so a measurement can wait on the phone instead.
+    const offline = new Error(t("mobile.saved_offline"));
+    offline.offline = true;
+    throw offline;
+  }
   if(response.status === 401){ signOut(); throw new Error(t("mobile.session_expired")); }
   const data = await response.json().catch(() => ({}));
-  if(!response.ok) throw new Error(data.detail || "שגיאה");
+  if(!response.ok){
+    const refused = new Error(data.detail || "שגיאה");
+    refused.status = response.status;
+    throw refused;
+  }
   return data;
 }
 
@@ -348,14 +363,90 @@ async function scan(){
 
 function num(id){ const v = parseFloat(document.getElementById(id).value); return isNaN(v) ? 0 : v; }
 
-async function sendMeasurement(){
-  const body = {
+// -- measurements that wait on the phone ---------------------------------
+// A stairwell has no signal. A measurement taken there is kept in the phone
+// (it survives the page being closed) and sent by itself when the network is
+// back; the office recognises one sent twice by its own id.
+const OUTBOX = "pos.outbox";
+
+function outbox(){
+  try{ return JSON.parse(localStorage.getItem(OUTBOX) || "[]"); }catch(err){ return []; }
+}
+function keepOutbox(items){ localStorage.setItem(OUTBOX, JSON.stringify(items)); }
+
+function newId(){
+  if(window.crypto && crypto.randomUUID) return crypto.randomUUID();
+  return Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 10);
+}
+
+function showOutbox(){
+  const box = document.getElementById("m-outbox");
+  const waiting = outbox().filter(item => !item.refused);
+  if(!box) return;
+  if(waiting.length){
+    box.textContent = t("mobile.outbox").replace("{n}", "\u2066" + waiting.length + "\u2069");
+    box.className = "msg on wait";
+  }else{
+    box.className = "msg";
+  }
+}
+
+let flushing = false;
+async function flushOutbox(){
+  if(flushing || !TOKEN) return;
+  const items = outbox();
+  if(!items.some(item => !item.refused)) return;
+  flushing = true;
+  let sent = 0;
+  try{
+    for(const item of items){
+      if(item.refused) continue;
+      try{
+        await api("/api/measurements", {method:"POST", body:JSON.stringify(item.body)});
+        item.done = true; sent++;
+      }catch(err){
+        if(err.offline) break;                     // still no signal: try later
+        // Refused for what it says (a missing size): kept and shown, never
+        // dropped. Anything else (signed out, office busy): tried again later.
+        if(err.status === 422){ item.refused = err.message; }
+        else break;
+      }
+    }
+  }finally{
+    keepOutbox(items.filter(item => !item.done));
+    flushing = false;
+  }
+  showOutbox();
+  if(sent){
+    say("m-msg", t("mobile.sent_from_phone").replace("{n}", "\u2066" + sent + "\u2069"), true);
+    loadMeasurements();
+  }
+}
+
+function measurementForm(){
+  return {
     reference: document.getElementById("mref").value.trim(),
     widths: [num("w1"), num("w2"), num("w3")],
     heights: [num("h1"), num("h2"), num("h3")],
     diagonals: (num("d1") && num("d2")) ? [num("d1"), num("d2")] : null,
     note: document.getElementById("mnote").value.trim(),
+    client_id: newId(),
+    measured_at: new Date().toISOString(),
   };
+}
+
+function clearMeasurementForm(){
+  ["w1","w2","w3","h1","h2","h3","d1","d2","mnote"].forEach(id => document.getElementById(id).value = "");
+}
+
+async function sendMeasurement(){
+  const body = measurementForm();
+  // What the office would refuse is said now, while the opening is in front
+  // of you — not hours later when the phone finds a signal.
+  if(!body.reference){ say("m-msg", t("mobile.need_reference"), false); return; }
+  if(!body.widths.some(v => v > 0) || !body.heights.some(v => v > 0)){
+    say("m-msg", t("mobile.need_sizes"), false); return;
+  }
   try{
     const data = await api("/api/measurements", {method:"POST", body:JSON.stringify(body)});
     const problems = data.problems || [];
@@ -363,21 +454,60 @@ async function sendMeasurement(){
         problems.length ? problems.join(" · ")
                         : `${data.width} × ${data.height} ${t("unit.mm")}`,
         problems.length === 0);
-    ["w1","w2","w3","h1","h2","h3","d1","d2","mnote"].forEach(id => document.getElementById(id).value = "");
+    clearMeasurementForm();
     loadMeasurements();
-  }catch(err){ say("m-msg", err.message, false); }
+    flushOutbox();
+  }catch(err){
+    if(err.offline){
+      const items = outbox();
+      items.push({body, at: body.measured_at});
+      keepOutbox(items);
+      clearMeasurementForm();
+      say("m-msg", t("mobile.saved_offline"), true);
+      showOutbox();
+      paintWaiting();
+      return;
+    }
+    say("m-msg", err.message, false);
+  }
+}
+
+// The office builds to the tightest point of the opening; so does this list.
+function narrowest(values){ const v = values.filter(x => x > 0); return v.length ? Math.min(...v) : 0; }
+
+function esc(text){
+  return String(text).replace(/[&<>"']/g, ch => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[ch]));
+}
+
+function waitingItems(){
+  return outbox().map(item => `
+      <div class="item">
+        <div class="grow"><b>${esc(item.body.reference)}</b><small class="num">${narrowest(item.body.widths)} × ${narrowest(item.body.heights)}</small></div>
+        <span class="pill ${item.refused ? "bad" : "warn"}">${item.refused ? t("mobile.not_accepted") : t("mobile.waiting_network")}</span>
+      </div>`).join("");
+}
+
+function paintWaiting(){
+  const list = document.getElementById("m-list");
+  const old = list.querySelectorAll(".item.sent");
+  list.innerHTML = waitingItems() + Array.from(old).map(node => node.outerHTML).join("")
+    || `<p class="empty">${t("mobile.none_yet")}</p>`;
 }
 
 async function loadMeasurements(){
+  showOutbox();
   try{
     const data = await api("/api/measurements");
-    document.getElementById("m-list").innerHTML = (data.records || []).map(r => `
-      <div class="item">
+    document.getElementById("m-list").innerHTML = waitingItems() + (data.records || []).map(r => `
+      <div class="item sent">
         <div class="grow"><b>${r.reference}</b><small class="num">${r.width} × ${r.height} · ${r.when}</small></div>
         <span class="pill ${r.problems.length ? "warn" : "ok"}">${r.problems.length ? "לבדוק" : "תקין"}</span>
       </div>`).join("") || `<p class="empty">${t("mobile.none_yet")}</p>`;
-  }catch(err){ /* offline: keep what is on screen */ }
+  }catch(err){ paintWaiting(); /* offline: what is on the phone is still shown */ }
 }
+
+window.addEventListener("online", flushOutbox);
+setInterval(flushOutbox, 30000);
 
 async function check(){
   const body = {
@@ -438,6 +568,8 @@ function buildLanguages(){
 paint();
 buildLanguages();
 if(TOKEN){ document.getElementById("s-pair").classList.remove("on"); buildTabs(); }
+// Whatever waited on the phone since last time goes now, if it can.
+if(TOKEN) flushOutbox();
 else { document.getElementById("tabs").style.display = "none"; }
 </script>
 </body>

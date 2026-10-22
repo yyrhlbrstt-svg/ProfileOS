@@ -206,6 +206,33 @@ class TestMeasuring:
         assert response.status_code == 200
         assert state.measurements.latest("W-01").width == 1198
 
+    def test_a_measurement_sent_twice_is_kept_once(self, client, state):
+        """The answer was lost on a bad connection and the phone sent it again."""
+        headers = paired(client, state)
+        body = {"reference": "W-05", "widths": [1200, 1200, 1200],
+                "heights": [1400, 1400, 1400], "client_id": "phone-1"}
+        first = client.post("/m/api/measurements", json=body, headers=headers)
+        again = client.post("/m/api/measurements", json=body, headers=headers)
+        assert first.status_code == again.status_code == 200
+        assert again.json()["duplicate"] is True
+        assert len(state.measurements.history("W-05")) == 1
+
+    def test_a_measurement_kept_on_the_phone_keeps_its_time(self, client, state):
+        from datetime import datetime, timedelta, timezone
+
+        headers = paired(client, state)
+        taken = datetime.now(timezone.utc) - timedelta(hours=3)
+        client.post("/m/api/measurements", headers=headers, json={
+            "reference": "W-06", "widths": [1200], "heights": [1400],
+            "client_id": "phone-2", "measured_at": taken.isoformat()})
+        assert abs((state.measurements.latest("W-06").measured_at - taken).total_seconds()) < 1
+        # A phone clock in the future is not believed.
+        client.post("/m/api/measurements", headers=headers, json={
+            "reference": "W-07", "widths": [1200], "heights": [1400],
+            "client_id": "phone-3",
+            "measured_at": (datetime.now(timezone.utc) + timedelta(days=2)).isoformat()})
+        assert state.measurements.latest("W-07").measured_at <= datetime.now(timezone.utc)
+
     def test_the_narrowest_width_is_the_one_to_build_to(self):
         """The frame has to fit the tightest point, not the average."""
         record = SiteMeasurement(reference="W", widths=(1210, 1205, 1198),

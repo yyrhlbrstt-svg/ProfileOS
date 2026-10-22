@@ -55,6 +55,9 @@ class SiteMeasurement:
     measured_by: str = ""
     measured_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     device: str = ""
+    #: The phone's own name for this measurement: a measurement sent again
+    #: (the answer was lost on a bad connection) is recognised, not doubled.
+    client_id: str = ""
 
     @property
     def width(self) -> float:
@@ -126,6 +129,7 @@ class SiteMeasurement:
             "measured_by": self.measured_by,
             "measured_at": self.measured_at.isoformat(),
             "device": self.device,
+            "client_id": self.client_id,
         }
 
     @classmethod
@@ -143,6 +147,7 @@ class SiteMeasurement:
             measured_by=str(data.get("measured_by", "")),
             measured_at=datetime.fromisoformat(data["measured_at"]),
             device=str(data.get("device", "")),
+            client_id=str(data.get("client_id", "")),
         )
 
 
@@ -192,6 +197,11 @@ class MeasurementStore:
             measurement.measured_by or measurement.device or "?",
         )
         return measurement
+
+    def by_client_id(self, client_id: str) -> SiteMeasurement | None:
+        if not client_id:
+            return None
+        return next((r for r in self.records if r.client_id == client_id), None)
 
     def latest(self, reference: str) -> SiteMeasurement | None:
         return next((r for r in self.records if r.reference == reference), None)

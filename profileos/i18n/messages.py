@@ -484,6 +484,38 @@ MESSAGES: dict[str, dict[str, str]] = {
         "ar": "لا توجد قياسات بعد.", "ru": "Замеров пока нет.",
         "it": "Nessun rilievo finora.", "es": "Todavía no hay mediciones.",
     },
+    "mobile.saved_offline": {
+        "en": "No signal — saved on this phone. It will be sent by itself when the network is back.",
+        "he": "אין קליטה — נשמר בטלפון. יישלח לבד כשהרשת תחזור.",
+        "ar": "لا توجد إشارة — حُفظ على الهاتف. سيُرسل تلقائياً عند عودة الشبكة.",
+        "ru": "Нет связи — сохранено на телефоне. Отправится само, когда появится сеть.",
+        "it": "Nessun segnale — salvato sul telefono. Verrà inviato da solo quando torna la rete.",
+        "es": "Sin señal — guardado en el teléfono. Se enviará solo cuando vuelva la red.",
+    },
+    "mobile.outbox": {
+        "en": "Measurements kept on this phone, waiting for the network: {n}. They are sent by themselves — even if the page is closed and opened again later.",
+        "he": "מדידות שמורות בטלפון וממתינות לרשת: {n}. הן יישלחו לבד — גם אם הדף ייסגר וייפתח שוב אחר כך.",
+        "ar": "قياسات محفوظة على الهاتف بانتظار الشبكة: {n}. تُرسل تلقائياً — حتى لو أُغلقت الصفحة وفُتحت لاحقاً.",
+        "ru": "Замеры на телефоне ждут сети: {n}. Отправятся сами — даже если страницу закрыть и открыть позже.",
+        "it": "Rilievi salvati sul telefono in attesa di rete: {n}. Vengono inviati da soli — anche se la pagina viene chiusa e riaperta.",
+        "es": "Mediciones guardadas en el teléfono esperando red: {n}. Se envían solas — aunque la página se cierre y se vuelva a abrir.",
+    },
+    "mobile.waiting_network": {
+        "en": "Waiting for network", "he": "ממתין לרשת", "ar": "بانتظار الشبكة",
+        "ru": "Ждёт сети", "it": "In attesa di rete", "es": "Esperando red",
+    },
+    "mobile.sent_from_phone": {
+        "en": "Measurements that waited on the phone were sent: {n}.",
+        "he": "נשלחו מדידות שחיכו בטלפון: {n}.",
+        "ar": "أُرسلت القياسات التي انتظرت على الهاتف: {n}.",
+        "ru": "Отправлены замеры, ждавшие на телефоне: {n}.",
+        "it": "Inviati i rilievi rimasti sul telefono: {n}.",
+        "es": "Se enviaron las mediciones que esperaban en el teléfono: {n}.",
+    },
+    "mobile.not_accepted": {
+        "en": "Not accepted by the office", "he": "לא התקבלה במשרד", "ar": "لم يقبلها المكتب",
+        "ru": "Не принят офисом", "it": "Non accettato dall'ufficio", "es": "No aceptada por la oficina",
+    },
     "mobile.feasibility": {
         "en": "Feasibility check", "he": "בדיקת ישימות", "ar": "فحص القابلية للتنفيذ",
         "ru": "Проверка выполнимости", "it": "Verifica di fattibilità",
