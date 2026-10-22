@@ -402,6 +402,8 @@ class TestExactBarsAndPrices:
     @pytest.mark.parametrize("text,mm", [
         ("6", 6000.0), ("6.5", 6500.0), ("6,5", 6500.0), ("650", 6500.0), ("6500", 6500.0),
         ("7", 7000.0), ("50", None), ("9", None), ("", None), ("מוט", None),
+        ("6 מ׳", 6000.0), ("6.5m", 6500.0), ("6000 mm", 6000.0), ("650 ס״מ", 6500.0),
+        ("6 ft", None),
     ])
     def test_a_bar_length_however_the_list_writes_it(self, text, mm):
         from profileos.quoting.pricelists import bar_length
@@ -437,7 +439,7 @@ class TestExactBarsAndPrices:
         proposal = propose(job, mass_per_metre=lambda c: None)
         frame = next(l for l in proposal.lines if l.code == code)
         # Cut from the supplier's 6.5 m bar, priced at exactly its bar price.
-        assert frame.length_mm == 6500.0 and frame.length_source.startswith("קליל")
+        assert frame.length_mm == 6500.0 and frame.length_source == "מחירון קליל (x)"
         assert frame.unit_price == pytest.approx(210.0 * 0.8)
 
     def test_a_suppliers_bar_length_said_once(self, shop):
@@ -551,3 +553,112 @@ def test_the_cutting_page_cuts_from_the_suppliers_bar(shop):
     window.close()
     window.deleteLater()
     QCoreApplication.processEvents()
+
+
+class TestWhatTheTradeReviewFound:
+    def frame(self, job):
+        from profileos.projects.materials import propose
+
+        return next(l.code for l in propose(job, mass_per_metre=lambda c: None).lines
+                    if l.code.endswith("FRAME"))
+
+    def test_no_length_on_the_list_means_one_bar_length_not_a_mix(self, shop):
+        from profileos.projects.materials import propose
+
+        job = a_job()
+        # Pieces that a 6 m and 6.5 m mix would split between both lengths.
+        job.schedule.openings[0].width = 3150
+        job.schedule.openings[0].height = 2850
+        lines = [l for l in propose(job, mass_per_metre=lambda c: None).lines if l.unit == "bar"]
+        for code in {l.code for l in lines}:
+            assert len({l.length_mm for l in lines if l.code == code}) == 1
+
+    def test_the_bar_and_its_price_come_from_one_supplier(self, shop):
+        from profileos.projects.materials import propose
+        from profileos.quoting.pricelists import PriceRow, default_price_lists
+
+        job = a_job()
+        code = self.frame(job)
+        book = default_price_lists()
+        for supplier, price, length in (("קליל", 50.0, 6500.0), ("אקסטל", 40.0, 0.0)):
+            edition = book.record([PriceRow(code, price, "מטר", length_mm=length)],
+                                  supplier=supplier, source="x")
+            book.accept(edition.edition_id)
+        frame = next(l for l in propose(job, mass_per_metre=lambda c: None).lines if l.code == code)
+        # The cheaper supplier, at its own (unknown, so the shop's) length —
+        # never its price on the other supplier's 6.5 m bar.
+        assert frame.supplier == "אקסטל" and frame.length_mm == 6000.0
+        assert frame.unit_price == pytest.approx(40.0 * 6.0)
+
+    def test_a_length_the_shop_typed_is_labelled_as_such(self, shop):
+        from profileos.projects.materials import propose
+        from profileos.quoting.pricelists import PriceRow, default_price_lists
+
+        job = a_job()
+        code = self.frame(job)
+        book = default_price_lists()
+        edition = book.record([PriceRow(code, 40.0, "מטר"), PriceRow("HW", 9.0, "יח'")],
+                              supplier="קליל", source="x", bar_length_mm=6500.0)
+        book.accept(edition.edition_id)
+        assert edition.length_of(edition.prices["HW"]) == 0.0     # a fitting has no bar
+        frame = next(l for l in propose(job, mass_per_metre=lambda c: None).lines if l.code == code)
+        assert frame.length_source == "אורך שהוזן לספק קליל"
+
+    def test_gasket_sold_by_the_roll_is_ordered_in_whole_rolls(self, shop, tmp_path):
+        from profileos.projects.materials import propose
+        from profileos.quoting.pricelists import default_price_lists, rows_from_file
+        from profileos.quoting.suppliers import find_price
+
+        path = tmp_path / "g.csv"
+        path.write_text('מק"ט;מחיר;יחידה;אורך\nGK-IN;300;גליל;100\n', encoding="utf-8")
+        rows, problems, _ = rows_from_file(path)
+        assert rows[0].length_mm == 100000.0 and not problems
+        book = default_price_lists()
+        edition = book.record(rows, supplier="גומיות", source="g.csv")
+        book.accept(edition.edition_id)
+        assert find_price("GK-IN", 10.0, unit="m", currency="ILS")[1] == pytest.approx(30.0)
+        gasket = next(l for l in propose(a_job(), mass_per_metre=lambda c: None).lines
+                      if l.code == "GK-IN")
+        assert gasket.unit == "roll" and gasket.quantity == 1 and gasket.length_mm == 100000.0
+        assert gasket.unit_price == pytest.approx(300.0)
+        assert "גלילים" in gasket.describe()
+
+    def test_only_a_printed_weight_prices_a_kilogram(self, shop, monkeypatch):
+        from profileos.catalogue import editions as catalogue
+        from profileos.quoting.pricelists import catalogue_weights
+
+        class Book:
+            def keys(self):
+                return ["klil-7300"]
+
+            def library(self, key):
+                return {
+                    "A": catalogue.ProfileSnapshot("A", published={"mass_per_metre": 1.2}),
+                    "B": catalogue.ProfileSnapshot("B", measured={"mass_per_metre": 1.4}),
+                }
+
+        monkeypatch.setattr(catalogue, "default_editions", lambda: Book())
+        weights = catalogue_weights()
+        assert weights("A") == 1.2 and weights("B") is None
+
+
+def test_a_spare_bar_is_the_shops_choice(shop):
+    pytest.importorskip("PySide6")
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication
+
+    from profileos.projects.materials import Proposal, ProposedLine
+    from profileos.ui import money_dialogs
+
+    QApplication.instance() or QApplication([])
+    proposal = Proposal(lines=[
+        ProposedLine("profile", "F", "משקוף", 4, "bar", 6000.0),
+        ProposedLine("profile", "B", "סרגל", 2, "bar", 6000.0),
+        ProposedLine("gasket", "G", "גומייה", 30, "m"),
+    ])
+    dialog = money_dialogs.MaterialOrderDialog(a_job(), proposal)
+    dialog.supplier.setCurrentText("קליל")
+    dialog.spare.setChecked(True)
+    assert [line.quantity for line in dialog.chosen()] == [5, 3, 30]
+    dialog.spare.setChecked(False)
+    assert [line.quantity for line in dialog.chosen()] == [4, 2, 30]

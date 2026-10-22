@@ -58,6 +58,7 @@ _UNITS = {
     "kg": ("kg", "ק\"ג", "ק״ג", "קג", "קילו"),
     "bar": ("bar", "מוט", "מוטות", "length"),
     "set": ("set", "סט", "ערכה", "קומפלט"),
+    "roll": ("roll", "גליל", "גלילים", "רול"),
     "l": ("l", "ליטר"),
     "h": ("h", "שעה", "hr"),
 }
@@ -65,7 +66,7 @@ _UNIT_OF = {spelling.casefold(): unit for unit, spellings in _UNITS.items() for 
 
 UNIT_HEBREW = {
     "m": "מ׳", "pc": "יח׳", "m2": "מ״ר", "kg": "ק״ג", "bar": "מוט", "set": "סט",
-    "l": "ליטר", "h": "שעה", "": "",
+    "l": "ליטר", "h": "שעה", "roll": "גליל", "": "",
 }
 
 
@@ -84,9 +85,23 @@ def bar_length(text: Any) -> float | None:
     """
     from ..migration.reader import to_number
 
-    value = to_number(text)
+    raw = str(text or "").strip()
+    # The unit, when the list writes one: "6 מ׳", "6000 mm", "650 ס״מ".
+    match = re.fullmatch(r"([\d.,]+)\s*(.*)", raw)
+    unit = match.group(2).strip().casefold().rstrip(".") if match else ""
+    value = to_number(match.group(1) if match else raw)
     if value is None or value <= 0:
         return None
+    if unit:
+        factor = {
+            "מ׳": 1000.0, "מ'": 1000.0, "מ": 1000.0, "m": 1000.0, "מטר": 1000.0,
+            "mm": 1.0, "מ\"מ": 1.0, "מ״מ": 1.0, "ממ": 1.0,
+            "cm": 10.0, "ס\"מ": 10.0, "ס״מ": 10.0, "סמ": 10.0,
+        }.get(unit)
+        if factor is None:
+            return None
+        mm = value * factor
+        return mm if MIN_BAR_MM <= mm <= MAX_BAR_MM else None
     if value < 20:
         mm = value * 1000.0
     elif 100 <= value < 1000:
@@ -96,6 +111,27 @@ def bar_length(text: Any) -> float | None:
     else:
         return None
     return mm if MIN_BAR_MM <= mm <= MAX_BAR_MM else None
+
+
+#: A roll of gasket or brush is sold between these lengths, in metres.
+MIN_ROLL_M = 5.0
+MAX_ROLL_M = 1000.0
+
+
+def roll_length(text: Any) -> float | None:
+    """A roll's length in metres ("100", "200 מ׳"), or None."""
+    from ..migration.reader import to_number
+
+    match = re.fullmatch(r"([\d.,]+)\s*(מ׳|מ'|מ|m|מטר)?", str(text or "").strip())
+    value = to_number(match.group(1)) if match else None
+    if value is None or not MIN_ROLL_M <= value <= MAX_ROLL_M:
+        return None
+    return value
+
+
+#: Units a bar length means something for: profiles priced per bar, per
+#: metre, per kilogram, or with no unit said. Not a fitting, not a roll.
+PROFILE_UNITS = ("bar", "m", "kg", "")
 
 
 def unit_key(text: str) -> str:
@@ -200,8 +236,21 @@ class PriceListEdition:
         return " · ".join(parts) or "מחיר מחירון, בלי הנחה"
 
     def length_of(self, row: PriceRow) -> float:
-        """The bar length a row is sold in: its own, else the list's, else 0."""
+        """The bar length a profile row is sold in: its own, else the length
+        the shop gave for this supplier, else 0. Fittings and rolls have none."""
+        if unit_key(row.unit) not in PROFILE_UNITS:
+            return 0.0
         return row.length_mm or self.bar_length_mm
+
+    def length_said_by(self, row: PriceRow) -> str:
+        """Who said the bar length: the supplier's list, or the shop."""
+        if unit_key(row.unit) not in PROFILE_UNITS:
+            return ""
+        if row.length_mm:
+            return f"מחירון {self.supplier} ({self.source})"
+        if self.bar_length_mm:
+            return f"אורך שהוזן לספק {self.supplier}"
+        return ""
 
     def for_code(self, code: str) -> PriceRow | None:
         """The one price for a code, or None — also when the list has a
@@ -631,6 +680,14 @@ def _row_length(values: dict[str, Any], label: str, problems: list[str]) -> floa
     raw = str(values.get("length") or "").strip()
     if not raw:
         return 0.0
+    if unit_key(str(values.get("unit") or "")) == "roll":
+        metres = roll_length(raw)
+        if metres is None:
+            problems.append(f"{label}: אורך הגליל ״{raw}״ לא ברור — נקרא בלי אורך")
+            return 0.0
+        return metres * 1000.0
+    if unit_key(str(values.get("unit") or "")) not in PROFILE_UNITS:
+        return 0.0  # a length on a fitting's row is not a bar length
     length = bar_length(raw)
     if length is None:
         problems.append(f"{label}: אורך המוט ״{raw}״ לא ברור — נקרא בלי אורך")
@@ -701,6 +758,7 @@ def _as_supplier(edition: PriceListEdition,
         metadata: dict[str, Any] = {"unit_known": bool(unit), "list": edition.edition_id}
         if length:
             metadata["bar_length_mm"] = length
+            metadata["length_said_by"] = edition.length_said_by(row)
         if unit == "kg":
             weight = mass_per_metre(row.code)
             if weight:
@@ -713,6 +771,11 @@ def _as_supplier(edition: PriceListEdition,
             # unusable for metres, never stretched over a bar it is not for.
             metadata.update({"price_per_bar": price})
             price, unit = round(price * 1000.0 / length, 6), "m"
+        elif unit == "roll" and row.length_mm:
+            # The same for a roll of gasket: per metre for a quotation, and an
+            # order rounds up to whole rolls of this length.
+            metadata.update({"price_per_roll": price, "roll_length_m": row.length_mm / 1000.0})
+            price, unit = round(price * 1000.0 / row.length_mm, 6), "m"
         entries.append(PriceEntry(code=row.code, price=price, unit=unit or "pc",
                                   description=row.description or None, metadata=metadata))
     return Supplier(
@@ -746,7 +809,7 @@ def bar_lengths(book: PriceListBook | None = None) -> tuple[dict[str, float], di
             if key in lengths and abs(lengths[key] - length) > 0.5:
                 disputed.add(key)
             lengths[key] = length
-            sources[key] = f"{edition.supplier} — {edition.source}"
+            sources[key] = edition.length_said_by(row)
     for key in disputed:
         lengths.pop(key, None)
         sources.pop(key, None)
@@ -958,9 +1021,9 @@ def catalogue_weights() -> Callable[[str], float | None]:
         conflicting: set[str] = set()
         for key in book.keys():
             for article, snapshot in book.library(key).items():
-                # The supplier's printed weight; measured from its own drawing
-                # only when the table gave none.
-                value = snapshot.published.get("mass_per_metre") or snapshot.measured.get("mass_per_metre")
+                # Only the weight the supplier printed prices a kilogram: one
+                # measured from a drawing assumes a density nobody confirmed.
+                value = snapshot.published.get("mass_per_metre")
                 if not value:
                     continue
                 if article in weights and abs(weights[article] - float(value)) > 1e-6:

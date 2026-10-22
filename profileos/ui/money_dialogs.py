@@ -726,6 +726,15 @@ class JobAccountDialog(QDialog):
 # Ordering the job's material
 # --------------------------------------------------------------------------- #
 
+def _supplier_named(name: str) -> Any:
+    """The price list in force by its supplier's name, or None."""
+    if not name:
+        return None
+    from ..quoting.suppliers import all_suppliers
+
+    return next((s for s in all_suppliers() if s.name == name), None)
+
+
 class MaterialOrderDialog(QDialog):
     """What to order for the job, from whom, by when — checked before it goes.
 
@@ -764,9 +773,13 @@ class MaterialOrderDialog(QDialog):
         self.needed_by.setDate(QDate.currentDate().addDays(7))
         self.note = QLineEdit()
         self.note.setPlaceholderText("הערה לספק: צבע, אספקה לאתר, איש קשר…")
+        # A mis-cut or a scratched painted bar stops a job for a week: the
+        # shop decides whether one spare bar per profile is worth it.
+        self.spare = QCheckBox("להוסיף מוט רזרבי לכל פרופיל")
         grid.add("ספק", self.supplier)
         grid.add("נדרש עד", self.needed_by)
         grid.add("הערה", self.note)
+        grid.add_span(self.spare)
         layout.addWidget(grid)
 
         self.table = QTableWidget(len(proposal.lines), 6)
@@ -783,6 +796,7 @@ class MaterialOrderDialog(QDialog):
                 (2, " · ".join(part for part in (
                     line.description if line.description != line.code else "",
                     f"מוטות של ⁦{line.length_mm / 1000:g}⁩ מ׳" if line.unit == "bar" and line.length_mm
+                    else f"גלילים של ⁦{line.length_mm / 1000:g}⁩ מ׳" if line.unit == "roll" and line.length_mm
                     else f"ב{line.unit_hebrew}",
                 ) if part)),
                 (4, f"⁦{line.unit_price:,.2f} ₪⁩" if line.unit_price > 0 else "אין במחירון"),
@@ -806,6 +820,7 @@ class MaterialOrderDialog(QDialog):
         # One order is one supplier: lines another supplier's list prices are
         # left for that supplier's order, not sent to this one.
         self.supplier.currentTextChanged.connect(self._match_supplier)
+        self.spare.toggled.connect(self._spare)
 
         self.summary = QLabel("")
         self.summary.setObjectName("Hint")
@@ -840,6 +855,16 @@ class MaterialOrderDialog(QDialog):
         self._match_supplier(self.supplier.currentText())
         self._update_total()
 
+    def _spare(self, on: bool) -> None:
+        """One more bar of each profile — on its longest-bar line — or one less."""
+        seen: set[str] = set()
+        for row, line in sorted(enumerate(self._lines), key=lambda pair: -pair[1].length_mm):
+            if line.unit != "bar" or line.code in seen:
+                continue
+            seen.add(line.code)
+            quantity = self._quantity(row) or 0.0
+            self.table.item(row, 3).setText(f"{max(0.0, quantity + (1 if on else -1)):g}")
+
     def _changed(self, item: Any) -> None:
         """A quantity typed: price it again at that quantity (breaks, minimums)."""
         if item.column() == 3:
@@ -849,7 +874,8 @@ class MaterialOrderDialog(QDialog):
                 from ..projects.materials import price_line
 
                 line.quantity = quantity
-                price_line(line, mass_per_metre=self._weights())
+                price_line(line, mass_per_metre=self._weights(),
+                           supplier=_supplier_named(line.supplier))
                 cell = self.table.item(item.row(), 4)
                 self.table.blockSignals(True)
                 cell.setText(f"⁦{line.unit_price:,.2f} ₪⁩" if line.unit_price > 0 else "אין במחירון")
