@@ -6716,6 +6716,8 @@ class CataloguePage(Page):
         tabs.addTab(self.ingest_page, "קליטת קטלוג")
         self.updates_page = self._updates_tab()
         tabs.addTab(self.updates_page, "עדכוני ספקים")
+        self.prices_page = self._prices_tab()
+        tabs.addTab(self.prices_page, "מחירוני ספקים")
         self.body.addWidget(tabs, 1)
         self.tabs = tabs
         # The intake figures belong to the intake: elsewhere they are empty
@@ -6724,6 +6726,217 @@ class CataloguePage(Page):
             lambda _index: self.stats.setVisible(tabs.currentWidget() is self.ingest_page)
         )
         self.stats.setVisible(False)
+
+    # -- supplier price lists ------------------------------------------------ #
+    def _prices_tab(self) -> QWidget:
+        """Every supplier's price list, edition by edition, and what each one
+        does to the quotations out and the jobs not yet ordered."""
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, METRICS.space(3), 0, 0)
+        layout.setSpacing(METRICS.space(3))
+
+        buttons = QHBoxLayout()
+        buttons.setSpacing(METRICS.space(2))
+        take = QPushButton("קליטת מחירון…")
+        take.setObjectName("Primary")
+        take.setToolTip("קובץ Excel או CSV מהספק: מק״ט, תיאור, מחיר, יחידה")
+        take.clicked.connect(lambda: self.import_price_list())
+        accept = QPushButton("אישור המחירון")
+        accept.clicked.connect(lambda: self._decide_price_list(True))
+        reject = QPushButton("דחייה")
+        reject.clicked.connect(lambda: self._decide_price_list(False))
+        for button in (take, accept, reject):
+            buttons.addWidget(button)
+        buttons.addStretch(1)
+        layout.addLayout(buttons)
+
+        row = QSplitter(Qt.Orientation.Horizontal)
+        self.price_lists_table = DataTable(
+            ["ספק", "מקור", "בתוקף מ־", "מצב", "שינוי", "פריטים"],
+            empty_text="קלטו את המחירון שהספק שלח (Excel או CSV) — התוכנה תשווה "
+                       "אותו לקודם ותראה אילו הצעות ופרויקטים הוא משנה",
+        )
+        self.price_lists_table.itemSelectionChanged.connect(self._show_price_list)
+        row.addWidget(self.price_lists_table)
+        self.price_list_detail = QPlainTextEdit()
+        self.price_list_detail.setReadOnly(True)
+        self.price_list_detail.setPlaceholderText("בחרו מחירון כדי לראות מה השתנה ואת מי זה מזיז")
+        row.addWidget(self.price_list_detail)
+        row.setStretchFactor(0, 3)
+        row.setStretchFactor(1, 2)
+        layout.addWidget(row, 1)
+
+        note = QLabel(
+            "הצעות מחיר מתומחרות מהמחירון שבתוקף. מחירון חדש לא משנה אף מחיר עד "
+            "שמאשרים אותו; ותאריך תחולה עתידי נותן זמן להזמין חומר במחיר הישן."
+        )
+        note.setObjectName("Hint")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        self._price_list_ids: list[str] = []
+        return page
+
+    def _refresh_price_lists(self) -> None:
+        from ..quoting.pricelists import ListState, default_price_lists
+
+        book = self.checked_book(default_price_lists(), "מחירוני הספקים")
+        editions = list(book)
+        self._price_list_ids = [e.edition_id for e in editions]
+        rows, colours = [], {}
+        tint = {
+            ListState.PENDING: self.colours.warning,
+            ListState.ACCEPTED: self.colours.success,
+            ListState.REJECTED: self.colours.text_faint,
+        }
+        for index, edition in enumerate(editions):
+            rows.append([
+                edition.supplier, edition.source, _short_date(edition.effective),
+                book.state_text(edition),
+                book.diff(edition).summary(), len(edition.prices),
+            ])
+            state = book.state_text(edition)
+            colours[(index, 3)] = (
+                self.colours.text_faint if state == "הוחלף"
+                else self.colours.warning if state == "ייכנס לתוקף"
+                else tint.get(edition.state, self.colours.text)
+            )
+        self.price_lists_table.clearSelection()
+        self.price_lists_table.set_rows(rows, numeric_columns=(5,), colours=colours)
+        self.price_list_detail.clear()
+
+    def _show_price_list(self) -> None:
+        from ..quoting.pricelists import ListState, default_price_lists, impact
+
+        edition_id = self._selected(self.price_lists_table, self._price_list_ids)
+        book = default_price_lists()
+        edition = book.get(edition_id)
+        if edition is None:
+            return
+        lines = [
+            f"{edition.supplier} — {edition.source}",
+            f"בתוקף מ־⁦{_short_date(edition.effective)}⁩ · ⁦{len(edition.prices)}⁩ פריטים"
+            + (f" · נקלט על ידי {edition.recorded_by}" if edition.recorded_by else ""),
+        ]
+        if edition.state != ListState.PENDING:
+            lines.append(
+                book.state_text(edition)
+                + (f" — הוחלט על ידי {edition.decided_by}" if edition.decided_by else "")
+            )
+        lines.append("")
+        if edition.warnings:
+            lines.append("שימו לב")
+            lines += [f"  • {warning}" for warning in edition.warnings[:10]]
+            lines.append("")
+        lines += book.diff(edition).lines()
+        try:
+            from ..projects import default_store
+
+            effect = impact(book, edition, default_store().all())
+        except Exception as exc:  # noqa: BLE001 - named, never read as "nothing"
+            lines.append(f"ההשפעה על הפרויקטים לא חושבה: {exc}")
+            effect = None
+        if effect is not None:
+            if effect.quoted:
+                lines.append("הצעות פתוחות שתומחרו על המחירון הקודם")
+                lines += [f"  • {change.describe()}" for change in effect.quoted]
+                lines.append("")
+            if effect.to_order:
+                header = "פרויקטים שנסגרו ועוד לא הוזמן להם חומר"
+                if effect.buy_before:
+                    header += f" — הזמנה לפני ⁦{_short_date(effect.buy_before)}⁩ במחיר הישן"
+                lines.append(header)
+                lines += [f"  • {change.describe()}" for change in effect.to_order]
+                lines.append("")
+            unmatched = sum(c.unmatched_units for c in effect.quoted + effect.to_order)
+            if unmatched:
+                lines.append(
+                    f"⁦{unmatched}⁩ שורות לא חושבו: יחידת המידה במחירון לא תואמת "
+                    "לכמות בפרויקט (למשל מחיר לק״ג בלי משקל למטר מהקטלוג)."
+                )
+        self.price_list_detail.setPlainText("\n".join(lines).rstrip())
+
+    def import_price_list(self, path: Path | None = None, *, finding_id: str = "") -> None:
+        """Take in a supplier's price list as a waiting edition."""
+        from ..quoting.pricelists import default_price_lists, rows_from_file
+        from .dialogs import PriceListDialog
+
+        if path is None:
+            chosen, _ = QFileDialog.getOpenFileName(
+                self, "מחירון ספק", "", "מחירונים (*.xlsx *.csv *.tsv *.txt)"
+            )
+            if not chosen:
+                return
+            path = Path(chosen)
+        try:
+            rows, skipped, matched = rows_from_file(path)
+        except Exception as exc:  # noqa: BLE001 - the reason is the answer
+            self.report(exc, "המחירון לא נקרא")
+            return
+        book = self.checked_book(default_price_lists(), "מחירוני הספקים")
+        known = sorted({e.supplier for e in book})
+        dialog = PriceListDialog(path.name, len(rows), skipped, matched, known, parent=self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        values = dialog.values()
+        try:
+            edition = book.record(
+                rows, supplier=values["supplier"], source=values["source"],
+                valid_from=values["valid_from"], currency=values["currency"],
+                recorded_by=values["recorded_by"],
+                warnings=[f"לא נקרא: {line}" for line in skipped[:50]],
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "המחירון לא נשמר")
+            return
+        if finding_id:
+            try:
+                from ..catalogue.watch import default_findings
+
+                default_findings().handle(finding_id, f"נקלט כמחירון {edition.edition_id}")
+            except Exception as exc:  # noqa: BLE001 - the list is saved either way
+                _log.warning("Could not mark the finding handled: %s", exc)
+            self._refresh_findings()
+        self.tabs.setCurrentWidget(self.prices_page)
+        self._refresh_price_lists()
+        if edition.edition_id in self._price_list_ids:
+            self.price_lists_table.selectRow(self._price_list_ids.index(edition.edition_id))
+        self.status(f"נשמר מחירון ממתין מ{edition.supplier}: {book.diff(edition).summary()}")
+
+    def _decide_price_list(self, accept: bool) -> None:
+        from ..quoting.pricelists import default_price_lists
+
+        edition_id = self._selected(self.price_lists_table, self._price_list_ids)
+        if not edition_id:
+            self.report(ProfileOSError("בחרו מחירון מהרשימה"), "לא נבחר מחירון")
+            return
+        book = self.checked_book(default_price_lists(), "מחירוני הספקים")
+        edition = book.get(edition_id)
+        if edition is None:
+            return
+        question = (
+            f"לאשר את {edition.source} כמחירון של {edition.supplier}?\n"
+            f"{book.diff(edition).summary()}\n"
+            "הצעות מחיר חדשות יתומחרו ממנו"
+            + (f" מ־{_short_date(edition.valid_from)}." if edition.valid_from else ".")
+            if accept else
+            f"לדחות את {edition.source}? הוא יישמר ברשימה ולא ישמש לתמחור."
+        )
+        name, ok = QInputDialog.getText(
+            self, "אישור מחירון" if accept else "דחיית מחירון", question + "\n\nמי מחליט?",
+        )
+        if not ok:
+            return
+        try:
+            if accept:
+                book.accept(edition_id, by=name)
+            else:
+                book.reject(edition_id, by=name)
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "ההחלטה לא נשמרה")
+            return
+        self._refresh_price_lists()
+        self.status("המחירון אושר" if accept else "המחירון נדחה")
 
     # -- supplier updates ----------------------------------------------------- #
     def _updates_tab(self) -> QWidget:
@@ -7271,7 +7484,21 @@ class CataloguePage(Page):
                     use(stage(path), drawings=True)
                 except OSError as exc:
                     self.report(exc, "הקובץ לא הועתק לקליטה")
-            elif suffix in (".pdf", ".csv", ".tsv", ".txt"):
+            elif suffix == ".xlsx":
+                self.import_price_list(path, finding_id=finding.finding_id)
+            elif suffix in (".csv", ".tsv", ".txt"):
+                box = QMessageBox(self)
+                box.setWindowTitle("מה יש בקובץ?")
+                box.setText(f"{path.name} — מחירון או טבלת פרופילים מהקטלוג?")
+                prices = box.addButton("מחירון", QMessageBox.ButtonRole.AcceptRole)
+                table = box.addButton("טבלת קטלוג", QMessageBox.ButtonRole.AcceptRole)
+                box.addButton("ביטול", QMessageBox.ButtonRole.RejectRole)
+                box.exec()
+                if box.clickedButton() is prices:
+                    self.import_price_list(path, finding_id=finding.finding_id)
+                elif box.clickedButton() is table:
+                    use(path, drawings=False)
+            elif suffix == ".pdf":
                 use(path, drawings=False)
             elif suffix == ".dwg":
                 self.report(
@@ -7758,6 +7985,7 @@ class CataloguePage(Page):
     def refresh(self) -> None:
         self._refresh_systems()
         self._refresh_updates()
+        self._refresh_price_lists()
 
     def export_plugin(self) -> None:
         from ..catalogue import to_plugin

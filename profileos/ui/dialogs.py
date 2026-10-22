@@ -694,6 +694,91 @@ class ConfirmSystemDialog(_FormDialog):
         }
 
 
+class PriceListDialog(_FormDialog):
+    """What a supplier's price list file was read as, before it is kept.
+
+    Says how many rows were read, which were not and why, and which column
+    was taken as which field — so a list read with the wrong column as the
+    price is caught here, not on a quotation.
+    """
+
+    accept_text = "שמירה כמחירון ממתין"
+
+    def __init__(self, file_name: str, count: int, skipped: list[str],
+                 matched: dict[str, str], suppliers: list[str] = (),
+                 parent: QWidget | None = None) -> None:
+        super().__init__("קליטת מחירון ספק", parent)
+        self.setMinimumWidth(540)
+
+        self.supplier = QComboBox()
+        self.supplier.setEditable(True)
+        self.supplier.addItems(list(suppliers))
+        self.supplier.setCurrentText("")
+        self.supplier.lineEdit().setPlaceholderText("שם הספק: קליל, אקסטל, ספק הפרזול…")
+        self.source = QLineEdit(file_name)
+        self.has_date = QCheckBox("בתוקף מתאריך")
+        self.valid_from = QDateEdit()
+        self.valid_from.setCalendarPopup(True)
+        self.valid_from.setDisplayFormat("dd/MM/yyyy")
+        from PySide6.QtCore import QDate
+
+        self.valid_from.setDate(QDate.currentDate())
+        self.valid_from.setEnabled(False)
+        self.has_date.toggled.connect(self.valid_from.setEnabled)
+        date_row = QHBoxLayout()
+        date_row.setContentsMargins(0, 0, 0, 0)
+        date_row.addWidget(self.has_date)
+        date_row.addWidget(self.valid_from, 1)
+        date_holder = QWidget()
+        date_holder.setLayout(date_row)
+        self.currency = QComboBox()
+        for code, label in (("ILS", "שקל"), ("USD", "דולר"), ("EUR", "אירו")):
+            self.currency.addItem(label, code)
+        self.recorded_by = QLineEdit()
+        self.recorded_by.setPlaceholderText("מי קלט")
+
+        self.grid.add("ספק", self.supplier)
+        self.grid.add("מקור", self.source)
+        self.grid.add("תחולה", date_holder)
+        self.grid.add("מטבע", self.currency)
+        self.grid.add("נקלט על ידי", self.recorded_by)
+
+        names = {"code": "מק״ט", "description": "תיאור", "price": "מחיר", "unit": "יחידה",
+                 "supplier": "ספק", "currency": "מטבע"}
+        columns = " · ".join(
+            f"{names.get(field, field)} ← ״{header}״" for field, header in matched.items()
+        )
+        text = f"⁦{count}⁩ שורות מחיר נקראו. עמודות: {columns}."
+        if skipped:
+            text += f"\n⁦{len(skipped)}⁩ שורות לא נקראו, למשל: " + "; ".join(skipped[:3])
+        text += "\nשום מחיר לא משתנה עד שמאשרים את המחירון."
+        hint = QLabel(text)
+        hint.setObjectName("Hint")
+        hint.setWordWrap(True)
+        self.layout().insertWidget(1, hint)
+
+        self.supplier.currentTextChanged.connect(self._update_ok)
+        self.source.textChanged.connect(self._update_ok)
+        self._update_ok()
+        self.supplier.setFocus()
+
+    def _update_ok(self, *_: Any) -> None:
+        self.ok_button.setEnabled(
+            bool(self.supplier.currentText().strip()) and bool(self.source.text().strip())
+        )
+
+    def values(self) -> dict[str, Any]:
+        return {
+            "supplier": self.supplier.currentText().strip(),
+            "source": self.source.text().strip(),
+            "valid_from": (
+                self.valid_from.date().toString("yyyy-MM-dd") if self.has_date.isChecked() else ""
+            ),
+            "currency": self.currency.currentData() or "ILS",
+            "recorded_by": self.recorded_by.text().strip(),
+        }
+
+
 def _system_combo(selected: str = "") -> QComboBox:
     """Every series in the directory, plus "none" for a source not tied to one."""
     from ..systems import DIRECTORY
@@ -858,6 +943,7 @@ __all__ = [
     "NewCustomerDialog",
     "NewJobDialog",
     "NewServiceCallDialog",
+    "PriceListDialog",
     "RecordEditionDialog",
     "WatchSourceDialog",
 ]

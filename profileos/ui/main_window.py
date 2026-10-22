@@ -670,6 +670,11 @@ class MainWindow(QMainWindow):
         """Check the watched supplier sources that are due, off the screen's thread."""
         if not self.watch_enabled or self._watching:
             return
+        # A price list accepted with a future date takes effect on that day,
+        # also in a program that was left open overnight.
+        from ..quoting.pricelists import load_price_lists
+
+        load_price_lists()
         from ..catalogue.watch import check_all
         from .background import run_in_background
 

@@ -293,17 +293,18 @@ def price_bom(
         if line.supplier_id:
             supplier = get_supplier(line.supplier_id)
             if supplier is not None:
-                supplier_price = supplier.net_price(line.code, line.quantity)
+                supplier_price = supplier.net_price(line.code, line.quantity, line.unit.value)
                 supplier_id = supplier.id
 
         if supplier_price is None:
-            found = find_price(line.code, line.quantity, category=line.category.value)
+            found = find_price(line.code, line.quantity, category=line.category.value,
+                               unit=line.unit.value)
             if found is not None:
                 supplier_obj, supplier_price = found
                 supplier_id = supplier_obj.id
 
         if supplier_price is None and default_supplier is not None:
-            supplier_price = default_supplier.net_price(line.code, line.quantity)
+            supplier_price = default_supplier.net_price(line.code, line.quantity, line.unit.value)
             if supplier_price is not None:
                 supplier_id = default_supplier.id
 

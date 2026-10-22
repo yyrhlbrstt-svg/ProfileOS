@@ -103,3 +103,13 @@ def _forget_process_wide_notes():
     yield
     storage.RECOVERED.clear()
     backup._STATUS.update(error="", last="", mirror_error="")
+
+
+@pytest.fixture(autouse=True)
+def _no_price_lists_left_behind():
+    """A supplier price list taken in by one test is put in force process-wide;
+    the next test must price from its own figures, not that one's."""
+    yield
+    from profileos.core.registry import SUPPLIERS
+
+    SUPPLIERS.remove_by_source("shop")

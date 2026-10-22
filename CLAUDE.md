@@ -62,6 +62,15 @@ Do not `pkill -f pytest` — it kills the shell that runs it.
 - `profileos/ui/` — `main_window.py`, `pages.py` (every page), `dialogs.py`,
   `theme.py`, `widgets.py`, `session.py`
 - `profileos/sharing.py` — WhatsApp links and messages
+- `profileos/catalogue/editions.py` — supplier catalogue editions per series:
+  what changed (printed figures exactly, measured within drawing tolerance),
+  open jobs on the series, cutting figures read from an older edition
+- `profileos/catalogue/watch.py` — supplier folders and download pages watched
+  for new catalogue files (a finding is a note, never data)
+- `profileos/quoting/pricelists.py` — supplier price lists by edition (Excel or
+  CSV), compared, put in force on acceptance; open quotations and jobs to order
+  costed against the change. Prices keep their unit; per-kg aluminium uses the
+  catalogue's weight per metre or stays unpriced
 - `profileos/ui/viewer3d.py` + `ui/qml/Viewer3D.qml` — the live 3D engine (Qt
   Quick 3D): PBR finishes, shadows, orbit camera, leaves that open on their
   hinges; geometry comes from `profileos/viz3d/scene.py`

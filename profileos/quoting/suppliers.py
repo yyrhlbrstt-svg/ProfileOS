@@ -111,11 +111,22 @@ class Supplier(BaseModel):
     def entry(self, code: str) -> PriceEntry | None:
         return next((e for e in self.entries if e.code == code), None)
 
-    def net_price(self, code: str, quantity: float) -> float | None:
-        """Total price after discount and surcharge, or ``None`` if not listed."""
+    def net_price(self, code: str, quantity: float, unit: str | None = None) -> float | None:
+        """Total price after discount and surcharge, or ``None`` if not listed.
+
+        When the list says what its unit is (a shop's own price list does)
+        and the quantity is counted in another — a price per kilogram against
+        metres of profile — there is no price: the line stays unpriced rather
+        than being multiplied into a wrong one.
+        """
         entry = self.entry(code)
         if entry is None:
             return None
+        if unit and entry.metadata.get("unit_known"):
+            from .pricelists import unit_key
+
+            if unit_key(entry.unit) != unit_key(unit):
+                return None
         gross = entry.total_for(quantity)
         after_discount = gross * (1.0 - self.discount_pct / 100.0)
         return after_discount * (1.0 + self.surcharge_pct / 100.0)
@@ -139,7 +150,7 @@ def register_supplier(supplier: Supplier) -> None:
 
 
 def find_price(
-    code: str, quantity: float, *, category: str | None = None
+    code: str, quantity: float, *, category: str | None = None, unit: str | None = None
 ) -> tuple[Supplier, float] | None:
     """Cheapest current supplier for ``code``, or ``None`` if nobody lists it."""
     best: tuple[Supplier, float] | None = None
@@ -148,7 +159,7 @@ def find_price(
             continue
         if category is not None and not supplier.serves(category):
             continue
-        price = supplier.net_price(code, quantity)
+        price = supplier.net_price(code, quantity, unit)
         if price is None:
             continue
         if best is None or price < best[1]:

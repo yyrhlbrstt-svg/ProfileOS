@@ -675,9 +675,66 @@ def _catalogue(context: dict[str, Any], today: date) -> list[Insight]:
     return found
 
 
+def _price_lists(context: dict[str, Any], today: date) -> list[Insight]:
+    """New supplier prices: waiting to be checked, eating a quotation's margin,
+    or a reason to order before they take effect."""
+    from .quoting.pricelists import impact
+
+    book = context.get("price_lists")
+    if book is None:
+        return []
+    jobs = context.get("jobs") or []
+    found: list[Insight] = []
+    for edition in book.pending():
+        diff = book.diff(edition)
+        found.append(Insight(
+            "warning" if diff.up else "info",
+            f"מחירון חדש מ{edition.supplier} ממתין לבדיקה",
+            diff.summary() + (f" · בתוקף מ־⁦{edition.valid_from}⁩" if edition.valid_from else ""),
+            "Catalogue", f"price-list:{edition.edition_id}",
+        ))
+    for supplier_id in book.suppliers():
+        # The latest accepted list, whether in force yet or about to be.
+        accepted = book.accepted(supplier_id)
+        if not accepted:
+            continue
+        latest = accepted[-1]
+        try:
+            effect = impact(book, latest, jobs)
+        except Exception as exc:  # noqa: BLE001 - one supplier, not the scan
+            _log.warning("Price impact for %s failed: %s", supplier_id, exc)
+            continue
+        dearer = [c for c in effect.quoted if c.delta > 0]
+        if dearer:
+            total = sum(c.delta for c in dearer)
+            found.append(Insight(
+                "warning",
+                _count(len(dearer), "הצעה פתוחה תומחרה לפני ההתייקרות",
+                       "הצעות פתוחות תומחרו לפני ההתייקרות")
+                + f" של {latest.supplier}",
+                f"החומר בהן עולה עכשיו ⁦{total:,.0f} ₪⁩ יותר — כדאי לעדכן לפני שהלקוח "
+                "חותם: " + _names(dearer, lambda c: c.describe()),
+                "Projects", f"price-quoted:{latest.edition_id}:"
+                + ",".join(sorted(c.job.job_id for c in dearer)),
+            ))
+        dearer_orders = [c for c in effect.to_order if c.delta > 0]
+        if dearer_orders and effect.buy_before:
+            saving = sum(c.delta for c in dearer_orders)
+            when = date.fromisoformat(effect.buy_before[:10])
+            found.append(Insight(
+                "warning",
+                f"להזמין מ{latest.supplier} לפני ⁦{when:%d/%m/%Y}⁩",
+                f"המחירון החדש נכנס לתוקף בעוד ⁦{(when - today).days}⁩ ימים. הזמנת החומר "
+                f"לפרויקטים שנסגרו עכשיו חוסכת כ־⁦{saving:,.0f} ₪⁩: "
+                + _names(dearer_orders, lambda c: f"⁦{c.job.job_id}⁩"),
+                "Projects", f"price-order:{latest.edition_id}",
+            ))
+    return found
+
+
 RULES: tuple[Callable[[dict[str, Any], date], list[Insight]], ...] = (
     _data_safety, _jobs, _accounts, _field, _customers, _money, _service, _tasks,
-    _paperwork, _draft, _catalogue,
+    _paperwork, _draft, _catalogue, _price_lists,
 )
 
 
@@ -810,7 +867,13 @@ def gather_context(**given: Any) -> dict[str, Any]:
 
         return default_stocktakes()
 
+    def price_lists() -> Any:
+        from .quoting.pricelists import default_price_lists
+
+        return default_price_lists()
+
     load("confirmations", confirmations)
+    load("price_lists", price_lists)
     load("stocktakes", stocktakes)
     load("customers", customers)
     load("tasks", tasks)
@@ -878,6 +941,7 @@ _BOOK_NAMES = {
     "agenda": "יומן הביקורים", "editions": "מהדורות הקטלוג",
     "findings": "ממצאי מעקב הספקים", "watch": "מקורות הספקים במעקב",
     "confirmations": "נתוני היצרן שאושרו לחיתוך", "stocktakes": "ספירות המלאי",
+    "price_lists": "מחירוני הספקים",
 }
 
 

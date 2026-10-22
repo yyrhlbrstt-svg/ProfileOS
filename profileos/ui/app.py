@@ -40,6 +40,10 @@ def run(argv: Sequence[str] | None = None, *, theme: str | None = None) -> int:
     # whether a cut sheet may be worked to. Restoring them at start-up is the
     # difference between a demonstration and a tool.
     load_confirmations()
+    # The suppliers' price lists in force, which quotations are priced from.
+    from ..quoting.pricelists import load_price_lists
+
+    load_price_lists()
 
     application = QApplication(list(argv) if argv is not None else sys.argv)
     application.setApplicationName("ProfileOS")

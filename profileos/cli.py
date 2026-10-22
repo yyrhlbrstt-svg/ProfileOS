@@ -172,6 +172,9 @@ def main_callback(
 
     load_decisions()
     load_confirmations()
+    from .quoting.pricelists import load_price_lists
+
+    load_price_lists()
 
 
 @app.command()

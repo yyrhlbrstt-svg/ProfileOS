@@ -163,14 +163,123 @@ class Table:
         )
 
 
+#: Refuse a worksheet that unpacks to more than any price list could be.
+MAX_SHEET_BYTES = 64 * 1024 * 1024
+
+_NS = {
+    "m": "http://schemas.openxmlformats.org/spreadsheetml/2006/main",
+    "r": "http://schemas.openxmlformats.org/officeDocument/2006/relationships",
+    "rel": "http://schemas.openxmlformats.org/package/2006/relationships",
+}
+
+
+def _column_index(reference: str) -> int:
+    """'C7' → 2."""
+    index = 0
+    for char in reference:
+        if not char.isalpha():
+            break
+        index = index * 26 + (ord(char.upper()) - ord("A") + 1)
+    return index - 1
+
+
+def _number_text(raw: str) -> str:
+    """A stored number as somebody would type it: 12.5, not 12.499999999999998."""
+    try:
+        value = float(raw)
+    except ValueError:
+        return raw
+    if value.is_integer() and abs(value) < 1e15:
+        return str(int(value))
+    return format(value, ".10g")
+
+
+def xlsx_rows(path: Path) -> list[list[str]]:
+    """The first worksheet of an Excel file, as rows of text.
+
+    Suppliers send price lists as Excel, and a shop should not have to open
+    each one and save it as CSV first. An .xlsx file is a zip of XML; the
+    first sheet, its shared strings and its numbers are all that is read —
+    no formulas are run, no macros, nothing but the values Excel saved.
+    """
+    import zipfile
+    from xml.etree import ElementTree
+
+    try:
+        with zipfile.ZipFile(path) as book:
+            names = set(book.namelist())
+
+            def read(name: str) -> bytes:
+                info = book.getinfo(name)
+                if info.file_size > MAX_SHEET_BYTES:
+                    raise ProfileOSError(f"{Path(path).name}: הגיליון גדול מדי לקריאה")
+                return book.read(name)
+
+            shared: list[str] = []
+            if "xl/sharedStrings.xml" in names:
+                root = ElementTree.fromstring(read("xl/sharedStrings.xml"))
+                for item in root.findall("m:si", _NS):
+                    shared.append("".join(t.text or "" for t in item.iter(f"{{{_NS['m']}}}t")))
+
+            sheet = "xl/worksheets/sheet1.xml"
+            if "xl/workbook.xml" in names and "xl/_rels/workbook.xml.rels" in names:
+                workbook = ElementTree.fromstring(read("xl/workbook.xml"))
+                first = workbook.find("m:sheets/m:sheet", _NS)
+                rels = ElementTree.fromstring(read("xl/_rels/workbook.xml.rels"))
+                if first is not None:
+                    wanted = first.get(f"{{{_NS['r']}}}id")
+                    for rel in rels.findall("rel:Relationship", _NS):
+                        if rel.get("Id") == wanted:
+                            target = rel.get("Target", "").lstrip("/")
+                            sheet = target if target.startswith("xl/") else f"xl/{target}"
+            if sheet not in names:
+                raise ProfileOSError(f"{Path(path).name}: לא נמצא גיליון בקובץ")
+
+            rows: list[list[str]] = []
+            for row in ElementTree.fromstring(read(sheet)).iter(f"{{{_NS['m']}}}row"):
+                cells: dict[int, str] = {}
+                for position, cell in enumerate(row.findall("m:c", _NS)):
+                    reference = cell.get("r", "")
+                    column = _column_index(reference) if reference else position
+                    kind = cell.get("t", "n")
+                    value = cell.find("m:v", _NS)
+                    raw = value.text if value is not None and value.text else ""
+                    if kind == "s" and raw:
+                        text = shared[int(raw)] if int(raw) < len(shared) else ""
+                    elif kind == "inlineStr":
+                        text = "".join(t.text or "" for t in cell.iter(f"{{{_NS['m']}}}t"))
+                    elif kind == "b":
+                        text = "TRUE" if raw == "1" else "FALSE"
+                    elif kind in ("str", "e"):
+                        text = raw
+                    else:
+                        text = _number_text(raw) if raw else ""
+                    cells[column] = text.strip()
+                if cells and any(cells.values()):
+                    rows.append([cells.get(i, "") for i in range(max(cells) + 1)])
+            return rows
+    except zipfile.BadZipFile as exc:
+        raise ProfileOSError(f"{Path(path).name} אינו קובץ Excel תקין") from exc
+    except ElementTree.ParseError as exc:
+        raise ProfileOSError(f"{Path(path).name}: הקובץ פגום ולא נקרא") from exc
+
+
 def read_table(path: Path, expected: Iterable[str] = ()) -> Table:
-    """Read a delimited export, finding the header row wherever it is."""
+    """Read a delimited export or an Excel sheet, finding the header row wherever it is."""
     source = Path(path)
     if not source.is_file():
         raise ProfileOSError(f"אין קובץ בשם {source}")
 
-    text, encoding = sniff_encoding(source)
-    rows = _split_rows(text)
+    suffix = source.suffix.lower()
+    if suffix == ".xls":
+        raise ProfileOSError(
+            f"{source.name} שמור בפורמט Excel ישן. פתחו אותו ושמרו בשם כ־xlsx או CSV."
+        )
+    if suffix in (".xlsx", ".xlsm"):
+        rows, encoding = xlsx_rows(source), "Excel"
+    else:
+        text, encoding = sniff_encoding(source)
+        rows = _split_rows(text)
     if not rows:
         raise ProfileOSError(f"{source.name} אינו מכיל שורות")
 
@@ -185,6 +294,16 @@ def read_table(path: Path, expected: Iterable[str] = ()) -> Table:
                 break
 
     headers = [cell.strip() for cell in rows[header_index]]
+    # Unnamed or repeated header cells would lose a column's values.
+    seen: dict[str, int] = {}
+    for index, header in enumerate(headers):
+        name = header or f"עמודה {index + 1}"
+        if name in seen:
+            seen[name] += 1
+            name = f"{name} ({seen[name]})"
+        else:
+            seen[name] = 1
+        headers[index] = name
     table = Table(
         headers=headers,
         encoding=encoding,
@@ -259,5 +378,6 @@ __all__ = [
     "normalise",
     "read_table",
     "sniff_encoding",
+    "xlsx_rows",
     "to_number",
 ]
