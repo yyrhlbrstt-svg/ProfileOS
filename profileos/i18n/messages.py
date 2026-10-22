@@ -370,12 +370,12 @@ MESSAGES: dict[str, dict[str, str]] = {
         "es": "Vincular el dispositivo",
     },
     "mobile.pair_help": {
-        "en": "Ask the office computer for a pairing code. It lasts five minutes and works once.",
-        "he": "בקש מהמחשב במשרד קוד חיבור. הקוד תקף חמש דקות ולשימוש חד-פעמי.",
-        "ar": "اطلب رمز اقتران من حاسوب المكتب. يبقى صالحاً خمس دقائق ويُستخدم مرة واحدة.",
-        "ru": "Запросите код на офисном компьютере. Он действует пять минут и работает один раз.",
-        "it": "Chiedi un codice al computer dell'ufficio. Dura cinque minuti e vale una volta sola.",
-        "es": "Pida un código en el ordenador de la oficina. Dura cinco minutos y sirve una vez.",
+        "en": "On the office computer: System ← Phones ← pairing code. It lasts five minutes and works once.",
+        "he": "במחשב במשרד: מערכת ← טלפונים ← קוד חיבור. הקוד תקף חמש דקות ולשימוש חד־פעמי.",
+        "ar": "على حاسوب المكتب: النظام ← الهواتف ← رمز الاقتران. صالح خمس دقائق ولمرة واحدة.",
+        "ru": "На офисном компьютере: Система ← Телефоны ← код. Действует пять минут, один раз.",
+        "it": "Sul computer dell'ufficio: Sistema ← Telefoni ← codice. Vale cinque minuti, una volta.",
+        "es": "En el ordenador de la oficina: Sistema ← Teléfonos ← código. Vale cinco minutos, una vez.",
     },
     "mobile.pair_code": {
         "en": "Pairing code", "he": "קוד חיבור", "ar": "رمز الاقتران",
@@ -446,6 +446,98 @@ MESSAGES: dict[str, dict[str, str]] = {
         "ru": "Три ширины и три высоты — проём не прямоугольник.",
         "it": "Tre larghezze e tre altezze — un vano non è un rettangolo.",
         "es": "Tres anchos y tres altos — un hueco no es un rectángulo.",
+    },
+    "mobile.tab_site": {
+        "en": "On site", "he": "באתר", "ar": "في الموقع",
+        "ru": "На объекте", "it": "In cantiere", "es": "En obra",
+    },
+    "mobile.photos": {
+        "en": "Photos into the job", "he": "צילומים לתיק הפרויקט", "ar": "صور إلى ملف المشروع",
+        "ru": "Фото в дело объекта", "it": "Foto nella commessa", "es": "Fotos a la obra",
+    },
+    "mobile.photos_help": {
+        "en": "Each photo goes straight into the job's files in the office.", "he": "כל צילום נכנס ישר לתיק הפרויקט במשרד.", "ar": "كل صورة تدخل مباشرة إلى ملف المشروع في المكتب.",
+        "ru": "Каждое фото сразу попадает в дело объекта в офисе.", "it": "Ogni foto entra subito nei file della commessa in ufficio.", "es": "Cada foto entra directamente en los archivos de la obra en la oficina.",
+    },
+    "mobile.photo_kind": {
+        "en": "What it shows", "he": "מה בצילום", "ar": "ماذا تُظهر",
+        "ru": "Что на фото", "it": "Cosa mostra", "es": "Qué muestra",
+    },
+    "mobile.kind_progress": {
+        "en": "Work in progress", "he": "התקדמות העבודה", "ar": "تقدّم العمل",
+        "ru": "Ход работ", "it": "Avanzamento lavori", "es": "Avance de obra",
+    },
+    "mobile.kind_opening": {
+        "en": "The opening", "he": "הפתח", "ar": "الفتحة",
+        "ru": "Проём", "it": "Il vano", "es": "El hueco",
+    },
+    "mobile.kind_before": {
+        "en": "Before the work", "he": "לפני העבודה", "ar": "قبل العمل",
+        "ru": "До работ", "it": "Prima dei lavori", "es": "Antes de la obra",
+    },
+    "mobile.kind_after": {
+        "en": "After the work", "he": "אחרי העבודה", "ar": "بعد العمل",
+        "ru": "После работ", "it": "Dopo i lavori", "es": "Después de la obra",
+    },
+    "mobile.kind_defect": {
+        "en": "A defect", "he": "ליקוי", "ar": "عيب",
+        "ru": "Дефект", "it": "Un difetto", "es": "Un defecto",
+    },
+    "mobile.caption": {
+        "en": "A word about it (optional)", "he": "מילה על הצילום (לא חובה)", "ar": "كلمة عن الصورة (اختياري)",
+        "ru": "Пара слов (необязательно)", "it": "Una parola (facoltativo)", "es": "Una palabra (opcional)",
+    },
+    "mobile.take_photo": {
+        "en": "Take a photo", "he": "צילום", "ar": "التقاط صورة",
+        "ru": "Сфотографировать", "it": "Scatta una foto", "es": "Hacer una foto",
+    },
+    "mobile.photo_sending": {
+        "en": "Sending…", "he": "שולח…", "ar": "جارٍ الإرسال…",
+        "ru": "Отправка…", "it": "Invio…", "es": "Enviando…",
+    },
+    "mobile.photo_saved": {
+        "en": "Saved in the job", "he": "נשמר בתיק הפרויקט", "ar": "حُفظت في ملف المشروع",
+        "ru": "Сохранено в деле", "it": "Salvata nella commessa", "es": "Guardada en la obra",
+    },
+    "mobile.photo_offline": {
+        "en": "No signal — the photo is still in the phone's gallery; send it again when there is signal.", "he": "אין קליטה — הצילום נשאר בגלריה של הטלפון. שלחו שוב כשיש קליטה.", "ar": "لا توجد إشارة — الصورة ما زالت في معرض الهاتف؛ أرسلها مجدداً عند توفر الإشارة.",
+        "ru": "Нет связи — фото осталось в галерее телефона; отправьте снова, когда появится связь.", "it": "Nessun segnale — la foto resta nella galleria del telefono; inviala di nuovo quando c'è segnale.", "es": "Sin señal — la foto sigue en la galería del teléfono; envíala de nuevo cuando haya señal.",
+    },
+    "mobile.handover": {
+        "en": "Handover", "he": "מסירה", "ar": "التسليم",
+        "ru": "Сдача работ", "it": "Consegna", "es": "Entrega",
+    },
+    "mobile.handover_help": {
+        "en": "The customer signs that the work was handed over. Anything left to fix is written now, one line each.", "he": "הלקוח חותם שהעבודה נמסרה. מה שנשאר לתקן נכתב עכשיו, שורה לכל דבר.", "ar": "يوقّع العميل على استلام العمل. ما بقي للإصلاح يُكتب الآن، سطر لكل أمر.",
+        "ru": "Клиент подписывает приёмку. Что осталось исправить — записывается сейчас, по строке на пункт.", "it": "Il cliente firma la consegna. Ciò che resta da sistemare si scrive ora, una riga per voce.", "es": "El cliente firma la entrega. Lo que quede por arreglar se escribe ahora, una línea por cosa.",
+    },
+    "mobile.signed_by": {
+        "en": "Received by", "he": "שם המקבל", "ar": "اسم المستلم",
+        "ru": "Кто принял", "it": "Ricevuto da", "es": "Recibido por",
+    },
+    "mobile.snags_now": {
+        "en": "Left to fix (one per line)", "he": "נשאר לתקן (שורה לכל דבר)", "ar": "بقي للإصلاح (سطر لكل أمر)",
+        "ru": "Осталось исправить (по строке)", "it": "Da sistemare (una per riga)", "es": "Por arreglar (una por línea)",
+    },
+    "mobile.sign_here": {
+        "en": "Sign here", "he": "חתימה כאן", "ar": "وقّع هنا",
+        "ru": "Подпись здесь", "it": "Firma qui", "es": "Firme aquí",
+    },
+    "mobile.clear_signature": {
+        "en": "Clear", "he": "ניקוי", "ar": "مسح",
+        "ru": "Стереть", "it": "Cancella", "es": "Borrar",
+    },
+    "mobile.sign_and_hand_over": {
+        "en": "Signed — hand over", "he": "נחתם — מסירה", "ar": "تم التوقيع — تسليم",
+        "ru": "Подписано — сдать", "it": "Firmato — consegna", "es": "Firmado — entregar",
+    },
+    "mobile.need_signature": {
+        "en": "The customer has not signed yet", "he": "הלקוח עוד לא חתם", "ar": "لم يوقّع العميل بعد",
+        "ru": "Клиент ещё не подписал", "it": "Il cliente non ha ancora firmato", "es": "El cliente aún no ha firmado",
+    },
+    "mobile.handed_over": {
+        "en": "Handed over and signed", "he": "נמסר ונחתם", "ar": "تم التسليم والتوقيع",
+        "ru": "Сдано и подписано", "it": "Consegnato e firmato", "es": "Entregado y firmado",
     },
     "mobile.project": {
         "en": "Job", "he": "פרויקט", "ar": "المشروع",

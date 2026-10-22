@@ -79,6 +79,22 @@ class MeasurementRequest(BaseModel):
     measured_at: str = ""
 
 
+class HandoverRequest(BaseModel):
+    job_id: str
+    #: Who signed — the customer, or whoever received the work for them.
+    signed_by: str
+    #: The signature, drawn on the phone: ``data:image/png;base64,…``.
+    signature: str
+    #: What is left to put right, one line each — the punch list.
+    snags: list[str] = Field(default_factory=list)
+    note: str = ""
+
+
+#: What a photo from site can be of, in the job's own words.
+PHOTO_KINDS = ("opening_photo", "progress_photo", "defect_photo", "before_photo",
+               "after_photo", "handover_photo", "survey_photo")
+
+
 class CheckRequest(BaseModel):
     width: float
     height: float
@@ -87,10 +103,11 @@ class CheckRequest(BaseModel):
 
 
 try:  # FastAPI is an optional extra; the desktop application does not need it.
-    from fastapi import APIRouter, Header, HTTPException, Request
+    from fastapi import APIRouter, File, Form, Header, HTTPException, Request, UploadFile
     from fastapi.responses import HTMLResponse, PlainTextResponse
 except ImportError:  # pragma: no cover - exercised only without the extra
     APIRouter = Header = HTTPException = Request = None  # type: ignore[assignment]
+    File = Form = UploadFile = None  # type: ignore[assignment]
     HTMLResponse = PlainTextResponse = None  # type: ignore[assignment]
 
 
@@ -442,6 +459,112 @@ def build_router(state: MobileState | None = None) -> Any:
             name = " · ".join(part for part in (job.customer_name, job.name) if part)
             listed.append({"id": job.job_id, "name": name or job.job_id, "openings": openings})
         return {"projects": listed[:80]}
+
+    # -- on site: photos and the handover ---------------------------------- #
+    def _open_job(job_id: str) -> Any:
+        from ..projects import JobStatus, default_store
+
+        try:
+            job = default_store().load(job_id)
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=404, detail="הפרויקט לא נמצא במשרד") from exc
+        if job.status is JobStatus.LOST:
+            raise HTTPException(status_code=409, detail="הפרויקט סגור")
+        return job
+
+    @router.post("/api/photos")
+    async def add_photo(
+        job_id: str = Form(...),
+        kind: str = Form("progress_photo"),
+        element: str = Form(""),
+        caption: str = Form(""),
+        photo: UploadFile = File(...),
+        x_device_id: str | None = Header(default=None),
+        x_device_token: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        """A photograph taken on site, straight into the job's files."""
+        import tempfile
+        from pathlib import Path as _Path
+
+        from ..projects.attachments import MAX_BYTES, AttachmentKind, attachments_for
+
+        device = device_for(x_device_id, x_device_token, "measure")
+        if kind not in PHOTO_KINDS:
+            raise HTTPException(status_code=422, detail="סוג צילום לא מוכר")
+        job = _open_job(job_id)
+        data = await photo.read(MAX_BYTES + 1)
+        if not data:
+            raise HTTPException(status_code=422, detail="הצילום ריק — צלמו שוב")
+        if len(data) > MAX_BYTES:
+            raise HTTPException(status_code=413, detail="הצילום גדול מדי")
+        suffix = _Path(photo.filename or "photo.jpg").suffix.lower() or ".jpg"
+        with tempfile.TemporaryDirectory() as scratch:
+            source = _Path(scratch) / f"site{suffix}"
+            source.write_bytes(data)
+            try:
+                saved = attachments_for(job.job_id).add(
+                    source, kind=AttachmentKind(kind), caption=caption.strip()[:200],
+                    added_by=device.name, element=element.strip().upper()[:20],
+                )
+            except Exception as exc:  # noqa: BLE001 - said to the phone in words
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return {"name": saved.name, "kind": saved.kind.hebrew, "job": job.name}
+
+    @router.post("/api/handover")
+    def handover(
+        request: HandoverRequest,
+        x_device_id: str | None = Header(default=None),
+        x_device_token: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        """The customer signs on the phone that the work was handed over —
+        with what is still to put right written down at that moment."""
+        import base64
+        import tempfile
+        from pathlib import Path as _Path
+
+        from ..projects import JobStatus, Snag, default_store
+        from ..projects.attachments import AttachmentKind, attachments_for
+
+        device = device_for(x_device_id, x_device_token, "measure")
+        signed_by = request.signed_by.strip()
+        if not signed_by:
+            raise HTTPException(status_code=422, detail="מי חותם? כתבו את שם המקבל")
+        prefix = "data:image/png;base64,"
+        if not request.signature.startswith(prefix):
+            raise HTTPException(status_code=422, detail="אין חתימה — בקשו מהלקוח לחתום")
+        try:
+            image = base64.b64decode(request.signature[len(prefix):], validate=True)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail="החתימה לא נקראה — חתמו שוב") from exc
+        if len(image) < 200 or len(image) > 2_000_000:
+            raise HTTPException(status_code=422, detail="החתימה לא נקראה — חתמו שוב")
+        job = _open_job(request.job_id)
+        snags = [line.strip() for line in request.snags if line.strip()][:40]
+        with tempfile.TemporaryDirectory() as scratch:
+            source = _Path(scratch) / "signature.png"
+            source.write_bytes(image)
+            caption = f"מסירה — נחתם ע״י {signed_by}"
+            if snags:
+                caption += f" · ⁦{len(snags)}⁩ תיקונים פתוחים"
+            attachments_for(job.job_id).add(
+                source, kind=AttachmentKind.SIGNED_DELIVERY, caption=caption,
+                added_by=device.name,
+            )
+        store = default_store()
+        fresh = store.load(job.job_id)
+        for line in snags:
+            fresh.snags.append(Snag(description=line[:300]))
+        moved = False
+        if fresh.status is JobStatus.IN_PRODUCTION:
+            fresh.advance(JobStatus.INSTALLED, f"נמסר — נחתם בטלפון ע״י {signed_by}")
+            moved = True
+        store.save(fresh)
+        return {
+            "job": fresh.name,
+            "status": fresh.status.hebrew,
+            "installed": moved,
+            "snags": len(snags),
+        }
 
     @router.get("/api/measurements")
     def list_measurements(

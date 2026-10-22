@@ -162,6 +162,7 @@ class AttachmentStore:
 
     # -- persistence --------------------------------------------------------- #
     def load(self) -> "AttachmentStore":
+        self._items, self._unparsed = [], []
         if not self.manifest_path.is_file():
             return self
         # A damaged index is recovered from its previous version or refused;
@@ -278,6 +279,10 @@ class AttachmentStore:
             counter += 1
         shutil.copy2(source, target)
 
+        # The manifest as it is now: a photo the phone sent while this store
+        # was open in the office must not be dropped by this save.
+        from ..core.storage import path_lock
+
         attachment = Attachment(
             name=target.name,
             kind=kind,
@@ -287,8 +292,10 @@ class AttachmentStore:
             checksum=_checksum(target),
             element=element,
         )
-        self._items.append(attachment)
-        self.save()
+        with path_lock(self.manifest_path):
+            self.load()
+            self._items.append(attachment)
+            self.save()
         _log.info("Attached %s to %s", target.name, self.folder)
         return attachment
 
@@ -299,6 +306,13 @@ class AttachmentStore:
         delivery note deleted by accident is a signed delivery note that never
         existed as far as any later argument is concerned.
         """
+        from ..core.storage import path_lock
+
+        with path_lock(self.manifest_path):
+            self.load()
+            self._remove(name, force=force)
+
+    def _remove(self, name: str, *, force: bool) -> None:
         found = next((item for item in self._items if item.name == name), None)
         if found is None:
             raise ProfileOSError(f"אין קובץ בשם {name} בתיק")

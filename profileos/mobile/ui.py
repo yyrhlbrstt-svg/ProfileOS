@@ -103,6 +103,8 @@ nav svg{width:22px;height:22px;stroke:currentColor;fill:none;stroke-width:1.7}
 .big{font-size:34px;font-weight:700;letter-spacing:.16em;text-align:center}
 .empty{color:var(--muted);font-size:14px;text-align:center;padding:26px 8px}
 svg.dwg{width:100%;height:auto;background:#fff;border-radius:10px}
+canvas.sign{width:100%;height:180px;background:#fff;border-radius:10px;touch-action:none;display:block}
+textarea{min-height:96px;resize:vertical}
 </style>
 </head>
 <body>
@@ -113,8 +115,7 @@ svg.dwg{width:100%;height:auto;background:#fff;border-radius:10px}
   <section id="s-pair" class="on">
     <div class="card">
       <h2 data-t="mobile.pair_title"></h2>
-      <p class="note"><span data-t="mobile.pair_help"></span>
-        <span class="num">profileos mobile pair</span></p>
+      <p class="note" data-t="mobile.pair_help"></p>
       <label for="code" data-t="mobile.pair_code"></label>
       <input id="code" class="big num" inputmode="numeric" maxlength="6" autocomplete="one-time-code" placeholder="000000">
       <label for="devname" data-t="mobile.device_name"></label>
@@ -184,6 +185,45 @@ svg.dwg{width:100%;height:auto;background:#fff;border-radius:10px}
     </div>
   </section>
 
+  <!-- on site: photos and the handover -->
+  <section id="s-site">
+    <div class="card">
+      <h2 data-t="mobile.photos"></h2>
+      <p class="note" data-t="mobile.photos_help"></p>
+      <label for="sjob" data-t="mobile.project"></label>
+      <select id="sjob" onchange="chooseSiteJob()"></select>
+      <label for="skind" data-t="mobile.photo_kind"></label>
+      <select id="skind">
+        <option value="progress_photo" data-t="mobile.kind_progress"></option>
+        <option value="opening_photo" data-t="mobile.kind_opening"></option>
+        <option value="before_photo" data-t="mobile.kind_before"></option>
+        <option value="after_photo" data-t="mobile.kind_after"></option>
+        <option value="defect_photo" data-t="mobile.kind_defect"></option>
+      </select>
+      <label for="sref" data-t="mobile.opening_ref"></label>
+      <input id="sref" autocapitalize="characters" placeholder="W-01" list="srefs">
+      <datalist id="srefs"></datalist>
+      <label for="scap" data-t="mobile.caption"></label>
+      <input id="scap">
+      <input id="sfile" type="file" accept="image/*" capture="environment" style="display:none" onchange="sendPhoto(this)">
+      <button onclick="document.getElementById('sfile').click()" data-t="mobile.take_photo"></button>
+      <div id="s-msg" class="msg"></div>
+    </div>
+    <div class="card">
+      <h2 data-t="mobile.handover"></h2>
+      <p class="note" data-t="mobile.handover_help"></p>
+      <label for="hby" data-t="mobile.signed_by"></label>
+      <input id="hby">
+      <label for="hsnags" data-t="mobile.snags_now"></label>
+      <textarea id="hsnags"></textarea>
+      <label data-t="mobile.sign_here"></label>
+      <canvas id="hsign" class="sign"></canvas>
+      <button class="ghost" onclick="clearSignature()" data-t="mobile.clear_signature"></button>
+      <button onclick="handOver()" data-t="mobile.sign_and_hand_over"></button>
+      <div id="h-msg" class="msg"></div>
+    </div>
+  </section>
+
   <!-- check -->
   <section id="s-check">
     <div class="card">
@@ -250,6 +290,8 @@ const TABS = [
    icon:'<path d="M4 7h16M4 12h16M4 17h10"/>'},
   {id:"measure",key:"mobile.tab_measure",  scope:"measure",
    icon:'<path d="M3 9h18v6H3z"/><path d="M7 9v3M11 9v4M15 9v3M19 9v4"/>'},
+  {id:"site",   key:"mobile.tab_site",     scope:"measure",
+   icon:'<path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/>'},
   {id:"check",  key:"mobile.tab_check",    scope:"measure",
    icon:'<path d="M4 12l5 5L20 6"/>'},
   {id:"draw",   key:"mobile.tab_drawings", scope:"drawings",
@@ -261,6 +303,7 @@ function show(id){
   document.querySelectorAll("nav button").forEach(b => b.classList.toggle("on", b.dataset.tab === id));
   if(id === "jobs") loadJobs();
   if(id === "measure"){ loadProjects(); loadMeasurements(); }
+  if(id === "site"){ loadProjects().then(fillSiteJobs); readySignature(); }
   if(id === "draw") loadDrawings();
 }
 
@@ -478,7 +521,7 @@ function dropRefused(id){
 let PROJECTS = [];
 async function loadProjects(){
   let data;
-  try{ data = await api("/api/projects"); }catch(err){ return; }
+  try{ data = await api("/api/projects"); }catch(err){ return PROJECTS; }
   PROJECTS = data.projects || [];
   const select = document.getElementById("mjob");
   let kept = "";
@@ -487,6 +530,7 @@ async function loadProjects(){
     `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join("");
   if(PROJECTS.some(p => p.id === kept)) select.value = kept;
   chooseJob();
+  return PROJECTS;
 }
 
 function chooseJob(){
@@ -495,6 +539,107 @@ function chooseJob(){
   const job = PROJECTS.find(p => p.id === id);
   document.getElementById("mrefs").innerHTML = (job ? job.openings : [])
     .map(ref => `<option value="${esc(ref)}"></option>`).join("");
+}
+
+// -- on site --------------------------------------------------------------
+function fillSiteJobs(){
+  const select = document.getElementById("sjob");
+  const kept = document.getElementById("mjob").value;
+  select.innerHTML = '<option value="">—</option>' + PROJECTS.map(p =>
+    `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join("");
+  if(PROJECTS.some(p => p.id === kept)) select.value = kept;
+  chooseSiteJob();
+}
+
+function chooseSiteJob(){
+  const job = PROJECTS.find(p => p.id === document.getElementById("sjob").value);
+  document.getElementById("srefs").innerHTML = (job ? job.openings : [])
+    .map(ref => `<option value="${esc(ref)}"></option>`).join("");
+}
+
+// A phone photo is 4-8 MB; the office needs to see the frame, not the pores
+// of the plaster. Scaled to 2000 px on the phone, it goes in seconds.
+function shrink(file){
+  return new Promise(resolve => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      const scale = Math.min(1, 2000 / Math.max(img.width, img.height));
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.round(img.width * scale); canvas.height = Math.round(img.height * scale);
+      canvas.getContext("2d").drawImage(img, 0, 0, canvas.width, canvas.height);
+      URL.revokeObjectURL(url);
+      canvas.toBlob(blob => resolve(blob || file), "image/jpeg", 0.85);
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); resolve(file); };
+    img.src = url;
+  });
+}
+
+async function sendPhoto(input){
+  const file = input.files && input.files[0];
+  input.value = "";
+  if(!file) return;
+  const job = document.getElementById("sjob").value;
+  if(!job){ say("s-msg", t("mobile.need_project"), false); return; }
+  const box = document.getElementById("s-msg");
+  box.textContent = t("mobile.photo_sending"); box.className = "msg on wait";
+  const form = new FormData();
+  form.append("job_id", job);
+  form.append("kind", document.getElementById("skind").value);
+  form.append("element", document.getElementById("sref").value.trim());
+  form.append("caption", document.getElementById("scap").value.trim());
+  form.append("photo", await shrink(file), "site.jpg");
+  let response;
+  try{
+    response = await fetch(API + "/api/photos", {method:"POST", body:form,
+      headers:{"X-Device-Id":DEVICE, "X-Device-Token":TOKEN}});
+  }catch(err){ say("s-msg", t("mobile.photo_offline"), false); return; }
+  if(response.status === 401){ signOut(); return; }
+  const data = await response.json().catch(() => ({}));
+  if(!response.ok){ say("s-msg", data.detail || "שגיאה", false); return; }
+  document.getElementById("scap").value = "";
+  say("s-msg", t("mobile.photo_saved") + " · " + data.job, true);
+}
+
+let SIGNED = false;
+function readySignature(){
+  const canvas = document.getElementById("hsign");
+  if(canvas.dataset.ready) return;
+  canvas.dataset.ready = "1";
+  const ratio = window.devicePixelRatio || 1;
+  canvas.width = canvas.clientWidth * ratio; canvas.height = canvas.clientHeight * ratio;
+  const pen = canvas.getContext("2d");
+  pen.scale(ratio, ratio); pen.lineWidth = 2.4; pen.lineCap = "round"; pen.strokeStyle = "#111";
+  let drawing = false;
+  const at = e => { const r = canvas.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; };
+  canvas.addEventListener("pointerdown", e => { drawing = true; pen.beginPath(); pen.moveTo(...at(e)); canvas.setPointerCapture(e.pointerId); });
+  canvas.addEventListener("pointermove", e => { if(!drawing) return; pen.lineTo(...at(e)); pen.stroke(); SIGNED = true; });
+  ["pointerup","pointercancel","pointerleave"].forEach(name => canvas.addEventListener(name, () => drawing = false));
+}
+
+function clearSignature(){
+  const canvas = document.getElementById("hsign");
+  canvas.getContext("2d").clearRect(0, 0, canvas.width, canvas.height);
+  SIGNED = false;
+}
+
+async function handOver(){
+  const job = document.getElementById("sjob").value;
+  if(!job){ say("h-msg", t("mobile.need_project"), false); return; }
+  if(!SIGNED){ say("h-msg", t("mobile.need_signature"), false); return; }
+  const body = {
+    job_id: job,
+    signed_by: document.getElementById("hby").value.trim(),
+    signature: document.getElementById("hsign").toDataURL("image/png"),
+    snags: document.getElementById("hsnags").value.split(/\\r?\\n/),
+  };
+  try{
+    const data = await api("/api/handover", {method:"POST", body:JSON.stringify(body)});
+    clearSignature();
+    document.getElementById("hsnags").value = "";
+    say("h-msg", t("mobile.handed_over") + " · " + data.job + " · " + data.status, true);
+  }catch(err){ say("h-msg", err.message, false); }
 }
 
 function measurementForm(){
