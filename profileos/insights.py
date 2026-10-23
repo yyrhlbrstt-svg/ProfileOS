@@ -544,6 +544,50 @@ def _field(context: dict[str, Any], today: date) -> list[Insight]:
     )]
 
 
+def _install_ready(context: dict[str, Any], today: date) -> list[Insight]:
+    """Installations in the next two working days whose job is not ready."""
+    from .projects.agenda import VisitKind, day_word, next_working_day
+    from .projects.install_check import not_ready
+
+    agenda = context.get("agenda")
+    if agenda is None:
+        return []
+    first = next_working_day(today)
+    second = next_working_day(first)
+    jobs = {job.job_id: job for job in context.get("jobs") or []}
+    cheques = list(context.get("cheques") or [])
+    store = context.get("store")
+    found: list[Insight] = []
+    for visit in agenda:
+        if (visit.done or not visit.job_id or not (today < visit.on <= second)
+                or visit.kind not in (VisitKind.INSTALLATION, VisitKind.DELIVERY)):
+            continue
+        job = jobs.get(visit.job_id)
+        if job is None:
+            continue
+        order = None
+        if store is not None:
+            try:
+                from .mes.store import load_work_order
+
+                order = load_work_order(job.job_id, store)
+            except Exception:  # noqa: BLE001 - the other checks still say their part
+                order = None
+        missing = not_ready(job, cheques=cheques, work_order=order)
+        if not missing:
+            continue
+        when = day_word(visit.on, today)
+        found.append(Insight(
+            "danger" if visit.on <= first else "warning",
+            f"{visit.kind.hebrew} {when} אצל {job.customer_name or job.name} — עוד לא מוכן",
+            "; ".join(missing) + ". יום התקנה שהולך לאיבוד עולה שני מתקינים ומשאית — "
+            "להשלים היום, או לתאם יום אחר עם הלקוח.",
+            "Projects", f"ready:{visit.appointment_id}:" + str(len(missing)) + ":"
+            + ",".join(sorted(m[:12] for m in missing)),
+        ))
+    return found
+
+
 def _paperwork(context: dict[str, Any], today: date) -> list[Insight]:
     """The shop's own certificates, and supplier price lists out of date."""
     found: list[Insight] = []
@@ -1085,7 +1129,7 @@ def _remeasured(context: dict[str, Any], today: date) -> list[Insight]:
 
 RULES: tuple[Callable[[dict[str, Any], date], list[Insight]], ...] = (
     _data_safety, _jobs, _accounts, _field, _customers, _money, _service, _tasks,
-    _paperwork, _draft, _catalogue, _price_lists, _material, _remeasured,
+    _paperwork, _draft, _catalogue, _price_lists, _material, _remeasured, _install_ready,
 )
 
 
