@@ -82,3 +82,26 @@ def test_the_home_page_says_it_for_monday_not_for_next_week(shop):
     assert len(found) == 1 and found[0].severity == "danger"
     assert "לוי" in found[0].title and "מחר" in found[0].title
     assert "לא נרשמה הזמנת חומר" in found[0].detail
+
+
+def test_the_reminder_asks_only_what_this_jobs_openings_raise():
+    from profileos.elements.model import ElementSchedule, Opening
+    from profileos.projects.agenda import reminder_text
+
+    job = _job()
+    job.schedule = ElementSchedule(name="x", openings=[
+        Opening(name="W1", width=1200, height=1400, quantity=2,
+                metadata={"accessories": {"shutter": {"drive": "motor_remote"}}}),
+        Opening(name="D1", width=3000, height=2400),
+    ])
+    visit = Appointment(on=TODAY + timedelta(days=1), kind=VisitKind.INSTALLATION,
+                        job_id="J-1", customer_name="לוי")
+    text = reminder_text(visit, brand_name="דאדי בע״מ", today=TODAY, job=job)
+    assert "נקודת חשמל" in text and "⁦2⁩ התריסים" in text
+    assert "מנוף" in text                                     # 3 × 2.4 m: a large unit
+    survey = Appointment(on=TODAY + timedelta(days=1), kind=VisitKind.SURVEY, job_id="J-1")
+    assert "נקודת חשמל" not in reminder_text(survey, brand_name="x", today=TODAY, job=job)
+
+    job.schedule = ElementSchedule(name="x", openings=[Opening(name="W1", width=1000, height=1000)])
+    plain = reminder_text(visit, brand_name="x", today=TODAY, job=job)
+    assert "נקודת חשמל" not in plain and "מנוף" not in plain and "הטיח" in plain

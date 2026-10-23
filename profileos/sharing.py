@@ -170,11 +170,16 @@ def on_the_way_message(*, brand_name: str, customer_name: str = "", minutes: int
 
 
 def visit_reminder_message(*, brand_name: str, customer_name: str = "", when: str = "",
-                           what: str = "", phone: str = "", day: str = "מחר") -> str:
-    """The evening-before reminder: the visit, the time, and how to move it."""
+                           what: str = "", phone: str = "", day: str = "מחר",
+                           questions: list[str] | None = None) -> str:
+    """The evening-before reminder: the visit, the time, how to move it —
+    and, for an installation, what to have ready, so the day is not lost."""
     lines = [_greeting(customer_name), "", f"תזכורת: {day} {what or 'אנחנו מגיעים אליך'}"
-             + (f" ב־⁦{when}⁩" if when else "") + ".",
-             "אם הזמן לא מתאים, אפשר לענות להודעה הזאת ונתאם מחדש.", "", brand_name]
+             + (f" ב־⁦{when}⁩" if when else "") + "."]
+    if questions:
+        lines += ["", "כדי שההתקנה תעבור בלי עיכובים, נשמח לאישור:"]
+        lines += [f"• {question}" for question in questions]
+    lines += ["אם הזמן לא מתאים, אפשר לענות להודעה הזאת ונתאם מחדש.", "", brand_name]
     if phone:
         lines.append(phone)
     return "\n".join(lines)

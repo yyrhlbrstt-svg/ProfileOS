@@ -48,4 +48,31 @@ def not_ready(job: Any, *, cheques: Iterable[Any] = (), work_order: Any = None) 
     return missing
 
 
-__all__ = ["READY_STAGES", "not_ready"]
+#: An opening at least this large comes as a unit two people cannot carry up
+#: a stairwell [m²] — the customer is asked about access.
+LARGE_UNIT_M2 = 4.0
+
+
+def site_questions(job: Any) -> list[str]:
+    """What to ask the customer before the crew comes, from the openings
+    themselves: only questions this job raises."""
+    openings = list(getattr(getattr(job, "schedule", None), "openings", None) or [])
+    questions: list[str] = []
+    motorised = 0
+    for opening in openings:
+        accessories = (getattr(opening, "metadata", {}) or {}).get("accessories") or {}
+        shutter = accessories.get("shutter") if isinstance(accessories, dict) else None
+        if isinstance(shutter, dict) and str(shutter.get("drive", "")).startswith("motor"):
+            motorised += opening.quantity
+    if motorised:
+        questions.append(
+            f"יש נקודת חשמל מוכנה ליד כל אחד מ־⁦{motorised}⁩ התריסים החשמליים?"
+            if motorised > 1 else "יש נקודת חשמל מוכנה ליד התריס החשמלי?")
+    if any(opening.width * opening.height / 1e6 >= LARGE_UNIT_M2 for opening in openings):
+        questions.append("יש גישה להכנסת יחידות גדולות — מעלית, מרפסת או מקום למנוף?")
+    if openings:
+        questions.append("הטיח והריצוף סביב הפתחים גמורים, והחדרים פנויים ליד החלונות?")
+    return questions
+
+
+__all__ = ["LARGE_UNIT_M2", "READY_STAGES", "not_ready", "site_questions"]

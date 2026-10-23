@@ -224,13 +224,20 @@ def day_word(day: date, today: date | None = None) -> str:
 
 
 def reminder_text(appointment: Appointment, *, brand_name: str, phone: str = "",
-                  today: date | None = None) -> str:
+                  today: date | None = None, job: Any = None) -> str:
+    """The reminder; for an installation with its job, the site questions
+    the job's own openings raise."""
     from ..sharing import visit_reminder_message
 
+    questions: list[str] = []
+    if job is not None and appointment.kind is VisitKind.INSTALLATION:
+        from .install_check import site_questions
+
+        questions = site_questions(job)
     return visit_reminder_message(
         brand_name=brand_name, customer_name=appointment.customer_name,
         when=appointment.time, what=appointment.kind.phrase, phone=phone,
-        day=day_word(appointment.on, today),
+        day=day_word(appointment.on, today), questions=questions,
     )
 
 

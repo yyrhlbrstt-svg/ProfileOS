@@ -762,8 +762,16 @@ class HomePage(Page):
             self.status("בחרו ביקור מהרשימה")
             return
         brand = active_brand()
+        job = None
+        if item.job_id:
+            try:
+                from ..projects import default_store
+
+                job = default_store().load(item.job_id)
+            except Exception:  # noqa: BLE001 - the reminder goes without the questions
+                job = None
         message = reminder_text(item, brand_name=brand.display_name,
-                                phone=getattr(brand, "phone", "") or "")
+                                phone=getattr(brand, "phone", "") or "", job=job)
         QDesktopServices.openUrl(QUrl(whatsapp_link(item.phone, message)))
         try:
             agenda = self._agenda()
@@ -5349,6 +5357,9 @@ class QuotePage(Page):
                     warnings.append(
                         f"{override['element']}: השורה קובעה ידנית והחישוב זז מאז — יש להסתכל שוב."
                     )
+            judged = self._judge_price(totals["net"], draft)
+            if judged:
+                warnings.insert(0, judged)
             self.notes.setPlainText("\n".join(f"• {w}" for w in warnings) or "אין אזהרות.")
 
             self.stats.update_many({
@@ -5367,6 +5378,27 @@ class QuotePage(Page):
             )
         finally:
             self._loading = False
+
+    def _judge_price(self, net: float, draft: Any) -> str:
+        """This price per m² against the jobs the shop won (read once a minute)."""
+        import time
+
+        from ..quoting.benchmark import benchmark
+
+        cached = getattr(self, "_benchmark", None)
+        if cached is None or time.monotonic() - cached[0] > 60:
+            try:
+                from ..projects import default_store
+
+                cached = (time.monotonic(), benchmark(default_store().all()))
+            except Exception:  # noqa: BLE001 - no comparison is said rather than a wrong one
+                cached = (time.monotonic(), None)
+            self._benchmark = cached
+        bench = cached[1]
+        if bench is None:
+            return ""
+        area = sum(opening.area * max(1, opening.quantity) for opening in draft.openings)
+        return bench.judge(net, area)
 
     def _unpriced_ok(self) -> bool:
         """A price that leaves something out, in front of a customer, is work
