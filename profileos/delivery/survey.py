@@ -51,12 +51,6 @@ SQUARE_TOLERANCE_MM = 10.0
 #: is not parallel, and a single "opening width" is a fiction.
 SPREAD_TOLERANCE_MM = 8.0
 
-#: Fitting clearance per side when the system does not state one. It is
-#: deliberately not applied: it is what the warning quotes as typical, so the
-#: number a person types has something to be judged against.
-TYPICAL_CLEARANCE_MM = 10.0
-
-
 def _smallest(values: Iterable[float]) -> float | None:
     kept = [float(value) for value in values if value is not None and value > 0]
     return min(kept) if kept else None
@@ -247,8 +241,7 @@ class OpeningSurvey:
         if self.clearance_per_side is None:
             found.append(
                 "לא נקבע מרווח התקנה לסדרה — אי אפשר לגזור מידת מסגרת. "
-                f"מקובל כ-⁦{TYPICAL_CLEARANCE_MM:g}⁩ מ״מ לצד, אך זה נתון "
-                "של היצרן ולא ניחוש שלנו"
+                "המרווח נלקח מהוראות ההרכבה של היצרן, או מאישור שלכם לסדרה"
             )
         elif self.clearance_per_side <= 0:
             found.append("מרווח התקנה אפס — מסגרת לא תיכנס לפתח")
@@ -509,6 +502,28 @@ def sheet_for_job(job: Any, book: "SurveyBook", *,
     return survey
 
 
+def series_clearance(job: Any) -> tuple[float, str] | None:
+    """The installation clearance of the job's series, as the shop confirmed
+    it from the catalogue — ``(mm per side, where it was read)``. ``None``
+    when the openings are of more than one series, or the figure was never
+    entered: then the person types it, nothing is assumed."""
+    from ..systems.confirmation import default_confirmations
+
+    openings = list(getattr(getattr(job, "schedule", None), "openings", None) or [])
+    series = {opening.system_id for opening in openings} or {getattr(job, "system_id", "")}
+    series.discard("")
+    if len(series) != 1:
+        return None
+    book = default_confirmations().load()
+    confirmed = book.get(next(iter(series)))
+    if confirmed is None:
+        return None
+    value = confirmed.values.get("installation_clearance")
+    if value is None or value <= 0:
+        return None
+    return float(value), confirmed.source
+
+
 def survey_for_job(job: Any, *, clearance_per_side: float | None = None) -> Survey:
     """Open a measurement sheet with a line per opening the job already has.
 
@@ -647,12 +662,12 @@ def save_openings(survey: Survey, references: Iterable[str],
 __all__ = [
     "SPREAD_TOLERANCE_MM",
     "SQUARE_TOLERANCE_MM",
-    "TYPICAL_CLEARANCE_MM",
     "OpeningSurvey",
     "Survey",
     "SurveyBook",
     "default_surveys",
     "save_openings",
     "sheet_for_job",
+    "series_clearance",
     "survey_for_job",
 ]

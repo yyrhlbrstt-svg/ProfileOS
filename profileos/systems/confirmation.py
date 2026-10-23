@@ -211,7 +211,8 @@ class Confirmation:
             supplier=self.source,
             frame=FrameRules(
                 face_width=values["frame_face"],
-                installation_clearance=values.get("installation_clearance", 10.0),
+                # Not entered: left unknown, never filled with a typical gap.
+                installation_clearance=values.get("installation_clearance"),
             ),
             sash=SashRules(
                 frame_overlap=values["sash_overlap"],

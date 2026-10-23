@@ -11187,6 +11187,19 @@ class SurveyPage(Page):
             return
 
         clearance = self.survey_clearance.value() or None
+        source = ""
+        if clearance is None:
+            # The series' own figure, as the shop confirmed it — never a typical one.
+            from ..delivery.survey import series_clearance
+
+            try:
+                found = series_clearance(job)
+            except Exception as exc:  # noqa: BLE001
+                self.report(exc, "אישורי הסדרות לא נקראו — הקלידו את מרווח ההתקנה")
+                found = None
+            if found is not None:
+                clearance, source = found
+                self.survey_clearance.setValue(clearance)
         try:
             book = self.checked_book(SurveyBook().load(), "גיליונות המדידה")
             if book.damaged is not None:
@@ -11202,7 +11215,8 @@ class SurveyPage(Page):
         filled = self.take_from_phone()
         self.show_survey()
         self.status(self._survey.describe()
-                    + (f" · ⁦{len(filled)}⁩ מדידות הגיעו מהטלפון" if filled else ""))
+                    + (f" · ⁦{len(filled)}⁩ מדידות הגיעו מהטלפון" if filled else "")
+                    + (f" · מרווח ההתקנה לפי {source}" if source else ""))
 
     def compare_to_quote(self) -> list[Any]:
         """The measured frames against the sizes the customer agreed to, and

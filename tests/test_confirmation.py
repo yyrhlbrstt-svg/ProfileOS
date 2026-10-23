@@ -277,3 +277,43 @@ def test_an_unreadable_file_is_never_written_over(tmp_path):
     with pytest.raises(StorageError):
         book.record(_filled())
     assert path.read_text(encoding="utf-8") == "{ not json"
+
+
+class TestInstallationClearance:
+    def _job(self):
+        from types import SimpleNamespace
+
+        from profileos.elements.model import ElementSchedule, Opening
+
+        return SimpleNamespace(system_id="klil-7300", schedule=ElementSchedule(
+            name="x", openings=[Opening(name="W1", width=1200, height=1400,
+                                        system_id="klil-7300")]))
+
+    def test_left_unknown_when_the_catalogue_was_not_read_for_it(self):
+        from profileos.delivery.survey import series_clearance
+        from profileos.systems.confirmation import default_confirmations
+
+        confirmation = _filled()
+        confirmation.values.pop("installation_clearance", None)
+        assert confirmation.to_rules().frame.installation_clearance is None
+        default_confirmations().load().record(confirmation)
+        assert series_clearance(self._job()) is None
+
+    def test_the_confirmed_figure_comes_with_where_it_was_read(self):
+        from profileos.delivery.survey import series_clearance
+        from profileos.systems.confirmation import default_confirmations
+
+        default_confirmations().load().record(_filled(installation_clearance=12.0))
+        assert series_clearance(self._job()) == (12.0, "קטלוג קליל 7300, מהדורת 2026, עמ׳ 41")
+
+    def test_the_survey_warning_quotes_no_typical_figure(self):
+        from datetime import date
+
+        from profileos.delivery.survey import OpeningSurvey
+
+        entry = OpeningSurvey(reference="W1", width_head=1200, width_middle=1200,
+                              width_sill=1200, height_left=1400, height_middle=1400,
+                              height_right=1400, diagonal_a=1843, diagonal_b=1843,
+                              measured_by="יוסי", measured_on=date.today())
+        [problem] = entry.problems()
+        assert "מרווח התקנה" in problem and "מקובל" not in problem and "10" not in problem

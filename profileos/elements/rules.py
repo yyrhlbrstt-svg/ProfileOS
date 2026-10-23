@@ -84,8 +84,10 @@ class FrameRules(BaseModel):
     #: Length added to each member for the mitre, beyond the nominal size [mm].
     #: Zero for a mitred frame measured outer-to-outer, positive for butt joints.
     corner_allowance: float = Field(default=0.0)
-    #: Gap left between frame and structural opening, per side [mm].
-    installation_clearance: float = Field(default=10.0, ge=0)
+    #: Gap left between frame and structural opening, per side [mm] — from
+    #: the system's installation instructions, or ``None`` when nobody read
+    #: it there: an assumed gap is a frame that does not go in the hole.
+    installation_clearance: float | None = Field(default=None, ge=0)
 
 
 class GasketRules(BaseModel):

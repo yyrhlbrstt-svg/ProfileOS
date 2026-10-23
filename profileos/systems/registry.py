@@ -51,7 +51,7 @@ def _rules(
     edge_clearance: float = 3.0,
     max_glass: float = 44.0,
     mullion_face: float = 50.0,
-    install_clearance: float = 10.0,
+    install_clearance: float | None = None,
 ) -> SystemRules:
     return SystemRules(
         id=f"typical-{family.value}",
@@ -129,7 +129,6 @@ FAMILY_RULES: dict[SystemFamily, SystemRules] = {
         edge_cover=17.0,
         max_glass=52.0,
         mullion_face=50.0,
-        install_clearance=20.0,
     ),
     SystemFamily.SKYLIGHT: _rules(
         SystemFamily.SKYLIGHT, frame_face=50.0, edge_cover=17.0, max_glass=52.0
