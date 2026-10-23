@@ -1449,6 +1449,7 @@ class ProjectsPage(Page):
             ("רשימת תיקונים…", self.manage_snags),
             ("גרסאות ההצעה — מה השתנה…", self.show_revisions),
             ("הזמנת חומר מהספק…", self.order_material),
+            ("הזמנה משותפת לכמה פרויקטים…", self.order_combined),
             ("הזמנות חומר — אישור והגעה…", self.manage_material_orders),
             ("קבע ביקור ביומן", self.plan_visit_for_job),
             ("בקשת המלצה בגוגל", self.request_review),
@@ -1721,6 +1722,125 @@ class ProjectsPage(Page):
             self._send_material_order(job, proposal)
 
         run_in_background(lambda: propose(job, defaults=defaults), done)
+
+    def order_combined(self) -> None:
+        """One supplier order for several won jobs, cut together on the same
+        bars: the ends of one job's bars become the next job's pieces."""
+        from ..projects import JobStatus
+        from ..projects.materials import propose_combined
+        from .background import run_in_background
+        from .dialogs import PickJobsDialog
+
+        try:
+            jobs = [job for job in self._store().all()
+                    if job.status in (JobStatus.WON, JobStatus.IN_PRODUCTION)
+                    and job.schedule is not None and job.schedule.openings]
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "הפרויקטים לא נקראו")
+            return
+        if len(jobs) < 2:
+            self.report(ProfileOSError(
+                "הזמנה משותפת היא לשני פרויקטים או יותר שזכיתם בהם ויש בהם פתחים"),
+                "אין מה לאחד")
+            return
+        dialog = PickJobsDialog(
+            jobs, self, title="הזמנה משותפת לכמה פרויקטים",
+            hint="הפרויקטים נחתכים יחד מאותם מוטות — סוף מוט של פרויקט אחד הופך לחלקים של "
+                 "הבא, ומגיעה הובלה אחת. כל פרויקט מקבל את החלק שלו בהזמנה ובעלות.",
+            ticked={job.job_id for job in jobs if not job.material_ordered},
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        chosen = [job for job in jobs if job.job_id in set(dialog.chosen())]
+        if getattr(self, "_proposing", False):
+            self.status("החישוב כבר בדרך")
+            return
+        self._proposing = True
+        self.status(f"מחשב חיתוך משותף ל־⁦{len(chosen)}⁩ פרויקטים…")
+        import copy
+
+        from ..core.config import get_settings
+
+        defaults = copy.deepcopy(get_settings().nesting)
+
+        def done(combined: Any, error: BaseException | None) -> None:
+            self._proposing = False
+            if error is not None:
+                self.report(ProfileOSError(str(error)), "חישוב החומר נכשל")
+                return
+            self._send_combined_order(chosen, combined)
+
+        run_in_background(lambda: propose_combined(chosen, defaults=defaults), done)
+
+    def _send_combined_order(self, jobs: list[Any], combined: Any) -> int:
+        """The combined order checked, then each job's part kept on the job."""
+        from types import SimpleNamespace
+        from uuid import uuid4
+
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+
+        from ..branding import active_brand
+        from ..projects.materials import Proposal, combined_message, to_order
+        from ..sharing import whatsapp_link
+        from .money_dialogs import MaterialOrderDialog
+
+        heading = SimpleNamespace(name=f"הזמנה משותפת ל־⁦{len(jobs)}⁩ פרויקטים",
+                                  material_orders=[])
+        proposal = Proposal(lines=combined.lines,
+                            warnings=[combined.describe_saving()] + combined.warnings)
+        dialog = MaterialOrderDialog(heading, proposal, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            self.status("לא נשלחה הזמנה")
+            return 0
+        values = dialog.values()
+        batch = f"CO-{uuid4().hex[:6].upper()}"
+        final = values["lines"]
+
+        def key(line: Any) -> tuple[str, str, float]:
+            return (line.code, line.unit, line.length_mm)
+
+        planned = {key(line): line.quantity for line in combined.lines}
+        kept = 0
+        store = self._store()
+        for job in jobs:
+            parts = {key(line): line for line in combined.shares.get(job.job_id, [])}
+            share = []
+            for line in final:
+                part = parts.get(key(line))
+                if part is None or not planned.get(key(line)):
+                    continue
+                # The person may have changed the quantity (bars already on
+                # the rack, a spare bar): each job keeps its proportion of it.
+                piece = type(line)(**{**line.__dict__})
+                piece.quantity = round(line.quantity * part.quantity / planned[key(line)], 2)
+                if piece.quantity > 0:
+                    share.append(piece)
+            if not share:
+                continue
+            order = to_order(share, supplier=values["supplier"], needed_by=values["needed_by"],
+                             note=f"חלק מהזמנה משותפת ⁦{batch}⁩")
+            order.batch = batch
+            try:
+                fresh = store.load(job.job_id)
+                fresh.material_orders.append(order)
+                fresh.touch()
+                store.save(fresh)
+                kept += 1
+            except Exception as exc:  # noqa: BLE001 - said; the others are kept
+                self.report(exc, f"החלק של ⁦{job.job_id}⁩ לא נשמר")
+        if not kept:
+            return 0
+        if dialog.choice == MaterialOrderDialog.SEND:
+            message = combined_message(final, brand_name=active_brand().display_name,
+                                       jobs=jobs, batch=batch, needed_by=values["needed_by"],
+                                       note=values["note"])
+            QDesktopServices.openUrl(QUrl(whatsapp_link("", message)))
+            self.status(f"ההזמנה המשותפת ⁦{batch}⁩ נשמרה ב־⁦{kept}⁩ פרויקטים ונפתחה בוואטסאפ")
+        else:
+            self.status(f"ההזמנה המשותפת ⁦{batch}⁩ נרשמה ב־⁦{kept}⁩ פרויקטים")
+        self.refresh()
+        return kept
 
     def _send_material_order(self, job: Any, proposal: Any) -> None:
         from PySide6.QtCore import QUrl

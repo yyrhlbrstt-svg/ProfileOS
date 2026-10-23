@@ -597,6 +597,58 @@ class PasteOpeningsDialog(QDialog):
         return self.intake
 
 
+class PickJobsDialog(QDialog):
+    """Which jobs go into one order — ticked from a list, never typed."""
+
+    def __init__(self, jobs: list[Any], parent: QWidget | None = None, *,
+                 title: str = "בחירת פרויקטים", hint: str = "",
+                 ticked: set[str] | None = None, at_least: int = 2) -> None:
+        super().__init__(parent)
+        from PySide6.QtWidgets import QListWidget, QListWidgetItem
+
+        self.setWindowTitle(title)
+        self.setModal(True)
+        self.setMinimumSize(520, 420)
+        self._at_least = at_least
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(*(METRICS.space(5),) * 4)
+        layout.setSpacing(METRICS.space(3))
+        if hint:
+            label = QLabel(hint)
+            label.setObjectName("Hint")
+            label.setWordWrap(True)
+            layout.addWidget(label)
+        self.list = QListWidget()
+        for job in jobs:
+            text = " · ".join(part for part in (job.name, job.customer_name) if part)
+            item = QListWidgetItem(f"{text} · \u2066{job.job_id}\u2069")
+            item.setData(Qt.ItemDataRole.UserRole, job.job_id)
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(Qt.CheckState.Checked if job.job_id in (ticked or set())
+                               else Qt.CheckState.Unchecked)
+            self.list.addItem(item)
+        layout.addWidget(self.list, 1)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        self.ok_button = buttons.button(QDialogButtonBox.StandardButton.Ok)
+        self.ok_button.setText("המשך")
+        self.ok_button.setObjectName("Primary")
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("ביטול")
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+        self.list.itemChanged.connect(lambda *_: self._enable())
+        self._enable()
+
+    def chosen(self) -> list[str]:
+        return [self.list.item(row).data(Qt.ItemDataRole.UserRole)
+                for row in range(self.list.count())
+                if self.list.item(row).checkState() == Qt.CheckState.Checked]
+
+    def _enable(self) -> None:
+        self.ok_button.setEnabled(len(self.chosen()) >= self._at_least)
+
+
 class NewChequeDialog(_FormDialog):
     """Take cheques into the drawer — one, or the whole series a customer
     hands over at once (one a month, consecutive numbers from one book).

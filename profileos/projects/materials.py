@@ -236,30 +236,17 @@ def _supplier_for(code: str, category: str,
     return priced[2] if priced is not None else None
 
 
-def propose(job: Any, *, mass_per_metre: Callable[[str], float | None] | None = None,
-            strategy: str = "auto", defaults: Any = None) -> Proposal:
-    """What to order for this job, priced from the lists in force."""
-    import math
-
+def _add_profiles(proposal: "Proposal", items: list[Any], name: str, *,
+                  weights: Any, defaults: Any, strategy: str) -> None:
+    """Profiles in whole bars: one supplier each, its bar length, its price."""
     from ..core.config import get_settings
-    from ..elements import collect_cut_items
     from ..models.orders import Project, StockBar
     from ..nesting import nest_project
-    from ..quoting.bom import build_bom
-    from ..quoting.pricelists import catalogue_weights
 
-    proposal = Proposal()
-    builds, problems = build_job(job)
-    proposal.warnings += [f"פתח לא נבנה ולא נכלל: {problem}" for problem in problems]
-    if not builds:
-        proposal.warnings.append("אין בפרויקט פתחים מתוכננים — אין מה להזמין")
-        return proposal
-    weights = mass_per_metre or catalogue_weights()
+    if not items:
+        return
     settings_lengths = list((defaults or get_settings().nesting).stock_lengths_mm or [6000.0])
     general = float(settings_lengths[0])
-
-    # -- profiles: one supplier each, its bar, its price --------------------- #
-    items = collect_cut_items(builds)
     chosen: dict[str, Any] = {}
     length_of: dict[str, float] = {}
     length_by: dict[str, str] = {}
@@ -278,7 +265,7 @@ def propose(job: Any, *, mass_per_metre: Callable[[str], float | None] | None = 
             length_of[pid] = general
             by_setting.append(pid)
     project = Project(
-        name=getattr(job, "name", "") or "פרויקט", items=items,
+        name=name, items=items,
         stock_bars=[StockBar(profile_id=pid, length=length) for pid, length in length_of.items()],
     )
     try:
@@ -313,6 +300,28 @@ def propose(job: Any, *, mass_per_metre: Callable[[str], float | None] | None = 
             "בחשבונית (צבוע או שקול) עשוי להיות שונה מעט."
         )
 
+
+
+def propose(job: Any, *, mass_per_metre: Callable[[str], float | None] | None = None,
+            strategy: str = "auto", defaults: Any = None) -> Proposal:
+    """What to order for this job, priced from the lists in force."""
+    import math
+
+    from ..elements import collect_cut_items
+    from ..quoting.bom import build_bom
+    from ..quoting.pricelists import catalogue_weights
+
+    proposal = Proposal()
+    builds, problems = build_job(job)
+    proposal.warnings += [f"פתח לא נבנה ולא נכלל: {problem}" for problem in problems]
+    if not builds:
+        proposal.warnings.append("אין בפרויקט פתחים מתוכננים — אין מה להזמין")
+        return proposal
+    weights = mass_per_metre or catalogue_weights()
+
+    _add_profiles(proposal, collect_cut_items(builds), getattr(job, "name", "") or "פרויקט",
+                  weights=weights, defaults=defaults, strategy=strategy)
+
     # -- everything else that is bought, not cut ---------------------------- #
     bom = build_bom(builds, project_id=getattr(job, "job_id", ""), currency="ILS")
     # What the bill could not size (a shutter, an accessory) is said, not lost.
@@ -338,6 +347,126 @@ def propose(job: Any, *, mass_per_metre: Callable[[str], float | None] | None = 
         price_line(line, supplier=supplier)
         proposal.lines.append(line)
     return proposal
+
+
+@dataclass
+class Combined:
+    """One supplier order for several jobs, cut together.
+
+    Each job cut on its own leaves a part-used last bar for every profile in
+    it; cut together, those ends become the next job's pieces. ``lines`` is
+    what is bought; ``shares`` is each job's part of it, so each job's own
+    cost and "material ordered" stay right; ``saved`` is what cutting
+    together saves against ordering each job alone.
+    """
+
+    lines: list[ProposedLine] = field(default_factory=list)
+    shares: dict[str, list[ProposedLine]] = field(default_factory=dict)
+    #: profile id -> bars saved against separate orders
+    saved_bars: dict[str, float] = field(default_factory=dict)
+    saved_money: float = 0.0
+    warnings: list[str] = field(default_factory=list)
+
+    @property
+    def total(self) -> float:
+        return round(sum(line.total for line in self.lines), 2)
+
+    def describe_saving(self) -> str:
+        bars = sum(self.saved_bars.values())
+        if bars <= 0:
+            return "חיתוך משותף לא חוסך מוטות בפרויקטים האלה — אפשר להזמין בנפרד"
+        text = f"חיתוך משותף חוסך ⁦{bars:g}⁩ מוטות מול הזמנה נפרדת לכל פרויקט"
+        if self.saved_money > 0:
+            text += f" — כ־⁦{self.saved_money:,.0f} ₪⁩ לפני מע״מ"
+        return text
+
+
+def propose_combined(jobs: list[Any], *, defaults: Any = None, strategy: str = "auto",
+                     mass_per_metre: Callable[[str], float | None] | None = None) -> Combined:
+    """What to order for these jobs together, and each one's part of it."""
+    from collections import defaultdict
+
+    from ..elements import collect_cut_items
+    from ..quoting.pricelists import catalogue_weights
+
+    weights = mass_per_metre or catalogue_weights()
+    combined = Combined()
+    separate: dict[str, Proposal] = {}
+    items: list[Any] = []
+    cut_length: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
+    for job in jobs:
+        alone = propose(job, mass_per_metre=weights, strategy=strategy, defaults=defaults)
+        separate[job.job_id] = alone
+        combined.warnings += [f"⁦{job.job_id}⁩: {w}" for w in alone.warnings
+                              if "שאריות שכבר במדף" not in w]
+        builds, _problems = build_job(job)
+        for item in collect_cut_items(builds):
+            items.append(item)
+            cut_length[item.profile_id][job.job_id] += item.length * item.quantity
+
+    together = Proposal()
+    _add_profiles(together, items, "הזמנה משותפת", weights=weights, defaults=defaults,
+                  strategy=strategy)
+    combined.warnings += [w for w in together.warnings if w not in combined.warnings]
+    combined.lines += together.lines
+
+    # What each job would have bought alone, per profile and bar length.
+    alone_bars: dict[tuple[str, float], float] = defaultdict(float)
+    for proposal in separate.values():
+        for line in proposal.lines:
+            if line.category == "profile":
+                alone_bars[(line.code, line.length_mm)] += line.quantity
+    for line in together.lines:
+        saved = alone_bars.get((line.code, line.length_mm), 0.0) - line.quantity
+        if saved > 0:
+            combined.saved_bars[line.code] = combined.saved_bars.get(line.code, 0.0) + saved
+            combined.saved_money += saved * line.unit_price
+    combined.saved_money = round(combined.saved_money, 2)
+
+    # Everything bought, not cut: the jobs' lines added up.
+    bought: dict[tuple[str, str, float], ProposedLine] = {}
+    for proposal in separate.values():
+        for line in proposal.lines:
+            if line.category == "profile":
+                continue
+            key = (line.code, line.unit, line.length_mm)
+            if key in bought:
+                bought[key].quantity = round(bought[key].quantity + line.quantity, 3)
+            else:
+                bought[key] = ProposedLine(**{**line.__dict__})
+    combined.lines += list(bought.values())
+
+    # Each job's part: its own bought lines, and the bars in proportion to
+    # the length it cuts from them.
+    for job in jobs:
+        share = [ProposedLine(**{**line.__dict__}) for line in separate[job.job_id].lines
+                 if line.category != "profile"]
+        for line in together.lines:
+            lengths = cut_length.get(line.code, {})
+            total = sum(lengths.values())
+            part = lengths.get(job.job_id, 0.0)
+            if total <= 0 or part <= 0:
+                continue
+            piece = ProposedLine(**{**line.__dict__})
+            piece.quantity = round(line.quantity * part / total, 2)
+            share.append(piece)
+        combined.shares[job.job_id] = share
+    return combined
+
+
+def combined_message(lines: list[ProposedLine], *, brand_name: str, jobs: list[Any],
+                     batch: str, needed_by: str = "", note: str = "") -> str:
+    """One WhatsApp message for the whole combined order."""
+    text = ["שלום,", "", f"הזמנת חומר מ{brand_name} — הזמנה משותפת ⁦{batch}⁩",
+            "לפרויקטים: " + ", ".join(f"⁦{job.job_id}⁩ {job.name}" for job in jobs)]
+    if needed_by:
+        text.append(f"נדרש עד: ⁦{_short(needed_by)}⁩")
+    text.append("")
+    text += [f"• {line.describe()}" for line in lines]
+    if note:
+        text += ["", note]
+    text += ["", "תודה, נא לאשר זמינות, מחיר ומועד אספקה."]
+    return "\n".join(text)
 
 
 def _check_bar_price(line: "ProposedLine", supplier: Any, proposal: "Proposal") -> None:
@@ -405,7 +534,10 @@ def to_order(proposal_lines: list[ProposedLine], *, supplier: str, needed_by: st
 
 
 __all__ = [
+    "Combined",
     "Proposal",
+    "combined_message",
+    "propose_combined",
     "ProposedLine",
     "build_job",
     "order_message",

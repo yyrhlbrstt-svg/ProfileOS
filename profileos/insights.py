@@ -979,18 +979,35 @@ def _material(context: dict[str, Any], today: date) -> list[Insight]:
                 late.append((job, order))
     # The supplier's invoice asks for more than the order came to at its
     # own price list: a price that changed, a line nobody ordered.
-    dearer = [(job, order) for job in jobs for order in job.material_orders
+    dearer = [(job, order, order.invoice_gap or 0.0) for job in jobs
+              for order in job.material_orders
               if order.overcharged and order.state.value != "cancelled"]
+    # A combined order: the invoice, recorded on any job's part, against all parts.
+    batches: dict[str, list[tuple[Any, Any]]] = {}
+    for job in jobs:
+        for order in job.material_orders:
+            if order.batch and order.state.value != "cancelled":
+                batches.setdefault(order.batch, []).append((job, order))
+    for parts in batches.values():
+        invoiced = sum(order.invoice_net for _job, order in parts)
+        total = sum(order.total for _job, order in parts)
+        if invoiced <= 0 or total <= 0 or any(order.unpriced for _job, order in parts):
+            continue
+        if invoiced - total > total * parts[0][1].INVOICE_TOLERANCE:
+            holder = next(pair for pair in parts if pair[1].invoice_net > 0)
+            dearer.append((holder[0], holder[1], round(invoiced - total, 2)))
     if dearer:
-        extra = sum(order.invoice_gap or 0 for _job, order in dearer)
+        extra = sum(gap for _job, _order, gap in dearer)
         found.append(Insight(
             "warning",
             _count(len(dearer), "חשבונית ספק גבוהה מההזמנה", "חשבוניות ספק גבוהות מההזמנות"),
             f"בסך ⁦{extra:,.0f} ₪⁩ מעל המחירון שלפיו הוזמן — כדאי לבדוק לפני התשלום: "
-            + _names(dearer, lambda pair: f"{pair[1].supplier} ל⁦{pair[0].job_id}⁩ "
-                     f"(⁦+{pair[1].invoice_gap:,.0f} ₪⁩)"),
+            + _names(dearer, lambda entry: f"{entry[1].supplier} "
+                     + (f"(הזמנה משותפת ⁦{entry[1].batch}⁩) " if entry[1].batch
+                        else f"ל⁦{entry[0].job_id}⁩ ")
+                     + f"(⁦+{entry[2]:,.0f} ₪⁩)"),
             "Projects", "invoice-gap:" + ",".join(
-                sorted(f"{o.order_id}={o.invoice_net:.0f}" for _j, o in dearer)),
+                sorted(f"{o.order_id}={o.invoice_net:.0f}" for _j, o, _g in dearer)),
         ))
     if waiting:
         found.append(Insight(

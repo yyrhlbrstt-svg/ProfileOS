@@ -416,6 +416,9 @@ class MaterialOrder(RoundTrips):
     invoice_number: str = ""
     invoice_net: float = 0.0
     invoice_on: str = ""
+    #: The combined order this is one job's part of — one supplier order cut
+    #: together for several jobs. Its invoice is checked against the whole.
+    batch: str = ""
 
     @property
     def total(self) -> float:
@@ -430,7 +433,7 @@ class MaterialOrder(RoundTrips):
         ``None`` while either is missing."""
         # A line the list did not price (per-kg aluminium, a special) is in
         # the invoice and not in the total: no comparison can be honest then.
-        if self.invoice_net <= 0 or self.total <= 0 or self.unpriced:
+        if self.invoice_net <= 0 or self.total <= 0 or self.unpriced or self.batch:
             return None
         return round(self.invoice_net - self.total, 2)
 
@@ -443,6 +446,8 @@ class MaterialOrder(RoundTrips):
         if self.invoice_net <= 0:
             return "—"
         text = f"⁦{self.invoice_net:,.0f} ₪⁩"
+        if self.batch:
+            return text + f" · לכל ההזמנה המשותפת ⁦{self.batch}⁩"
         gap = self.invoice_gap
         if gap is None:
             return text + (" (בהזמנה שורות בלי מחיר — אין השוואה)" if self.unpriced

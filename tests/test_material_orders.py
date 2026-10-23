@@ -723,3 +723,105 @@ def test_an_order_with_an_unpriced_line_is_not_compared_with_the_invoice():
     order.invoice_net = 14_000
     assert order.invoice_gap is None and not order.overcharged
     assert "בלי מחיר" in order.invoice_says()
+
+
+def _small_job(job_id: str, width: float) -> JobFile:
+    """One window, a bar's worth short — the kind whose ends another job uses."""
+    job = JobFile(job_id=job_id, name=f"עבודה {job_id}", status=JobStatus.WON,
+                  system_id="klil-7300")
+    job.schedule = ElementSchedule(name="x", system_id="klil-7300", openings=[
+        Opening(name="W1", width=width, height=1400, quantity=1, system_id="klil-7300")])
+    return job
+
+
+class TestACombinedOrder:
+    def test_cut_together_never_needs_more_bars_and_each_job_keeps_its_part(self, shop):
+        from profileos.projects.materials import propose, propose_combined
+
+        jobs = [_small_job("J-A", 2000), _small_job("J-B", 1900), _small_job("J-C", 1800)]
+        combined = propose_combined(jobs, mass_per_metre=lambda c: None)
+        alone: dict[tuple, float] = {}
+        for job in jobs:
+            for line in propose(job, mass_per_metre=lambda c: None).lines:
+                if line.category == "profile":
+                    key = (line.code, line.length_mm)
+                    alone[key] = alone.get(key, 0) + line.quantity
+        together = {(l.code, l.length_mm): l.quantity for l in combined.lines
+                    if l.category == "profile"}
+        assert together and all(together[k] <= alone.get(k, 0) for k in together)
+        assert sum(combined.saved_bars.values()) == sum(alone.values()) - sum(together.values())
+        assert sum(combined.saved_bars.values()) > 0          # three windows' ends, joined
+        for key, bars in together.items():
+            parts = sum(line.quantity for shares in combined.shares.values()
+                        for line in shares if (line.code, line.length_mm) == key)
+            assert parts == pytest.approx(bars, abs=0.05)
+        assert "חוסך" in combined.describe_saving()
+
+    def test_recorded_on_each_job_and_the_invoice_checked_against_the_whole(self, shop, monkeypatch):
+        pytest.importorskip("PySide6")
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from datetime import date
+
+        from PySide6.QtCore import QCoreApplication
+        from PySide6.QtWidgets import QApplication
+
+        from profileos.insights import scan
+        from profileos.projects import default_store
+        from profileos.projects.materials import propose_combined
+        from profileos.ui import money_dialogs
+        from profileos.ui.main_window import MainWindow
+        from profileos.ui.theme import LIGHT
+
+        jobs = [_small_job("J-A", 1500), _small_job("J-B", 1400)]
+        for job in jobs:
+            default_store().save(job)
+        combined = propose_combined(jobs, mass_per_metre=lambda c: None)
+        frame = next(l for l in combined.lines if l.code.endswith("FRAME"))
+        price_list({frame.code: (40.0, "מטר")})
+        combined = propose_combined(jobs, mass_per_metre=lambda c: None)
+
+        def record(self):
+            self.supplier.setEditText("קליל")
+            self._finish(self.RECORD)
+            return self.result()
+
+        monkeypatch.setattr(money_dialogs.MaterialOrderDialog, "exec", record)
+        QApplication.instance() or QApplication([])
+        window = MainWindow(LIGHT)
+        page = window.go_to_page("Projects")
+        assert page._send_combined_order(jobs, combined) == 2
+        orders = [default_store().load(j.job_id).material_orders[0] for j in jobs]
+        assert orders[0].batch and orders[0].batch == orders[1].batch
+        assert all(default_store().load(j.job_id).material_ordered for j in jobs)
+        whole = sum(o.total for o in orders)
+        assert whole == pytest.approx(sum(l.total for l in combined.lines
+                                          if l.supplier in ("קליל", "")), rel=0.02)
+
+        # The supplier's one invoice, recorded on one job's part, against all parts.
+        saved = default_store().load("J-A")
+        saved.material_orders[0].invoice_net = round(whole * 1.10, 2)
+        default_store().save(saved)
+        unpriced = any(o.unpriced for o in orders)
+        found = [i for i in scan(date.today()) if i.key.startswith("invoice-gap:")]
+        if not unpriced:
+            assert found and "הזמנה משותפת" in found[0].detail
+        assert "לכל ההזמנה המשותפת" in saved.material_orders[0].invoice_says()
+        window.close(); window.deleteLater(); QCoreApplication.processEvents()
+
+
+def test_one_invoice_for_a_combined_order_is_checked_against_all_its_parts(shop):
+    from datetime import date
+
+    from profileos.insights import scan
+    from profileos.projects.model import MaterialOrderLine
+
+    a, b = a_job(job_id="J-2026-0001"), a_job(job_id="J-2026-0002")
+    for job, bars in ((a, 4), (b, 6)):
+        job.material_orders.append(MaterialOrder(supplier="קליל", batch="CO-1", lines=[
+            MaterialOrderLine(code="F", quantity=bars, unit_price=500.0)]))
+    a.material_orders[0].invoice_net = 5_100      # the whole order is 5,000: within 2%
+    found = [i for i in scan(date.today(), jobs=[a, b]) if i.key.startswith("invoice-gap:")]
+    assert not found and not a.material_orders[0].overcharged
+    a.material_orders[0].invoice_net = 5_400
+    found = [i for i in scan(date.today(), jobs=[a, b]) if i.key.startswith("invoice-gap:")]
+    assert found and "⁦+400 ₪⁩" in found[0].detail and "⁦CO-1⁩" in found[0].detail
