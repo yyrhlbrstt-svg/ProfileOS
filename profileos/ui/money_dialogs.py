@@ -418,13 +418,18 @@ class JobAccountDialog(QDialog):
         page = QWidget()
         layout = QVBoxLayout(page)
         row = QHBoxLayout()
+        issue = QPushButton("הפקה ב־Morning…")
+        issue.setObjectName("Primary")
+        issue.setToolTip("חשבונית מס או חשבונית מס־קבלה מהסכומים של הפרויקט — נרשמת כאן לבד")
+        issue.clicked.connect(self.issue_in_morning)
+        row.addWidget(issue)
         add = QPushButton("רישום חשבונית")
-        add.setObjectName("Primary")
+        add.setToolTip("חשבונית שהופקה במקום אחר — רושמים את המספר")
         add.clicked.connect(self.add_invoice)
         row.addWidget(add)
         hint = QLabel(
-            "החשבונית עצמה מופקת בתוכנת החשבוניות (Morning, iCount). כאן נרשמים "
-            "המספר ומספר ההקצאה, כדי לדעת מה הוצא ומה חסר."
+            "חשבונית שמופקת כאן ב־Morning נרשמת בפרויקט עם המספר והקישור. "
+            "חשבונית מתוכנה אחרת — ״רישום חשבונית״, עם מספר ההקצאה."
         )
         hint.setObjectName("Hint")
         hint.setWordWrap(True)
@@ -522,11 +527,106 @@ class JobAccountDialog(QDialog):
 
         missing = {id(invoice) for invoice in invoices_missing_allocation(job)}
         self.invoices_table.set_rows([
-            [invoice.number, invoice.issued_on, _money(invoice.net),
+            [f"{invoice.kind} ⁦{invoice.number}⁩" if invoice.kind else invoice.number,
+             invoice.issued_on, _money(invoice.net),
              "כן" if invoice.business_customer else "לא",
              invoice.allocation_number or ("חסר!" if id(invoice) in missing else "—")]
             for invoice in job.invoices
         ], numeric_columns=(2,))
+
+    # -- Morning ---------------------------------------------------------------- #
+    def issue_in_morning(self) -> Any:
+        """The invoice made from the job's figures, issued in Morning after a
+        confirmation, and recorded on the job in the same step."""
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+        from PySide6.QtWidgets import QApplication
+
+        from ..erp.morning import KIND_HEBREW, TAX_INVOICE_RECEIPT, MorningClient, load_account
+        from ..projects import InvoiceRecord, Payment, PaymentMethod
+        from ..projects.account import current_vat_rate, job_account
+
+        try:
+            account = load_account()
+        except Exception as exc:  # noqa: BLE001
+            _warn(self, "מפתח Morning לא נקרא", exc)
+            return None
+        if not account.ready:
+            _warn(self, "אין חיבור ל־Morning", ValueError(
+                "הזינו את מפתח ה־API של Morning: מערכת ← חיבורים. את המפתח יוצרים "
+                "ב־Morning: הגדרות ← כלים למפתחים ← מפתחות API."))
+            return None
+        job = self.job()
+        customer = None
+        if job.customer_id:
+            try:
+                from ..projects import default_customers
+
+                customer = default_customers().get(job.customer_id)
+            except Exception:  # noqa: BLE001 - the name on the job is enough
+                customer = None
+        owed = job_account(job, self._cheques()).not_invoiced_net
+        dialog = MorningInvoiceDialog(job, customer, net=owed, vat_rate=current_vat_rate(),
+                                      parent=self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return None
+        draft = dialog.draft()
+        problems = draft.problems()
+        if problems:
+            _warn(self, "המסמך לא הופק", ValueError("; ".join(problems)))
+            return None
+        kind = KIND_HEBREW[draft.kind]
+        answer = QMessageBox.question(
+            self, f"הפקת {kind}",
+            f"להפיק {kind} ב־Morning ל{draft.client_name} על ⁦{draft.gross:,.2f} ₪⁩ "
+            f"כולל מע״מ (⁦{draft.net:,.2f} ₪⁩ לפני מע״מ)?\n\n"
+            "מסמך מס הוא מסמך רשמי: אחרי ההפקה אפשר רק לבטל אותו בחשבונית זיכוי."
+            + ("\n(חשבון ניסיון של Morning — לא מסמך אמיתי)" if account.sandbox else ""),
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return None
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            issued = MorningClient(account).issue(draft)
+        except Exception as exc:  # noqa: BLE001 - said in Morning's words
+            QApplication.restoreOverrideCursor()
+            _warn(self, "המסמך לא הופק", exc)
+            return None
+        QApplication.restoreOverrideCursor()
+
+        record_payment = (draft.kind == TAX_INVOICE_RECEIPT and dialog.record_payment()
+                          and draft.payment_method != "cheque")
+
+        def keep(fresh: Any) -> None:
+            fresh.invoices.append(InvoiceRecord(
+                number=issued.number, net=round(draft.net, 2),
+                business_customer=bool(draft.client_tax_id.strip()), issuer="Morning",
+                document_id=issued.document_id, url=issued.url, kind=kind,
+            ))
+            if record_payment:
+                fresh.payments.append(Payment(
+                    amount=draft.gross, method=PaymentMethod(draft.payment_method),
+                    reference=f"{kind} ⁦{issued.number}⁩",
+                ))
+
+        if not self._change(keep, f"{kind} ⁦{issued.number}⁩ הופקה ב־Morning"):
+            # Issued and not kept here: the number is said so it is recorded by hand.
+            _warn(self, "רשמו את החשבונית ידנית", ValueError(
+                f"{kind} מספר ⁦{issued.number}⁩ הופקה ב־Morning, אבל לא נשמרה בפרויקט. "
+                "רשמו אותה ב״רישום חשבונית״."))
+            return issued
+        box = QMessageBox(self)
+        box.setWindowTitle("המסמך הופק")
+        box.setText(f"{kind} מספר ⁦{issued.number}⁩ הופקה ונרשמה בפרויקט."
+                    + ("\nגם התשלום נרשם בחשבון הפרויקט." if record_payment else "")
+                    + ("\nאת הצ׳ק רושמים במגירה — ״קבלת צ׳קים״." if
+                       draft.kind == TAX_INVOICE_RECEIPT and draft.payment_method == "cheque" else ""))
+        show = box.addButton("פתיחת המסמך", QMessageBox.ButtonRole.ActionRole) if issued.url else None
+        box.addButton("סגור", QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+        if show is not None and box.clickedButton() is show:
+            QDesktopServices.openUrl(QUrl(issued.url))
+        return issued
 
     # -- changes --------------------------------------------------------------- #
     def _line_kind(self) -> Any:
@@ -1453,6 +1553,105 @@ class RevisionsDialog(QDialog):
             self._fill()
             self.table.selectRow(row)
 
+
+
+class MorningInvoiceDialog(QDialog):
+    """What the invoice will say: the kind, the customer as Morning will
+    print it, the description and the amount — and for an invoice-receipt,
+    how the money came."""
+
+    def __init__(self, job: Any, customer: Any, *, net: float, vat_rate: float,
+                 parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        from ..erp.morning import KIND_HEBREW, TAX_INVOICE, TAX_INVOICE_RECEIPT
+
+        self.setWindowTitle(f"הפקה ב־Morning — {job.name}")
+        self.setMinimumWidth(560)
+        self._vat_rate = vat_rate
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(*(METRICS.space(5),) * 4)
+        layout.setSpacing(METRICS.space(3))
+        grid = FieldGrid()
+        self.kind = QComboBox()
+        self.kind.addItem(KIND_HEBREW[TAX_INVOICE], TAX_INVOICE)
+        self.kind.addItem(KIND_HEBREW[TAX_INVOICE_RECEIPT], TAX_INVOICE_RECEIPT)
+        self.name = QLineEdit(getattr(customer, "name", "") or job.customer_name)
+        self.tax_id = QLineEdit(getattr(customer, "tax_id", ""))
+        self.tax_id.setPlaceholderText("ח.פ. / ע.מ. — ללקוח עסקי")
+        self.email = QLineEdit(getattr(customer, "email", ""))
+        self.email.setPlaceholderText("Morning ישלח את המסמך לכתובת הזאת")
+        self.phone = QLineEdit(getattr(customer, "phone", ""))
+        self.address = QLineEdit(getattr(customer, "address", "") or job.site_address)
+        self.city = QLineEdit(getattr(customer, "city", ""))
+        self.description = QLineEdit(f"עבודות אלומיניום — {job.name}")
+        self.net = QDoubleSpinBox()
+        self.net.setRange(0, 100_000_000)
+        self.net.setDecimals(2)
+        self.net.setSuffix(" ₪")
+        self.net.setGroupSeparatorShown(True)
+        self.net.setValue(max(0.0, net))
+        self.method = QComboBox()
+        for key, label in (("transfer", "העברה בנקאית"), ("cash", "מזומן"), ("credit", "אשראי"),
+                           ("bit", "ביט / פייבוקס"), ("cheque", "צ׳ק"), ("other", "אחר")):
+            self.method.addItem(label, key)
+        self.cheque = QLineEdit()
+        self.cheque.setPlaceholderText("מספר הצ׳ק")
+        self.keep_payment = QCheckBox("לרשום גם את התשלום בחשבון הפרויקט")
+        self.keep_payment.setChecked(True)
+        for label, widget in (("סוג המסמך", self.kind), ("לקוח", self.name),
+                              ("ח.פ. / ע.מ.", self.tax_id), ("דוא״ל", self.email),
+                              ("טלפון", self.phone), ("כתובת", self.address), ("עיר", self.city),
+                              ("תיאור", self.description), ("סכום לפני מע״מ", self.net),
+                              ("אמצעי תשלום", self.method), ("מספר צ׳ק", self.cheque)):
+            grid.add(label, widget)
+        grid.add_span(self.keep_payment)
+        layout.addWidget(grid)
+        self.total = QLabel("")
+        self.total.setObjectName("HomeNext")
+        layout.addWidget(self.total)
+        if net <= 0:
+            note = QLabel("כל מה שבחשבון הפרויקט כבר חושבן — אם בכל זאת צריך מסמך, הזינו סכום.")
+            note.setObjectName("Hint")
+            note.setWordWrap(True)
+            layout.addWidget(note)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        ok = buttons.button(QDialogButtonBox.StandardButton.Ok)
+        ok.setText("המשך")
+        ok.setObjectName("Primary")
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("ביטול")
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+        for signal in (self.kind.currentIndexChanged, self.net.valueChanged,
+                       self.method.currentIndexChanged):
+            signal.connect(lambda *_: self._show())
+        self._show()
+
+    def _show(self) -> None:
+        from ..erp.morning import TAX_INVOICE_RECEIPT
+
+        receipt = self.kind.currentData() == TAX_INVOICE_RECEIPT
+        for widget in (self.method, self.keep_payment):
+            widget.setEnabled(receipt)
+        self.cheque.setEnabled(receipt and self.method.currentData() == "cheque")
+        gross = self.net.value() * (1 + self._vat_rate)
+        self.total.setText(f"לתשלום כולל מע״מ: ⁦{gross:,.2f} ₪⁩")
+
+    def record_payment(self) -> bool:
+        return self.keep_payment.isChecked()
+
+    def draft(self) -> Any:
+        from ..erp.morning import InvoiceDraft
+
+        return InvoiceDraft(
+            kind=int(self.kind.currentData()), description=self.description.text(),
+            net=round(self.net.value(), 2), client_name=self.name.text(),
+            client_tax_id=self.tax_id.text(), client_email=self.email.text(),
+            client_phone=self.phone.text(), client_address=self.address.text(),
+            client_city=self.city.text(), payment_method=str(self.method.currentData()),
+            cheque_number=self.cheque.text(), vat_rate=self._vat_rate,
+        )
 
 __all__ = [
     "JobAccountDialog", "MaterialOrderDialog", "MaterialOrdersDialog", "PriceBookDialog",

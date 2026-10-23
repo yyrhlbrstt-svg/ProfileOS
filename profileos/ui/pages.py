@@ -9356,6 +9356,7 @@ class SystemPage(Page):
         tabs.addTab(self._licence_tab(), "רישיון")
         tabs.addTab(self._brand_tab(), "מפעיל")
         tabs.addTab(self._phones_tab(), "טלפונים")
+        tabs.addTab(self._links_tab(), "חיבורים")
         tabs.addTab(self._plugins_tab(), "תוספים")
         tabs.addTab(self._backup_tab(), "גיבוי ושחזור")
         tabs.addTab(self._audit_tab(), "יומן שינויים")
@@ -9789,6 +9790,96 @@ class SystemPage(Page):
         self._show_phone_access()
         self.show_phones()
         return page
+
+    # -- connections ------------------------------------------------------------ #
+    def _links_tab(self) -> QWidget:
+        """Services the program issues documents through — the shop's own key."""
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, METRICS.space(3), 0, 0)
+        layout.setSpacing(METRICS.space(3))
+        card = Card("Morning (חשבונית ירוקה) — הפקת חשבוניות מהפרויקט")
+        grid = FieldGrid()
+        self.morning_id = QLineEdit()
+        self.morning_id.setPlaceholderText("מזהה המפתח (API Key ID)")
+        self.morning_secret = QLineEdit()
+        self.morning_secret.setEchoMode(QLineEdit.EchoMode.Password)
+        self.morning_secret.setPlaceholderText("הסוד (Secret) — נשמר רק במחשב הזה")
+        self.morning_sandbox = QCheckBox("חשבון ניסיון (Sandbox) — מסמכים לא אמיתיים")
+        grid.add("מזהה", self.morning_id)
+        grid.add("סוד", self.morning_secret)
+        grid.add_span(self.morning_sandbox)
+        card.add(grid)
+        row = QHBoxLayout()
+        save = QPushButton("שמירה")
+        save.setObjectName("Primary")
+        save.clicked.connect(self.save_morning)
+        row.addWidget(save)
+        test = QPushButton("בדיקת חיבור")
+        test.clicked.connect(self.test_morning)
+        row.addWidget(test)
+        self.morning_state = QLabel("")
+        self.morning_state.setObjectName("Hint")
+        self.morning_state.setWordWrap(True)
+        row.addWidget(self.morning_state, 1)
+        card.add_layout(row)
+        hint = QLabel(
+            "את המפתח יוצרים ב־Morning: הגדרות ← כלים למפתחים ← מפתחות API. "
+            "אחרי שמירה, בחשבון כל פרויקט ← חשבוניות ← ״הפקה ב־Morning…״. "
+            "שום מסמך לא מופק בלי אישור שלכם."
+        )
+        hint.setObjectName("Hint")
+        hint.setWordWrap(True)
+        card.add(hint)
+        layout.addWidget(card)
+        layout.addStretch(1)
+        try:
+            from ..erp.morning import load_account
+
+            account = load_account()
+            self.morning_id.setText(account.key_id)
+            self.morning_secret.setText(account.secret)
+            self.morning_sandbox.setChecked(account.sandbox)
+            self.morning_state.setText("מפתח שמור" if account.ready else "עוד לא הוזן מפתח")
+        except Exception as exc:  # noqa: BLE001
+            self.morning_state.setText(f"קובץ המפתח לא נקרא: {exc}")
+        return page
+
+    def _morning_account(self) -> Any:
+        from ..erp.morning import MorningAccount
+
+        return MorningAccount(key_id=self.morning_id.text().strip(),
+                              secret=self.morning_secret.text().strip(),
+                              sandbox=self.morning_sandbox.isChecked())
+
+    def save_morning(self) -> None:
+        from ..erp.morning import save_account
+
+        try:
+            save_account(self._morning_account())
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "המפתח לא נשמר")
+            return
+        self.morning_state.setText("המפתח נשמר")
+
+    def test_morning(self) -> bool:
+        """A token from Morning: the key works. Nothing is issued."""
+        from PySide6.QtWidgets import QApplication
+
+        from ..erp.morning import MorningClient
+
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            MorningClient(self._morning_account()).token()
+        except Exception as exc:  # noqa: BLE001
+            QApplication.restoreOverrideCursor()
+            self.morning_state.setText(f"החיבור לא הצליח: {exc}")
+            self.morning_state.setStyleSheet(f"color: {self.colours.danger};")
+            return False
+        QApplication.restoreOverrideCursor()
+        self.morning_state.setText("Morning אישר את המפתח — אפשר להפיק מסמכים מהפרויקטים")
+        self.morning_state.setStyleSheet(f"color: {self.colours.success};")
+        return True
 
     def _registry(self) -> Any:
         from ..mobile.pairing import DeviceRegistry, default_registry_path

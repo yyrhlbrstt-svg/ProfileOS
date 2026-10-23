@@ -261,6 +261,11 @@ class InvoiceRecord(RoundTrips):
     #: The customer is a business that will claim the VAT.
     business_customer: bool = False
     issuer: str = ""
+    #: Issued from here through the invoicing service: its own id, the link
+    #: to the document, and what kind it is ("חשבונית מס", "חשבונית מס־קבלה").
+    document_id: str = ""
+    url: str = ""
+    kind: str = ""
 
 
 class ProgressBill(RoundTrips):
