@@ -1,0 +1,702 @@
+"""Measuring the hole in the wall, and turning it into a frame size.
+
+Everything upstream of this is arithmetic on numbers somebody typed. This is
+the one place the software meets a building, and it is where the expensive
+mistakes are made: a window an aluminium fabricator cannot make smaller once
+it is welded, fitted into an opening that turned out to be ⁦14⁩ mm narrower at
+the bottom than at the top.
+
+The trade's own method is the method here, and it is not "measure the
+opening". It is:
+
+* three widths — at the head, the middle and the sill — and the **smallest**
+  is the one the frame has to pass through;
+* three heights — at the left, the middle and the right, likewise;
+* both diagonals, because a rectangle is only a rectangle if they match, and
+  an opening out of square by more than the packers can hide shows as a taper
+  down the side of a finished frame;
+* the finished floor level, because a sill measured from a screed that has not
+  been poured is a sill in the wrong place.
+
+The frame size is then the smallest structural dimension less the fitting
+clearance on both sides — a figure that belongs to the system, not to this
+module, so it is passed in or it stays empty. Guessing it is exactly the kind
+of invention that puts a window in a skip.
+
+An opening that has not been measured is not measured. It is never filled in
+from the drawing "for now", because a frame size on a drawing and a frame size
+on a measurement sheet look identical the morning the saw runs.
+"""
+
+from __future__ import annotations
+
+import math
+from dataclasses import dataclass, field
+from datetime import date, datetime
+from pathlib import Path
+from typing import Any, Iterable
+from uuid import uuid4
+
+from ..core.errors import ProfileOSError
+from ..core.logging_setup import get_logger
+
+_log = get_logger("delivery.survey")
+
+#: Out-of-square beyond this, in millimetres, shows on a finished frame however
+#: carefully it is packed. It is a workmanship figure, not a standard, and it
+#: is kept here as one number a shop can argue with rather than buried.
+SQUARE_TOLERANCE_MM = 10.0
+
+#: A spread between the three widths (or heights) beyond this means the opening
+#: is not parallel, and a single "opening width" is a fiction.
+SPREAD_TOLERANCE_MM = 8.0
+
+def _smallest(values: Iterable[float]) -> float | None:
+    kept = [float(value) for value in values if value is not None and value > 0]
+    return min(kept) if kept else None
+
+
+def _spread(values: Iterable[float]) -> float:
+    kept = [float(value) for value in values if value is not None and value > 0]
+    return round(max(kept) - min(kept), 1) if len(kept) > 1 else 0.0
+
+
+@dataclass
+class OpeningSurvey:
+    """One hole in a wall, measured the way it has to be measured."""
+
+    reference: str = ""
+    room: str = ""
+    floor: str = ""
+    #: Widths at head, middle and sill [mm].
+    width_head: float | None = None
+    width_middle: float | None = None
+    width_sill: float | None = None
+    #: Heights at left, middle and right [mm].
+    height_left: float | None = None
+    height_middle: float | None = None
+    height_right: float | None = None
+    #: Both diagonals [mm]. Equal means square.
+    diagonal_a: float | None = None
+    diagonal_b: float | None = None
+    #: Height of the sill above the finished floor [mm].
+    sill_above_floor: float | None = None
+    #: Whether that floor is the finished one or a slab awaiting screed.
+    floor_is_finished: bool = False
+    #: Depth of the reveal the frame sits in [mm].
+    reveal_depth: float | None = None
+    wall_type: str = ""
+    #: Fitting clearance per side, from the system. Never invented here.
+    clearance_per_side: float | None = None
+    measured_by: str = ""
+    measured_on: date | None = None
+    #: The moment it was measured (ISO, with its zone) — so a later
+    #: measurement the same day replaces an earlier one, and not the reverse.
+    measured_at: str = ""
+    note: str = ""
+    photographs: list[str] = field(default_factory=list)
+
+    # -- what was found -------------------------------------------------------- #
+    @property
+    def is_measured(self) -> bool:
+        """Whether anybody has actually been to the building."""
+        return self.measured_on is not None and self.smallest_width is not None
+
+    @property
+    def widths(self) -> list[float]:
+        return [
+            value for value in
+            (self.width_head, self.width_middle, self.width_sill)
+            if value is not None and value > 0
+        ]
+
+    @property
+    def heights(self) -> list[float]:
+        return [
+            value for value in
+            (self.height_left, self.height_middle, self.height_right)
+            if value is not None and value > 0
+        ]
+
+    @property
+    def smallest_width(self) -> float | None:
+        return _smallest(self.widths)
+
+    @property
+    def smallest_height(self) -> float | None:
+        return _smallest(self.heights)
+
+    @property
+    def width_spread(self) -> float:
+        return _spread(self.widths)
+
+    @property
+    def height_spread(self) -> float:
+        return _spread(self.heights)
+
+    @property
+    def out_of_square(self) -> float | None:
+        """Difference between the diagonals [mm]. ``None`` if not both taken."""
+        if self.diagonal_a is None or self.diagonal_b is None:
+            return None
+        return round(abs(self.diagonal_a - self.diagonal_b), 1)
+
+    @property
+    def implied_lean(self) -> float | None:
+        """Roughly how far out of plumb the opening is, from the diagonals.
+
+        A diagonal difference is easier to measure than an angle and harder to
+        picture. For an opening of width ``w`` and height ``h``, a difference
+        ``d`` between the diagonals corresponds to the top being displaced
+        sideways by about ``d·√(w²+h²) / (2w)`` — near enough for deciding
+        whether the packers will cope.
+        """
+        difference = self.out_of_square
+        width, height = self.smallest_width, self.smallest_height
+        if difference is None or not width or not height:
+            return None
+        diagonal = math.hypot(width, height)
+        return round(difference * diagonal / (2.0 * width), 1)
+
+    # -- what to make ----------------------------------------------------------- #
+    def frame_size(self) -> tuple[float, float] | None:
+        """Outer frame width and height, or ``None`` when it cannot be known.
+
+        It cannot be known without a clearance from the system. Returning a
+        plausible pair here would be the single most expensive invention this
+        software could make.
+        """
+        width, height = self.smallest_width, self.smallest_height
+        if width is None or height is None or self.clearance_per_side is None:
+            return None
+        return (
+            round(width - 2 * self.clearance_per_side, 1),
+            round(height - 2 * self.clearance_per_side, 1),
+        )
+
+    def describe(self) -> str:
+        # The reference is Latin text at the head of a Hebrew line, so it is
+        # isolated like a number: without that, "D1 · פתח …" comes out with
+        # the marking somewhere in the middle of the sentence.
+        marking = f"⁦{self.reference}⁩" if self.reference else "—"
+        if not self.is_measured:
+            return f"{marking} · לא נמדד"
+        frame = self.frame_size()
+        body = (
+            f"{marking} · פתח ⁦{self.smallest_width:g}×"
+            f"{self.smallest_height:g}⁩"
+        )
+        if frame:
+            body += f" · מסגרת ⁦{frame[0]:g}×{frame[1]:g}⁩"
+        else:
+            body += " · מסגרת: חסר מרווח התקנה"
+        square = self.out_of_square
+        if square is not None:
+            body += f" · אלכסונים ⁦{square:g}⁩"
+        return body
+
+    def problems(self) -> list[str]:
+        """What would make a frame cut to this measurement not fit."""
+        found: list[str] = []
+        if not self.widths:
+            found.append("לא נמדד אף רוחב")
+        elif len(self.widths) < 3:
+            found.append(
+                "נמדדו פחות משלושה רוחבים — פתח שאינו מקביל ייראה תקין "
+                "במדידה אחת"
+            )
+        if not self.heights:
+            found.append("לא נמדד אף גובה")
+        elif len(self.heights) < 3:
+            found.append("נמדדו פחות משלושה גבהים")
+
+        if self.width_spread > SPREAD_TOLERANCE_MM:
+            found.append(
+                f"הפרש ⁦{self.width_spread:g}⁩ מ״מ בין הרוחבים — הפתח אינו "
+                "מקביל, מסגרת אחידה תשאיר מרווח משתנה"
+            )
+        if self.height_spread > SPREAD_TOLERANCE_MM:
+            found.append(
+                f"הפרש ⁦{self.height_spread:g}⁩ מ״מ בין הגבהים — הפתח אינו מקביל"
+            )
+
+        square = self.out_of_square
+        if square is None:
+            found.append(
+                "לא נמדדו אלכסונים — בלעדיהם אי אפשר לדעת אם הפתח מלבני"
+            )
+        elif square > SQUARE_TOLERANCE_MM:
+            lean = self.implied_lean
+            detail = f" (סטייה של כ-⁦{lean:g}⁩ מ״מ)" if lean else ""
+            found.append(
+                f"הפתח מחוץ לזווית ב-⁦{square:g}⁩ מ״מ{detail} — מעל "
+                f"⁦{SQUARE_TOLERANCE_MM:g}⁩ מ״מ זה נראה על המסגרת הגמורה"
+            )
+
+        if self.sill_above_floor is not None and not self.floor_is_finished:
+            found.append(
+                "גובה הסף נמדד מרצפה שאינה גמורה — אחרי הריצוף הסף יהיה "
+                "במקום אחר"
+            )
+        if self.clearance_per_side is None:
+            found.append(
+                "לא נקבע מרווח התקנה לסדרה — אי אפשר לגזור מידת מסגרת. "
+                "המרווח נלקח מהוראות ההרכבה של היצרן, או מאישור שלכם לסדרה"
+            )
+        elif self.clearance_per_side <= 0:
+            found.append("מרווח התקנה אפס — מסגרת לא תיכנס לפתח")
+        if not self.measured_by.strip():
+            found.append("לא נרשם מי מדד — שאלה מחר לא תהיה למי להפנות")
+        return found
+
+    @property
+    def may_be_made(self) -> bool:
+        """Whether a frame may be cut to this. Not the same as "measured"."""
+        return self.is_measured and not self.problems()
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "reference": self.reference, "room": self.room, "floor": self.floor,
+            "width_head": self.width_head, "width_middle": self.width_middle,
+            "width_sill": self.width_sill, "height_left": self.height_left,
+            "height_middle": self.height_middle, "height_right": self.height_right,
+            "diagonal_a": self.diagonal_a, "diagonal_b": self.diagonal_b,
+            "sill_above_floor": self.sill_above_floor,
+            "floor_is_finished": self.floor_is_finished,
+            "reveal_depth": self.reveal_depth, "wall_type": self.wall_type,
+            "clearance_per_side": self.clearance_per_side,
+            "measured_by": self.measured_by,
+            "measured_on": self.measured_on.isoformat() if self.measured_on else None,
+            "measured_at": self.measured_at,
+            "note": self.note, "photographs": list(self.photographs),
+        }
+
+    @classmethod
+    def from_dict(cls, raw: dict[str, Any]) -> "OpeningSurvey":
+        when = raw.get("measured_on")
+
+        def number(key: str) -> float | None:
+            value = raw.get(key)
+            return None if value is None else float(value)
+
+        return cls(
+            reference=str(raw.get("reference", "")),
+            room=str(raw.get("room", "")), floor=str(raw.get("floor", "")),
+            width_head=number("width_head"), width_middle=number("width_middle"),
+            width_sill=number("width_sill"), height_left=number("height_left"),
+            height_middle=number("height_middle"),
+            height_right=number("height_right"),
+            diagonal_a=number("diagonal_a"), diagonal_b=number("diagonal_b"),
+            sill_above_floor=number("sill_above_floor"),
+            floor_is_finished=bool(raw.get("floor_is_finished", False)),
+            reveal_depth=number("reveal_depth"),
+            wall_type=str(raw.get("wall_type", "")),
+            clearance_per_side=number("clearance_per_side"),
+            measured_by=str(raw.get("measured_by", "")),
+            measured_on=date.fromisoformat(str(when)) if when else None,
+            measured_at=str(raw.get("measured_at", "") or ""),
+            note=str(raw.get("note", "")),
+            photographs=list(raw.get("photographs", [])),
+        )
+
+
+@dataclass
+class Survey:
+    """A job's measurements: one sheet, carried to the site and back."""
+
+    survey_id: str = field(default_factory=lambda: f"SV-{uuid4().hex[:6].upper()}")
+    job_id: str = ""
+    job_name: str = ""
+    site_address: str = ""
+    opened: date = field(default_factory=date.today)
+    openings: list[OpeningSurvey] = field(default_factory=list)
+    #: What was measured: the opening in the wall (""), or — on a two-stage
+    #: job — the blind frame the window will sit in. Two sheets, never one
+    #: overwriting the other: the first is the record of what was built.
+    stage: str = ""
+
+    def __len__(self) -> int:
+        return len(self.openings)
+
+    def __iter__(self):
+        return iter(self.openings)
+
+    def opening(self, reference: str) -> OpeningSurvey:
+        for entry in self.openings:
+            if entry.reference == reference:
+                return entry
+        raise ProfileOSError(f"אין פתח {reference} בגיליון המדידה")
+
+    @property
+    def measured(self) -> list[OpeningSurvey]:
+        return [entry for entry in self.openings if entry.is_measured]
+
+    @property
+    def unmeasured(self) -> list[OpeningSurvey]:
+        return [entry for entry in self.openings if not entry.is_measured]
+
+    @property
+    def makeable(self) -> list[OpeningSurvey]:
+        return [entry for entry in self.openings if entry.may_be_made]
+
+    @property
+    def progress(self) -> float:
+        return (
+            len(self.measured) / len(self.openings) * 100.0
+            if self.openings else 0.0
+        )
+
+    def problems(self) -> list[str]:
+        """Everything standing between this sheet and a saw, opening by opening."""
+        found: list[str] = []
+        if not self.openings:
+            return ["אין פתחים בגיליון"]
+        if self.unmeasured:
+            found.append(
+                f"⁦{len(self.unmeasured)}⁩ פתחים לא נמדדו — הם לא ייוצרו "
+                "לפי מידות מהתכנית"
+            )
+        for entry in self.measured:
+            for problem in entry.problems():
+                marking = f"⁦{entry.reference}⁩" if entry.reference else "—"
+                found.append(f"{marking}: {problem}")
+        return found
+
+    @property
+    def may_be_made(self) -> bool:
+        return bool(self.openings) and not self.problems()
+
+    def describe(self) -> str:
+        return (
+            f"⁦{self.survey_id}⁩ · {self.job_name or self.job_id} · "
+            f"נמדדו ⁦{len(self.measured)}⁩ מתוך ⁦{len(self.openings)}⁩ · "
+            f"מוכנים לייצור ⁦{len(self.makeable)}⁩"
+        )
+
+    # -- from the phone -------------------------------------------------------- #
+    def take_from_phone(self, records: Iterable[Any]) -> list[str]:
+        """Fill the sheet from measurements typed on the phone on site.
+
+        A phone record belongs to this sheet only when it names this job:
+        "W1" is in every job, and a mark alone would fill another job's
+        opening with this one's sizes. It is taken only when it was measured
+        after what the sheet holds. Returns the openings filled.
+        """
+        by_marking = {entry.reference.strip().upper(): entry for entry in self.openings}
+        newest: dict[str, Any] = {}
+        for record in records:
+            if not record.project_id or record.project_id != self.job_id:
+                continue
+            key = record.reference.strip().upper()
+            if key not in by_marking:
+                continue
+            if key not in newest or record.measured_at > newest[key].measured_at:
+                newest[key] = record
+        filled: list[str] = []
+        for key, record in newest.items():
+            entry = by_marking[key]
+            taken_on = record.measured_at.astimezone().date()
+            if entry.measured_at:
+                # The moment, not the day: a phone correction at two o'clock
+                # replaces the figure synced at ten.
+                if record.measured_at <= datetime.fromisoformat(entry.measured_at):
+                    continue
+            elif entry.measured_on is not None and taken_on <= entry.measured_on:
+                continue
+
+            def size(value: float) -> float | None:
+                return float(value) if value and value > 0 else None
+
+            entry.width_head, entry.width_middle, entry.width_sill = (
+                size(v) for v in record.widths)
+            entry.height_left, entry.height_middle, entry.height_right = (
+                size(v) for v in record.heights)
+            if record.diagonals:
+                entry.diagonal_a, entry.diagonal_b = (size(v) for v in record.diagonals)
+            entry.measured_by = record.measured_by or "טלפון"
+            entry.measured_on = taken_on
+            entry.measured_at = record.measured_at.isoformat()
+            entry.note = " · ".join(part for part in (record.note, "נמדד בטלפון") if part)
+            filled.append(entry.reference)
+        return filled
+
+    # -- the sheet that goes to the site ---------------------------------------- #
+    SHEET_HEADERS = (
+        "סימון", "חדר", "רוחב עליון", "רוחב אמצע", "רוחב תחתון",
+        "גובה שמאל", "גובה אמצע", "גובה ימין", "אלכסון א", "אלכסון ב",
+        "סף מעל רצפה", "עומק גליף", "הערות",
+    )
+
+    def sheet_rows(self) -> list[list[str]]:
+        """Blank boxes, in the order somebody standing at the opening fills them."""
+        return [
+            [entry.reference, entry.room] + [""] * (len(self.SHEET_HEADERS) - 2)
+            for entry in self.openings
+        ]
+
+    # -- what it becomes --------------------------------------------------------- #
+    def to_openings(self, template: Any = None) -> list[Any]:
+        """Turn the measured sizes into elements ready to be built.
+
+        Only the openings that may be made. An opening that was measured but
+        is out of square, or has no clearance from its system, is left out and
+        named — it is not quietly rounded into the batch.
+        """
+        from ..elements.model import Opening
+
+        made: list[Any] = []
+        for entry in self.makeable:
+            size = entry.frame_size()
+            if size is None:  # pragma: no cover - may_be_made covers this
+                continue
+            width, height = size
+            values: dict[str, Any] = {
+                "name": entry.reference or "פתח",
+                "width": width,
+                "height": height,
+                "reference": entry.reference or None,
+            }
+            if template is not None:
+                base = template.model_dump()
+                base.pop("element_id", None)
+                base.update(values)
+                made.append(Opening(**base))
+            else:
+                made.append(Opening(**values))
+        return made
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "survey_id": self.survey_id, "job_id": self.job_id,
+            "job_name": self.job_name, "site_address": self.site_address,
+            "opened": self.opened.isoformat(),
+            "openings": [entry.as_dict() for entry in self.openings],
+            "stage": self.stage,
+        }
+
+    @classmethod
+    def from_dict(cls, raw: dict[str, Any]) -> "Survey":
+        return cls(
+            survey_id=str(raw.get("survey_id", "")),
+            job_id=str(raw.get("job_id", "")),
+            job_name=str(raw.get("job_name", "")),
+            site_address=str(raw.get("site_address", "")),
+            opened=date.fromisoformat(
+                str(raw.get("opened", date.today().isoformat()))
+            ),
+            openings=[
+                OpeningSurvey.from_dict(item) for item in raw.get("openings", [])
+            ],
+            stage=str(raw.get("stage", "")),
+        )
+
+
+#: The sheet measured from blind frames, on a two-stage job.
+BLIND_FRAME = "blind_frame"
+
+
+def window_sheet(job: Any, book: "SurveyBook") -> "Survey | None":
+    """The sheet the windows are made from: on a two-stage job, the one
+    measured from the blind frames — never the wall's, which sized them."""
+    from ..projects.blindframes import is_two_stage
+
+    wanted = BLIND_FRAME if is_two_stage(job) else ""
+    for sheet in book.for_job(str(getattr(job, "job_id", ""))):
+        if sheet.stage == wanted:
+            return sheet
+    return None
+
+
+def sheet_for_job(job: Any, book: "SurveyBook", *,
+                  clearance_per_side: float | None = None, stage: str = "") -> Survey:
+    """The job's measurement sheet: the one already kept, with a line added
+    for any opening the job gained since — or a new one, kept at once."""
+    kept = [sheet for sheet in book.for_job(str(getattr(job, "job_id", "")))
+            if sheet.stage == stage]
+    if not kept:
+        fresh = survey_for_job(job, clearance_per_side=clearance_per_side)
+        fresh.stage = stage
+        return book.add(fresh)
+    survey = kept[0]
+    have = {entry.reference for entry in survey.openings}
+    fresh = survey_for_job(job, clearance_per_side=clearance_per_side)
+    added = [entry for entry in fresh.openings if entry.reference not in have]
+    if added:
+        survey.openings.extend(added)
+        book.save()
+    return survey
+
+
+def series_clearance(job: Any, stage: str = "") -> tuple[float, str] | None:
+    """The installation clearance of the job's series, as the shop confirmed
+    it from the catalogue — ``(mm per side, where it was read)``; measured
+    from a blind frame, the series' blind-frame deduction instead. ``None``
+    when the openings are of more than one series, or the figure was never
+    entered: then the person types it, nothing is assumed."""
+    from ..systems.confirmation import default_confirmations
+
+    openings = list(getattr(getattr(job, "schedule", None), "openings", None) or [])
+    series = {opening.system_id for opening in openings} or {getattr(job, "system_id", "")}
+    series.discard("")
+    if len(series) != 1:
+        return None
+    book = default_confirmations().load()
+    confirmed = book.get(next(iter(series)))
+    if confirmed is None:
+        return None
+    value = confirmed.values.get(
+        "blind_frame_deduction" if stage == BLIND_FRAME else "installation_clearance")
+    if value is None or value <= 0:
+        return None
+    return float(value), confirmed.source
+
+
+def survey_for_job(job: Any, *, clearance_per_side: float | None = None) -> Survey:
+    """Open a measurement sheet with a line per opening the job already has.
+
+    The schedule says what to expect; it does not say what is there. Every
+    line comes back blank.
+    """
+    survey = Survey(
+        job_id=str(getattr(job, "job_id", "")),
+        job_name=str(getattr(job, "name", "")),
+        site_address=str(getattr(job, "site_address", "")),
+    )
+    schedule = getattr(job, "schedule", None)
+    for opening in getattr(schedule, "openings", []) or []:
+        survey.openings.append(OpeningSurvey(
+            reference=str(getattr(opening, "reference", "") or opening.name),
+            room=str((getattr(opening, "metadata", None) or {}).get("room", "")),
+            clearance_per_side=clearance_per_side,
+        ))
+    _log.info(
+        "Survey %s opened for %s with %d openings",
+        survey.survey_id, survey.job_id, len(survey),
+    )
+    return survey
+
+
+from ..core.storage import MergingBook
+
+
+class SurveyBook(MergingBook):
+    """Every measurement sheet the shop has taken, kept on disk."""
+
+    _list_key = "surveys"
+    _id_field = "survey_id"
+
+    def _records(self) -> dict[str, Any]:
+        return self._surveys
+
+    def _to_raw(self, record: Any) -> dict[str, Any]:
+        return record.as_dict()
+
+    def _from_raw(self, raw: dict[str, Any]) -> Any:
+        return Survey.from_dict(raw)
+
+    def __init__(self, path: Path | None = None) -> None:
+        from ..core.config import get_settings
+
+        self.path = Path(path) if path else get_settings().data_dir / "surveys.json"
+        self._surveys: dict[str, Survey] = {}
+
+    def load(self) -> "SurveyBook":
+        from ..core.storage import stored as _stored
+
+        if not _stored(self.path):
+            return self
+        # Recovered from the previous version or refused — never read
+        # as empty, which the next save would write over real records.
+        raw = self._read_or_mark(self.path)
+        for item in raw.get("surveys", []):
+            try:
+                survey = Survey.from_dict(item)
+            except (ValueError, KeyError) as exc:
+                _log.warning("Skipped an unreadable survey: %s", exc)
+                continue
+            self._surveys[survey.survey_id] = survey
+        self._remember_loaded()
+        return self
+
+    def save(self) -> None:
+        """Write this copy's changes, merged with what is on disk now."""
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._save_merged(self.path, {"written": datetime.now().isoformat(timespec="seconds")})
+
+    def add(self, survey: Survey) -> Survey:
+        self._surveys[survey.survey_id] = survey
+        self.save()
+        return survey
+
+    def get(self, survey_id: str) -> Survey:
+        if survey_id not in self._surveys:
+            raise ProfileOSError(f"אין גיליון מדידה {survey_id}")
+        return self._surveys[survey_id]
+
+    def for_job(self, job_id: str) -> list[Survey]:
+        return [survey for survey in self if survey.job_id == job_id]
+
+    def __len__(self) -> int:
+        return len(self._surveys)
+
+    def __iter__(self):
+        return iter(
+            sorted(self._surveys.values(), key=lambda s: s.opened, reverse=True)
+        )
+
+
+def default_surveys() -> SurveyBook:
+    return SurveyBook().load()
+
+
+def save_openings(survey: Survey, references: Iterable[str],
+                  path: Path | None = None) -> Survey:
+    """Write these openings of the sheet — only these — onto the sheet as it
+    is on disk now, and return that sheet.
+
+    Two computers on one sheet, each measuring a different window: saving
+    the whole sheet from either would put the other's window back to blank.
+    """
+    import copy
+
+    from ..core.storage import path_lock
+
+    book = SurveyBook(path)
+    with path_lock(book.path):
+        book.load()
+        if book.damaged is not None:
+            raise book.damaged
+        on_disk = book._surveys.get(survey.survey_id)
+        if on_disk is None:
+            book._surveys[survey.survey_id] = copy.deepcopy(survey)
+        else:
+            mine = {entry.reference: entry for entry in survey.openings}
+            for reference in set(references):
+                entry = mine.get(reference)
+                if entry is None:
+                    continue
+                fresh = copy.deepcopy(entry)
+                for index, kept in enumerate(on_disk.openings):
+                    if kept.reference == reference:
+                        on_disk.openings[index] = fresh
+                        break
+                else:
+                    on_disk.openings.append(fresh)
+        book.save()
+        return copy.deepcopy(book._surveys[survey.survey_id])
+
+
+__all__ = [
+    "SPREAD_TOLERANCE_MM",
+    "SQUARE_TOLERANCE_MM",
+    "OpeningSurvey",
+    "Survey",
+    "SurveyBook",
+    "default_surveys",
+    "save_openings",
+    "BLIND_FRAME",
+    "sheet_for_job",
+    "window_sheet",
+    "series_clearance",
+    "survey_for_job",
+]

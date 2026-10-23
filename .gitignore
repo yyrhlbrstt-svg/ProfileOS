@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+build/
+dist/
+*.log
+.coverage
+htmlcov/
+
+# The program's own update staging, and the stamp a published build carries
+.updates/
+profileos/_release.json

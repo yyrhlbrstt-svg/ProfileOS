@@ -1,0 +1,13119 @@
+"""Application pages.
+
+One page per stage of the workflow, in the order work actually moves:
+profile -> element -> nesting -> machining -> quotation -> shop floor.
+
+Pages share a :class:`~profileos.ui.session.Session`, so a profile analysed on
+the first page is available to the last without any page importing another.
+"""
+
+from __future__ import annotations
+
+import json
+import traceback
+from pathlib import Path
+from typing import Any
+
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import (
+    QCheckBox,
+    QComboBox,
+    QDialog,
+    QInputDialog,
+    QDoubleSpinBox,
+    QFileDialog,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMessageBox,
+    QPlainTextEdit,
+    QProgressBar,
+    QPushButton,
+    QScrollArea,
+    QSpinBox,
+    QSplitter,
+    QTabWidget,
+    QVBoxLayout,
+    QWidget,
+)
+
+from ..core.errors import ProfileOSError
+from ..core.logging_setup import get_logger
+from .theme import METRICS, Palette
+from .views import (
+    BarChart,
+    ClampView,
+    ElevationView,
+    NestingView,
+    SectionView,
+    SheetView,
+)
+from .widgets import (
+    Badge, Card, DataTable, FieldGrid, MillimetreBox, PageHeader, StatRow, documents_dir,
+    page_layout, suggested_path,
+)
+
+_log = get_logger("ui.pages")
+
+
+#: Field names that turn up in the audit log, in the words the shop uses.
+#: A log written in the code's vocabulary is a log only the author can read.
+_AUDIT_FIELDS: dict[str, str] = {
+    "values": "ערכי הסדרה",
+    "stock_value": "שווי המלאי",
+    "quote_total": "סכום ההצעה",
+    "net_price": "מחיר לפני מע״מ",
+    "payment_terms": "תנאי תשלום",
+    "status": "סטטוס",
+    "due_date": "מועד אספקה",
+    "customer_id": "לקוח",
+    "name": "שם",
+}
+
+
+def _audit_field(name: str) -> str:
+    if not name:
+        return "—"
+    if name.startswith("revision "):
+        return f"גרסה ⁦{name.split()[-1]}⁩"
+    return _AUDIT_FIELDS.get(name, name)
+
+
+def _audit_value(value: Any) -> str:
+    """One recorded value, short enough for a table cell."""
+    if value is None:
+        return "—"
+    if isinstance(value, float):
+        return f"⁦{value:,.2f}⁩"
+    if isinstance(value, (int, bool)):
+        return f"⁦{value}⁩"
+    text = str(value)
+    return text if len(text) <= 48 else text[:45] + "…"
+
+
+def known_people() -> list[str]:
+    """The names this shop has already written itself — in its timesheets and
+    its site surveys — most recent first. A list of people is never made up:
+    a new install starts empty and learns them as they are typed."""
+    names: list[str] = []
+    try:
+        from ..erp.timesheets import default_timebook
+
+        names += [entry.person for entry in sorted(
+            default_timebook()._entries.values(),
+            key=lambda e: str(getattr(e, "on", "")), reverse=True)]
+    except Exception:  # noqa: BLE001 - a suggestion list is not worth a failure
+        pass
+    try:
+        from ..delivery.survey import default_surveys
+
+        names += [survey.measured_by for survey in default_surveys()._surveys.values()]
+    except Exception:  # noqa: BLE001
+        pass
+    seen: list[str] = []
+    for name in names:
+        name = (name or "").strip()
+        if name and name not in seen:
+            seen.append(name)
+    return seen[:20]
+
+
+def _people_combo(combo: QComboBox) -> None:
+    """An editable name field offering the shop's own people, empty to start."""
+    combo.setEditable(True)
+    combo.addItems(known_people())
+    combo.setCurrentIndex(-1)
+    combo.lineEdit().setPlaceholderText("שם העובד")
+
+
+class Page(QWidget):
+    """Base page: a header, a body, and access to the shared session.
+
+    ``title`` is the stable identifier code navigates by; ``hebrew`` is what
+    the person sees. The two are separate on purpose — the working language of
+    the interface is Hebrew, and renaming an identifier every time wording
+    improves would break every lookup.
+    """
+
+    title = "Page"
+    hebrew = ""
+    subtitle = ""
+    #: Pages built from a stack of cards set this: on a laptop the stack is
+    #: taller than the screen, and squeezing every card until its table shows
+    #: one row is worse than scrolling. Pages built around a splitter leave it
+    #: off — a splitter already decides how to share the height it is given.
+    scrollable = False
+
+    def __init__(self, session: Any, palette: Palette, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.session = session
+        self.colours = palette
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        self.header = PageHeader(self.hebrew or self.title, self.subtitle)
+        outer.addWidget(self.header)
+
+        body = QWidget()
+        self.body = page_layout(body)
+        if self.scrollable:
+            area = QScrollArea()
+            area.setWidget(body)
+            area.setWidgetResizable(True)
+            area.setFrameShape(QScrollArea.Shape.NoFrame)
+            area.setHorizontalScrollBarPolicy(
+                Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+            )
+            outer.addWidget(area, 1)
+        else:
+            outer.addWidget(body, 1)
+
+        self.build()
+
+    def build(self) -> None:
+        """Override to populate :attr:`body`."""
+
+    def refresh(self) -> None:
+        """Called when the page becomes visible."""
+
+    def needs_design(self, *buttons: QPushButton) -> None:
+        """Buttons that work on a designed opening: off, and saying why,
+        until there is one — not a blue button that answers with an error."""
+        self.__dict__.setdefault("_design_actions", []).extend(buttons)
+        self.sync_design_actions()
+
+    def sync_design_actions(self) -> None:
+        ready = bool(getattr(self.session, "builds", None))
+        for button in self.__dict__.get("_design_actions", []):
+            button.setEnabled(ready)
+            button.setToolTip("" if ready else "תכננו פתח קודם — בעמוד ״פתח״ ← ״בנה פתח״")
+
+    def showEvent(self, event: Any) -> None:  # noqa: N802 - Qt override
+        super().showEvent(event)
+        self.sync_design_actions()
+
+    # -- error handling ------------------------------------------------------ #
+    def report(self, exc: Exception, context: str = "") -> None:
+        """Show an engine error to the user rather than losing it to a log."""
+        _log.error("%s: %s", context or "Operation failed", exc, exc_info=True)
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle(context or "הפעולה נכשלה")
+        box.setText(str(exc))
+        if not isinstance(exc, ProfileOSError):
+            box.setDetailedText(traceback.format_exc())
+        box.exec()
+
+    def checked_book(self, book: Any, what: str) -> Any:
+        """Say so when a book opened read-only because its file is damaged
+        or busy — once per page, not on every click — and keep it uncached
+        by returning ``False`` for ``keep``, so a busy file is retried."""
+        problem = getattr(book, "damaged", None)
+        if problem is None:
+            return book
+        told = self.__dict__.setdefault("_told_damaged", set())
+        if what not in told:
+            told.add(what)
+            self.report(
+                problem,
+                f"{what} לא נקרא — מוצג ריק לקריאה בלבד, ושום דבר לא נשמר עליו",
+            )
+        return book
+
+    def status(self, message: str) -> None:
+        window = self.window()
+        if hasattr(window, "toast"):
+            window.toast(message)
+        elif hasattr(window, "statusBar"):
+            window.statusBar().showMessage(message, 6000)
+
+    def go_design(self) -> None:
+        """Take the operator to where an opening is designed."""
+        window = self.window()
+        if hasattr(window, "go_to_page"):
+            window.go_to_page("Element")
+
+
+def canvas_with_empty_state(page: "Page", canvas: QWidget, text: str) -> QWidget:
+    """``canvas`` behind a friendly empty state, as a two-page stack.
+
+    An empty black rectangle reads as "broken". Until there is something to
+    draw, the page says what will appear here and offers the one button that
+    leads to it; index 1 of the stack is the canvas itself.
+    """
+    from PySide6.QtWidgets import QStackedWidget
+
+    empty = QWidget()
+    layout = QVBoxLayout(empty)
+    layout.addStretch(1)
+    label = QLabel(text)
+    label.setObjectName("EmptyState")
+    label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    layout.addWidget(label)
+    go = QPushButton("לתכנון פתח")
+    go.setObjectName("Primary")
+    go.clicked.connect(page.go_design)
+    row = QHBoxLayout()
+    row.addStretch(1)
+    row.addWidget(go)
+    row.addStretch(1)
+    layout.addLayout(row)
+    layout.addStretch(1)
+    stack = QStackedWidget()
+    stack.addWidget(empty)
+    stack.addWidget(canvas)
+    return stack
+
+
+def _short_stamp(stamp: str) -> str:
+    """An ISO stamp as the shop writes dates: 17/10/2026 14:05."""
+    from datetime import datetime
+
+    try:
+        moment = datetime.fromisoformat(stamp)
+    except (TypeError, ValueError):
+        return stamp.replace("T", " ")[:16]
+    if moment.tzinfo is not None:
+        moment = moment.astimezone()
+    return moment.strftime("%d/%m/%Y %H:%M")
+
+
+def _iso_to_shop_date(text: str) -> str:
+    from datetime import date
+
+    try:
+        return date.fromisoformat(text[:10]).strftime("%d/%m/%Y")
+    except (TypeError, ValueError):
+        return text
+
+
+class HomePage(Page):
+    """Where the day starts: what has been done, and what the next step is.
+
+    The competitors open on a form. Opening on the state of the work — with
+    the one next action a click away — is what makes the software feel like it
+    is working *with* the fabricator rather than waiting for them.
+    """
+
+    title = "Home"
+    hebrew = "דף הבית"
+    scrollable = True
+    subtitle = ""
+
+    #: The production chain, in the order work moves: (page title, Hebrew
+    #: name, how to tell from the session that the step has been done).
+    STEPS: tuple[tuple[str, str, str], ...] = (
+        ("Profile", "פרופיל", "section_properties"),
+        ("Element", "פתחים", "builds"),
+        ("Nesting", "חיתוך", "nesting_report"),
+        ("Glass", "זכוכית", "glass_report"),
+        ("Machining", "CNC", "post_results"),
+        ("Quotation", "הצעת מחיר", "quote"),
+        ("Shop floor", "ייצור", "work_order"),
+    )
+
+    def build(self) -> None:
+        from ..branding import active_brand
+
+        palette_button = QPushButton("Ctrl+K — מעבר מהיר")
+        palette_button.setObjectName("Ghost")
+        palette_button.clicked.connect(self._open_palette)
+        self.header.add_action(palette_button)
+
+        brief = QPushButton("סיכום בוקר לוואטסאפ")
+        brief.setObjectName("WhatsApp")
+        brief.setToolTip("הכסף, השטח ומה דחוף — בהודעה אחת לטלפון שלך")
+        brief.clicked.connect(self.send_morning_brief)
+        self.header.add_action(brief)
+
+        # The greeting is the page's title (in the header): one title, and the
+        # day's work starts higher on a laptop screen.
+        self.greeting = QLabel()
+        self.greeting.setObjectName("HomeGreeting")
+        self.greeting.setVisible(False)
+        self.body.addWidget(self.greeting)
+
+        self.next_label = QLabel()
+        self.next_label.setObjectName("HomeNext")
+        self.next_label.setTextFormat(Qt.TextFormat.RichText)
+        self.body.addWidget(self.next_label)
+
+        # -- the business, before the current window ------------------------ #
+        # What an owner asks first thing is not "which step is this window
+        # on" but "what is out with customers, what is on the floor, what do
+        # I owe a phone call today". Every figure here is read from the job
+        # files, the task book and the service register — nothing seeded.
+        self.business = StatRow([
+            ("quoted", "הצעות פתוחות"), ("backlog", "הוזמן ובייצור"),
+            ("tasks", "משימות להיום"), ("service", "קריאות שירות"),
+        ])
+        self.body.addWidget(self.business)
+
+        # -- what needs a look, found without being asked ---------------- #
+        # Read across every book the shop keeps: quotations nobody chased,
+        # won jobs that never reached the floor, cheques that can be banked,
+        # a backup that stopped running. Each line goes where it is dealt with.
+        self.insights_card = Card("שווה לבדוק היום")
+        self.insights_box = QVBoxLayout()
+        self.insights_box.setSpacing(METRICS.space(2))
+        self.insights_card.add_layout(self.insights_box)
+        self.insights_more = QPushButton("")
+        self.insights_more.setObjectName("Ghost")
+        self.insights_more.setCheckable(True)
+        self.insights_more.toggled.connect(lambda _on: self.show_insights())
+        self.insights_card.add(self.insights_more)
+        self.body.addWidget(self.insights_card)
+        self._insights: list[Any] = []
+
+        # -- the pipeline ------------------------------------------------- #
+        pipeline = Card("קו הייצור")
+        row = QHBoxLayout()
+        row.setSpacing(METRICS.space(1))
+        self._step_buttons: list[QPushButton] = []
+        for position, (page_title, hebrew, _attr) in enumerate(self.STEPS):
+            if position:
+                arrow = QLabel("←")
+                arrow.setObjectName("PipeArrow")
+                row.addWidget(arrow)
+            button = QPushButton(hebrew)
+            button.setObjectName("PipeStep")
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
+            button.clicked.connect(
+                lambda _checked=False, t=page_title: self._go(t)
+            )
+            self._step_buttons.append(button)
+            row.addWidget(button, 1)
+        pipeline.add_layout(row)
+
+        # -- the numbers of the current window: the pipeline above already
+        # says where it stands, so they are kept for code, not shown. -------- #
+        self.stats = StatRow([
+            ("elements", "פתחים"), ("area", "שטח"),
+            ("quote", "הצעת מחיר"), ("floor", "בייצור"),
+        ])
+        self.stats.setVisible(False)
+        self.body.addWidget(self.stats)
+
+        # -- quick actions ------------------------------------------------ #
+        actions = Card("פעולות מהירות")
+        buttons = QHBoxLayout()
+        buttons.setSpacing(METRICS.space(2))
+        # Three, the first of them the one most worth a click; finding an
+        # opening or a profile is Ctrl+K, and the line above walks the steps.
+        for position, (label, handler) in enumerate((
+            ("הערכת מחיר מהירה  \u2066Ctrl+E\u2069", self._quick_estimate),
+            ("פרויקט חדש", lambda: self._go("Projects")),
+            ("הצעת מחיר", lambda: self._go("Quotation")),
+        )):
+            button = QPushButton(label)
+            if position == 0:
+                button.setObjectName("Primary")
+            button.clicked.connect(lambda _checked=False, h=handler: h())
+            buttons.addWidget(button)
+        buttons.addStretch(1)
+        actions.add_layout(buttons)
+
+        # What somebody has to do today. It sits above the order book because
+        # a follow-up nobody sees on the morning it is due is a follow-up that
+        # never happens, and a quotation nobody chases is a job lost to a habit
+        # rather than to a price.
+        today = Card("להיום")
+        self.today_headline = QLabel("")
+        self.today_headline.setObjectName("StatLabel")
+        self.today_headline.setWordWrap(True)
+        today.add(self.today_headline)
+        self.today_table = DataTable(
+            ["", "מתי", "על מה", "מה לעשות", "אחראי"],
+            empty_text="אין משימות להיום",
+        )
+        self.today_table.stretch(3)
+        self.today_table.setFixedHeight(METRICS.row_height * 5)
+        today.add(self.today_table)
+        open_tasks = QPushButton("כל המשימות")
+        open_tasks.setObjectName("Ghost")
+        open_tasks.clicked.connect(lambda: self._go("Projects"))
+        today.add(open_tasks)
+
+        # -- the field: who goes where on the next working day -------------- #
+        field_card = Card("בשטח")
+        self.field_headline = QLabel("")
+        self.field_headline.setObjectName("StatLabel")
+        self.field_headline.setWordWrap(True)
+        field_card.add(self.field_headline)
+        self.field_table = DataTable(
+            ["מתי", "סוג", "לקוח", "כתובת", "מי יוצא", "תזכורת"],
+            empty_text="אין ביקורים ביומן — ״קבע ביקור״ מוסיף",
+        )
+        self.field_table.stretch(3)
+        self.field_table.setFixedHeight(METRICS.row_height * 5)
+        field_card.add(self.field_table)
+        field_bar = QHBoxLayout()
+        plan = QPushButton("קבע ביקור")
+        plan.clicked.connect(self.plan_visit)
+        field_bar.addWidget(plan)
+        remind = QPushButton("שלח תזכורת בוואטסאפ")
+        remind.setObjectName("WhatsApp")
+        remind.clicked.connect(self.remind_visit)
+        field_bar.addWidget(remind)
+        done = QPushButton("בוצע")
+        done.clicked.connect(self.visit_done)
+        field_bar.addWidget(done)
+        crew = QPushButton("שלח לצוות את התוכנית")
+        crew.setToolTip("כל הביקורים של היום הבא, לפי הסדר, עם קישור ניווט בווייז")
+        crew.clicked.connect(self.send_crew_plan)
+        field_bar.addWidget(crew)
+        field_bar.addStretch(1)
+        field_card.add_layout(field_bar)
+        self._field: list[Any] = []
+
+        recent = Card("פרויקטים אחרונים")
+        self.recent_table = DataTable(
+            ["מספר", "שם", "לקוח", "סטטוס", "עודכן"],
+            empty_text="עדיין אין פרויקטים — פתח אחד בעמוד ״פרויקטים״",
+        )
+        self.recent_table.setMaximumHeight(METRICS.row_height * 5)
+        self.recent_table.itemDoubleClicked.connect(self._open_recent)
+        recent.add(self.recent_table)
+        hint = QLabel("לחיצה כפולה על שורה פותחת את הפרויקט לעבודה.")
+        hint.setObjectName("Hint")
+        recent.add(hint)
+
+        # The order an owner reads in the morning: what is owed and on the
+        # floor (above), today's calls, what needs a look, who goes where,
+        # then the jobs, the working line and the shortcuts.
+        self.body.removeWidget(self.insights_card)
+        for part in (today, self.insights_card, field_card, recent, pipeline, actions):
+            self.body.addWidget(part)
+
+        # What this installation can actually do. One line and a bar by
+        # default; the list itself opens on request. Kept on the page because
+        # a shop that does not know it cannot cut yet finds out at the saw —
+        # but below the business, because it is not the business.
+        setup = Card("מצב ההקמה")
+        setup_row = QHBoxLayout()
+        setup_row.setSpacing(METRICS.space(3))
+        self.readiness_headline = QLabel("")
+        self.readiness_headline.setObjectName("StatLabel")
+        self.readiness_headline.setWordWrap(True)
+        setup_row.addWidget(self.readiness_headline, 1)
+        self.readiness_toggle = QPushButton("הצג פירוט")
+        self.readiness_toggle.setObjectName("Ghost")
+        self.readiness_toggle.setCheckable(True)
+        self.readiness_toggle.toggled.connect(self._toggle_readiness)
+        setup_row.addWidget(self.readiness_toggle)
+        setup.add_layout(setup_row)
+        self.readiness_bar = QProgressBar()
+        self.readiness_bar.setObjectName("ReadinessBar")
+        self.readiness_bar.setTextVisible(False)
+        self.readiness_bar.setFixedHeight(METRICS.space(2))
+        setup.add(self.readiness_bar)
+        self.readiness_table = DataTable(
+            ["", "מה", "מצב", "מה זה חוסם", "איך סוגרים"],
+            empty_text="הכול מוכן",
+        )
+        self.readiness_table.setFixedHeight(METRICS.row_height * 5)
+        self.readiness_table.setVisible(False)
+        setup.add(self.readiness_table)
+        self.readiness_more = QLabel("")
+        self.readiness_more.setObjectName("Hint")
+        self.readiness_more.setVisible(False)
+        setup.add(self.readiness_more)
+        self.body.addWidget(setup)
+
+        note = QLabel(
+            "כל צעד בקו נשען על הקודם לו: הפרופיל שנמדד הוא זה שנבנה ממנו "
+            "הפתח, רשימת החיתוך שלו היא זו שמגיעה למסור, והמחיר מחושב מאותם "
+            "נתונים בדיוק. שינוי במקום אחד מתגלגל לכל השאר."
+        )
+        note.setObjectName("Hint")
+        note.setWordWrap(True)
+        self.body.addWidget(note)
+        self.body.addStretch(1)
+
+        brand = active_brand()
+        self._brand_name = brand.display_name
+
+        # A live screen: while the home page is open it keeps itself current —
+        # a task that falls due, a cheque that becomes bankable, a quotation
+        # entered on another computer — without anybody pressing anything.
+        from PySide6.QtCore import QTimer
+
+        self._live_timer = QTimer(self)
+        self._live_timer.setInterval(60_000)
+        self._live_timer.timeout.connect(self._tick)
+        self._live_timer.start()
+
+    def _tick(self) -> None:
+        if not self.isVisible():
+            return
+        try:
+            self.show_business()
+            self.scan_insights()
+            self.show_today()
+            self.show_field()
+        except Exception:  # noqa: BLE001 - a refresh that fails waits for the next one
+            _log.exception("Live refresh of the home page failed")
+
+    # -- behaviour -------------------------------------------------------- #
+    def _go(self, page_title: str) -> None:
+        window = self.window()
+        if hasattr(window, "go_to_page"):
+            window.go_to_page(page_title)
+
+    def _open_recent(self, item: Any) -> None:
+        """Double-clicking a recent job opens it, on the page that owns opening."""
+        row = item.row()
+        if row >= len(self._recent):
+            return
+        job = self._recent[row]
+        window = self.window()
+        if not hasattr(window, "go_to_page"):
+            return
+        page = window.go_to_page("Projects")
+        for index, listed in enumerate(page._jobs):
+            if listed.job_id == job.job_id:
+                page.jobs_table.setCurrentCell(index, 0)
+                page.open_job()
+                return
+
+    def _load_sample(self) -> None:
+        window = self.window()
+        if hasattr(window, "go_to_page"):
+            page = window.go_to_page("Profile")
+            if hasattr(page, "load_sample"):
+                page.load_sample()
+
+    def scan_insights(self) -> None:
+        from ..insights import dismissed, scan
+
+        try:
+            hidden = dismissed()
+            self._insights = [
+                insight for insight in scan(has_job=self.session.job is not None)
+                if insight.key not in hidden
+            ]
+        except Exception:  # noqa: BLE001 - the home page opens regardless
+            _log.exception("Insight scan failed")
+            self._insights = []
+        self.show_insights()
+
+    def show_insights(self) -> None:
+        while self.insights_box.count():
+            item = self.insights_box.takeAt(0)
+            if item.widget() is not None:
+                item.widget().deleteLater()
+
+        if not self._insights:
+            calm = QLabel("✓  הכול בסדר — אין כרגע שום דבר שמחכה לך")
+            calm.setObjectName("InsightCalm")
+            self.insights_box.addWidget(calm)
+            self.insights_more.hide()
+            self.insights_card.set_title("שווה לבדוק היום")
+            return
+
+        expanded = self.insights_more.isChecked()
+        shown = self._insights if expanded else self._insights[:4]
+        for insight in shown:
+            self.insights_box.addWidget(self._insight_row(insight))
+        hidden = len(self._insights) - 4
+        self.insights_more.setVisible(hidden > 0)
+        self.insights_more.setText("הצג פחות" if expanded else f"עוד ⁦{hidden}⁩")
+        self.insights_card.set_title(f"שווה לבדוק היום · {len(self._insights)}")
+
+    def _insight_row(self, insight: Any) -> QWidget:
+        row = QFrame()
+        row.setObjectName("InsightRow")
+        line = QHBoxLayout(row)
+        line.setContentsMargins(METRICS.space(3), METRICS.space(2),
+                                METRICS.space(3), METRICS.space(2))
+        line.setSpacing(METRICS.space(3))
+
+        dot = QLabel("●")
+        dot.setObjectName("InsightDot")
+        dot.setProperty("severity", insight.severity)
+        line.addWidget(dot, 0, Qt.AlignmentFlag.AlignTop)
+
+        words = QVBoxLayout()
+        words.setSpacing(2)
+        title = QLabel(insight.title)
+        title.setObjectName("InsightText")
+        title.setWordWrap(True)
+        words.addWidget(title)
+        if insight.detail:
+            detail = QLabel(insight.detail)
+            detail.setObjectName("InsightDetail")
+            detail.setWordWrap(True)
+            words.addWidget(detail)
+        line.addLayout(words, 1)
+
+        if insight.page:
+            go = QPushButton("טפל")
+            go.setObjectName("Ghost")
+            go.setCursor(Qt.CursorShape.PointingHandCursor)
+            go.clicked.connect(lambda _c=False, page=insight.page: self._go(page))
+            line.addWidget(go, 0, Qt.AlignmentFlag.AlignVCenter)
+        later = QPushButton("✕")
+        later.setObjectName("InsightDismiss")
+        later.setToolTip("ראיתי — הסתר עד שמשהו ישתנה")
+        later.setCursor(Qt.CursorShape.PointingHandCursor)
+        later.clicked.connect(lambda _c=False, key=insight.key: self._dismiss(key))
+        line.addWidget(later, 0, Qt.AlignmentFlag.AlignVCenter)
+        return row
+
+    def _dismiss(self, key: str) -> None:
+        from ..insights import dismiss
+
+        try:
+            dismiss(key)
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "לא נשמר")
+            return
+        self._insights = [i for i in self._insights if i.key != key]
+        self.show_insights()
+
+    # -- the field diary ------------------------------------------------------ #
+    def _agenda(self) -> Any:
+        from ..projects.agenda import default_agenda
+
+        return self.checked_book(default_agenda(), "יומן הביקורים")
+
+    def show_field(self) -> None:
+        """Today's remaining visits and the next working day's, in time order."""
+        from datetime import date as _date
+
+        from ..projects.agenda import day_word, next_working_day
+
+        today = _date.today()
+        upcoming = next_working_day(today)
+        try:
+            agenda = self._agenda()
+            if agenda.damaged is not None:
+                raise agenda.damaged
+        except Exception as exc:  # noqa: BLE001
+            self.field_headline.setText(f"היומן לא נקרא: {exc}")
+            self.field_table.set_rows([])
+            self._field = []
+            return
+        # Today's remaining visits, then every day up to the next working day —
+        # a Friday visit is on the list on Thursday.
+        self._field = [
+            a for a in agenda
+            if (a.on == today and not a.done) or today < a.on <= upcoming
+        ]
+        colours = {}
+        rows = []
+        for index, item in enumerate(self._field):
+            when = day_word(item.on, today) + (f" ⁦{item.time}⁩" if item.time else "")
+            reminded = "נשלחה" if item.reminded_on else ("—" if item.on == today else "לא נשלחה")
+            rows.append([when, item.kind.hebrew, item.customer_name or item.job_id or "—",
+                         item.address or "—", item.crew or "—", reminded])
+            if reminded == "לא נשלחה":
+                colours[(index, 5)] = self.colours.warning
+        self.field_table.set_rows(rows, colours=colours)
+        waiting = len(agenda.unreminded(upcoming))
+        count = len(agenda.on_day(upcoming))
+        self.field_headline.setText(
+            f"{day_word(upcoming, today)}: ⁦{count}⁩ ביקורים"
+            + (f" · ⁦{waiting}⁩ בלי תזכורת" if waiting else "")
+            if count else f"{day_word(upcoming, today)} אין ביקורים ביומן"
+        )
+
+    def _selected_visit(self) -> Any:
+        row = self.field_table.currentRow()
+        return self._field[row] if 0 <= row < len(self._field) else None
+
+    def plan_visit(self, job: Any = None, kind: str = "") -> None:
+        from ..projects import default_store
+        from ..sharing import customer_phone
+        from .dialogs import AppointmentDialog
+
+        try:
+            jobs = [j for j in default_store().all() if j.status.is_open]
+        except Exception:  # noqa: BLE001
+            jobs = []
+        store_jobs = {j.job_id: j for j in jobs}
+        dialog = AppointmentDialog(
+            self, jobs=jobs, job=job or self.session.job, kind=kind,
+            customer_lookup=lambda job_id: customer_phone(store_jobs.get(job_id)),
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        try:
+            self._agenda().add(dialog.appointment())
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "הביקור לא נשמר")
+            return
+        self.show_field()
+        self.status("הביקור נקבע ביומן")
+
+    def remind_visit(self) -> None:
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+
+        from ..branding import active_brand
+        from ..projects.agenda import reminder_text
+        from ..sharing import whatsapp_link
+
+        item = self._selected_visit()
+        if item is None:
+            self.status("בחרו ביקור מהרשימה")
+            return
+        brand = active_brand()
+        job = None
+        if item.job_id:
+            try:
+                from ..projects import default_store
+
+                job = default_store().load(item.job_id)
+            except Exception:  # noqa: BLE001 - the reminder goes without the questions
+                job = None
+        message = reminder_text(item, brand_name=brand.display_name,
+                                phone=getattr(brand, "phone", "") or "", job=job)
+        QDesktopServices.openUrl(QUrl(whatsapp_link(item.phone, message)))
+        try:
+            agenda = self._agenda()
+            agenda.mark_reminded(item.appointment_id)
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "לא נרשם שהתזכורת נשלחה")
+        self.show_field()
+
+    def _open_whatsapp(self, phone: str, message: str) -> None:
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+
+        from ..sharing import whatsapp_link
+
+        QDesktopServices.openUrl(QUrl(whatsapp_link(phone, message)))
+
+    def send_morning_brief(self) -> None:
+        from ..branding import active_brand
+        from ..core.config import get_settings
+        from ..insights import gather_context, morning_brief, scan
+
+        try:
+            context = gather_context(has_job=self.session.job is not None)
+            found = scan(has_job=self.session.job is not None)
+            message = morning_brief(found, context, brand_name=active_brand().display_name)
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "הסיכום לא נוצר")
+            return
+        phone = get_settings().owner_phone
+        self._open_whatsapp(phone, message)
+        self.status(
+            "נפתח וואטסאפ עם סיכום הבוקר"
+            + ("" if phone else " — הזינו את הטלפון שלכם במערכת ← מפעיל כדי שיגיע ישר אליכם")
+        )
+
+    def send_crew_plan(self) -> None:
+        from datetime import date as _date
+
+        from ..branding import active_brand
+        from ..projects.agenda import day_word, next_working_day
+        from ..sharing import crew_plan_message
+
+        today = _date.today()
+        try:
+            agenda = self._agenda()
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "היומן לא נקרא")
+            return
+        # Before noon the crew needs today's plan; after it, the next day's.
+        from datetime import datetime as _datetime
+
+        day = today if _datetime.now().hour < 12 else next_working_day(today)
+        visits = [visit for visit in agenda.on_day(day) if not visit.done]
+        message = crew_plan_message(visits, day=day_word(day, today),
+                                    brand_name=active_brand().display_name)
+        self._open_whatsapp("", message)
+        self.status(f"נפתח וואטסאפ עם התוכנית ({day_word(day, today)}) — בחרו את הצוות ושלחו")
+
+    def visit_done(self) -> None:
+        item = self._selected_visit()
+        if item is None:
+            self.status("בחרו ביקור מהרשימה")
+            return
+        try:
+            self._agenda().mark_done(item.appointment_id)
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "לא נשמר")
+            return
+        self.show_field()
+
+    def show_today(self) -> None:
+        """What is due, worst-late first, and what nobody is chasing."""
+        from datetime import date as _date
+
+        from ..projects.followups import default_tasks
+
+        try:
+            book = default_tasks()
+            tasks = book.due_by()
+        except Exception as exc:  # noqa: BLE001
+            self.today_table.set_rows([])
+            self.today_headline.setText(str(exc))
+            return
+
+        tasks.sort(key=lambda task: task.due)
+        rows: list[list[Any]] = []
+        colours: dict[tuple[int, int], str] = {}
+        for task in tasks[:5]:
+            colours[(len(rows), 0)] = (
+                self.colours.danger if task.is_overdue()
+                else self.colours.warning
+            )
+            rows.append([
+                "●", task.due.strftime("%d/%m"),
+                task.subject_name or task.about or "—",
+                task.what, task.assigned_to or "—",
+            ])
+        self.today_table.set_rows(rows, colours=colours)
+
+        summary = book.summary()
+        line = (
+            f"פתוחות ⁦{summary['open']}⁩ · להיום ⁦{summary['due_today']}⁩"
+            + (
+                f" · באיחור ⁦{summary['overdue']}⁩" if summary["overdue"] else ""
+            )
+        )
+        try:
+            from ..projects import default_store
+
+            forgotten = book.unchased_quotes(list(default_store().all()))
+        except Exception:  # noqa: BLE001
+            forgotten = []
+        if forgotten:
+            line += (
+                f" · ⁦{len(forgotten)}⁩ הצעות פתוחות שאיש אינו עוקב אחריהן"
+            )
+        self.today_headline.setText(line)
+
+    def show_readiness(self) -> None:
+        """The setup list, worst first — the things that block real work."""
+        from ..readiness import State, readiness
+
+        try:
+            report = readiness()
+        except Exception as exc:  # noqa: BLE001 - never lose the home page
+            _log.warning("Readiness report failed: %s", exc)
+            self.readiness_table.set_rows([])
+            self.readiness_headline.setText("")
+            return
+
+        order = {State.ATTENTION: 0, State.EMPTY: 1, State.PARTIAL: 2, State.READY: 3}
+        tone = {
+            State.ATTENTION: self.colours.danger,
+            State.EMPTY: self.colours.warning,
+            State.PARTIAL: self.colours.info,
+            State.READY: self.colours.success,
+        }
+        outstanding = sorted(
+            (check for check in report if not check.state.is_ready),
+            key=lambda check: (0 if check.critical else 1, order[check.state]),
+        )
+
+        shown = outstanding[:4]
+        rows: list[list[Any]] = []
+        colours: dict[tuple[int, int], str] = {}
+        for index, check in enumerate(shown):
+            rows.append([
+                "●", check.hebrew, check.state.hebrew,
+                check.blocks or "—", check.fix or "—",
+            ])
+            colours[(index, 0)] = tone[check.state]
+        self.readiness_table.set_rows(rows, colours=colours)
+        self.readiness_more.setText(
+            f"ועוד ⁦{len(outstanding) - len(shown)}⁩ פריטים — הרשימה המלאה בעמוד ״מערכת״"
+            if len(outstanding) > len(shown) else ""
+        )
+
+        self.readiness_headline.setText(report.verdict())
+        self.readiness_headline.setStyleSheet(
+            f"color: {self.colours.success if report.may_cut else self.colours.warning};"
+        )
+        total = len(report)
+        self.readiness_bar.setRange(0, max(total, 1))
+        self.readiness_bar.setValue(total - len(outstanding))
+
+    def _toggle_readiness(self, shown: bool) -> None:
+        self.readiness_table.setVisible(shown)
+        self.readiness_more.setVisible(shown)
+        self.readiness_toggle.setText("הסתר פירוט" if shown else "הצג פירוט")
+
+    def show_business(self) -> None:
+        """The shop at a glance: what is out, what is in, what is due.
+
+        Read straight from what is on disk. A figure that cannot be read is
+        shown as a dash rather than a zero — "nothing" and "could not tell"
+        are different answers to an owner.
+        """
+        from ..projects import JobStatus, default_store
+
+        try:
+            jobs = default_store().all()
+        except Exception:  # noqa: BLE001 - the dashboard must open regardless
+            _log.exception("Could not read the job store for the dashboard")
+            jobs = None
+        if jobs is None:
+            self.business.update_many({"quoted": ("—", ""), "backlog": ("—", "")})
+        else:
+            quoted = [job for job in jobs if job.status is JobStatus.QUOTED]
+            backlog = [
+                job for job in jobs
+                if job.status in (JobStatus.WON, JobStatus.IN_PRODUCTION)
+            ]
+            quoted_value = sum(job.quote_total for job in quoted)
+            from ..projects.account import job_account
+
+            backlog_value = sum(job_account(job, ()).total_net for job in backlog)
+            self.business.update_many({
+                "quoted": (
+                    f"⁦{len(quoted)}⁩",
+                    f"⁦{quoted_value:,.0f} ₪⁩ אצל לקוחות" if quoted_value else "אין הצעות פתוחות",
+                ),
+                "backlog": (
+                    f"⁦{len(backlog)}⁩",
+                    f"⁦{backlog_value:,.0f} ₪⁩ לביצוע, לפני מע״מ" if backlog_value else "אין עבודות בתור",
+                ),
+            })
+
+        try:
+            from ..projects.followups import default_tasks
+
+            summary = default_tasks().summary()
+            overdue = summary["overdue"]
+            self.business.set(
+                "tasks", f"⁦{summary['due_today'] + overdue}⁩",
+                f"⁦{overdue}⁩ באיחור" if overdue else "אין איחורים",
+            )
+            if overdue:
+                self.business.tiles["tasks"].value.setStyleSheet(
+                    f"color: {self.colours.danger};"
+                )
+            else:
+                self.business.tiles["tasks"].value.setStyleSheet("")
+        except Exception:  # noqa: BLE001
+            self.business.set("tasks", "—", "")
+
+        try:
+            from ..service.register import default_register
+
+            register = default_register()
+            open_calls = register.open_calls()
+            late = register.overdue()
+            self.business.set(
+                "service", f"⁦{len(open_calls)}⁩",
+                f"⁦{len(late)}⁩ חרגו מזמן התגובה" if late else "פתוחות",
+            )
+        except Exception:  # noqa: BLE001
+            self.business.set("service", "—", "")
+
+    def _quick_estimate(self) -> None:
+        window = self.window()
+        if hasattr(window, "quick_estimate"):
+            window.quick_estimate()
+
+    def _find_opening(self) -> None:
+        """Straight from the front door to a built window."""
+        window = self.window()
+        if hasattr(window, "go_to_page"):
+            page = window.go_to_page("Element")
+            if hasattr(page, "find_opening"):
+                page.find_opening()
+
+    def _find_profile(self) -> None:
+        window = self.window()
+        if hasattr(window, "go_to_page"):
+            page = window.go_to_page("Profile")
+            if hasattr(page, "find_profile"):
+                page.find_profile()
+
+    def _open_palette(self) -> None:
+        window = self.window()
+        if hasattr(window, "open_palette"):
+            window.open_palette()
+
+    def refresh(self) -> None:
+        from datetime import datetime
+
+        now = datetime.now()
+        hebrew_days = ["שני", "שלישי", "רביעי", "חמישי", "שישי", "שבת", "ראשון"]
+        hebrew_months = [
+            "ינואר", "פברואר", "מרץ", "אפריל", "מאי", "יוני", "יולי",
+            "אוגוסט", "ספטמבר", "אוקטובר", "נובמבר", "דצמבר",
+        ]
+        part = "בוקר טוב" if 5 <= now.hour < 12 else (
+            "צהריים טובים" if 12 <= now.hour < 17 else "ערב טוב"
+        )
+        self.greeting.setText(f"{part}, {self._brand_name}")
+        self.header.title.setText(self.greeting.text())
+        self.show_business()
+        self.scan_insights()
+        self.show_readiness()
+        self.show_today()
+        self.show_field()
+        when = (
+            f"יום {hebrew_days[now.weekday()]}, "
+            f"{now.day} ב{hebrew_months[now.month - 1]} {now.year}"
+        )
+        # And the Hebrew date, because half the shop's deadlines are set in it.
+        try:
+            from ..hebrew_calendar import describe, holiday_on
+
+            when += f"  ·  {describe(now.date())}"
+            festival = holiday_on(now.date())
+            if festival is not None:
+                when += f"  ·  {festival.describe()}"
+        except Exception:  # noqa: BLE001 - a date is not worth a broken page
+            pass
+        job = self.session.job
+        self.header.set_subtitle(
+            f"{when}  ·  פרויקט פתוח: {job.job_id} — {job.name}"
+            if job is not None else when
+        )
+
+        # Step states: everything the session holds is "done"; the first gap
+        # is the active step, and everything past it just waits its turn.
+        active_seen = False
+        active_hebrew = ""
+        for button, (page_title, hebrew, attribute) in zip(self._step_buttons, self.STEPS):
+            done = bool(getattr(self.session, attribute, None))
+            if done:
+                state = "done"
+                button.setText(f"✓ {hebrew}")
+            elif not active_seen:
+                state, active_seen, active_hebrew = "active", True, hebrew
+                button.setText(hebrew)
+            else:
+                state = "pending"
+                button.setText(hebrew)
+            button.setProperty("state", state)
+            button.style().unpolish(button)
+            button.style().polish(button)
+
+        if not active_seen:
+            self.next_label.setText("כל שלבי הקו הושלמו — העבודה בדרך למשלוח.")
+        else:
+            self.next_label.setText(f"הצעד הבא: <b>{active_hebrew}</b>")
+
+        self._recent = []
+        try:
+            from ..projects import default_store
+
+            self._recent = default_store().all()[:5]
+        except Exception:  # noqa: BLE001 - the dashboard must open regardless
+            _log.exception("Could not read the job store for the dashboard")
+        self.recent_table.set_rows([
+            [job.job_id, job.name, job.customer_name or "—",
+             job.status.hebrew, job.updated]
+            for job in self._recent
+        ])
+
+        area = self.session.total_area
+        # The current-project figures only mean something once there is a
+        # project on the bench; a row of dashes is noise on the front page.
+        self.stats.setVisible(bool(self.session.builds or self.session.job))
+        self.stats.update_many({
+            "elements": (str(len(self.session.builds)) if self.session.builds else "—",
+                         "מתוכננים בפרויקט"),
+            "area": (f"⁦{area:.1f} m²⁩" if area else "—", ""),
+            "quote": (
+                f"⁦{self.session.quote.net_price:,.0f} ₪⁩"
+                if self.session.quote else "—",
+                "לפני מע\"מ" if self.session.quote else "טרם חושבה",
+            ),
+            "floor": (
+                str(len(self.session.work_order)) if self.session.work_order else "—",
+                "פריטים בעבודה" if self.session.work_order else "טרם שוחרר",
+            ),
+        })
+
+
+# --------------------------------------------------------------------------- #
+# Projects
+# --------------------------------------------------------------------------- #
+
+def _merged_by_id(opened: list[Any], edited: list[Any], key: str) -> Any:
+    """What a dialog changed in a list, as a function to apply to the copy on
+    disk — None when it changed nothing.
+
+    Only the items added, changed or deleted in the dialog are written; every
+    other item stays as it is on disk, so a change made meanwhile on another
+    computer (a snag marked fixed there) is never put back by this one.
+    """
+    before = {getattr(item, key): item.model_dump() for item in opened}
+    after = {getattr(item, key): item for item in edited}
+    changed = {k: item for k, item in after.items() if before.get(k) != item.model_dump()}
+    deleted = set(before) - set(after)
+    if not changed and not deleted:
+        return None
+
+    def apply(on_disk: list[Any]) -> list[Any]:
+        kept = [changed.get(getattr(item, key), item) for item in on_disk
+                if getattr(item, key) not in deleted]
+        present = {getattr(item, key) for item in kept}
+        return kept + [item for k, item in changed.items() if k not in present]
+
+    return apply
+
+
+class ProjectsPage(Page):
+    """The order book: every job the shop has taken on, and where it stands.
+
+    This is the page the other packages open on, and the one this suite was
+    missing: without it the work lives in memory and dies with the window.
+    A job here is a file on disk — openable next year, mailable to an
+    engineer, readable in a text editor.
+    """
+
+    title = "Projects"
+    hebrew = "פרויקטים"
+    subtitle = "תיקי עבודה, לקוחות ומצב ההזמנות"
+
+    def build(self) -> None:
+        new_job = QPushButton("פרויקט חדש")
+        new_job.setObjectName("Primary")
+        new_job.clicked.connect(self.new_job)
+        self.header.add_action(new_job)
+
+        save = QPushButton("שמירת העבודה")
+        save.clicked.connect(self.save_current)
+        self.header.add_action(save)
+
+        prices = QPushButton("מחירון")
+        prices.setToolTip("המחירים שלכם לכל סוג עבודה — אלומיניום ואינסטלציה")
+        prices.clicked.connect(self.open_pricebook)
+        self.header.add_action(prices)
+
+        self.stats = StatRow([
+            ("open", "פרויקטים פתוחים"), ("quoted", "בהצעה"),
+            ("production", "בייצור"), ("backlog", "צבר הזמנות"),
+        ])
+        self.body.addWidget(self.stats)
+
+        tabs = QTabWidget()
+        tabs.addTab(self._jobs_tab(), "פרויקטים")
+        tabs.addTab(self._customers_tab(), "לקוחות")
+        tabs.addTab(self._costing_tab(), "רווחיות")
+        tabs.addTab(self._files_tab(), "מסמכים")
+        tabs.addTab(self._tasks_tab(), "מעקב ומשימות")
+        self.body.addWidget(tabs, 1)
+        self.tabs = tabs
+
+    # -- follow-ups -------------------------------------------------------- #
+    def _tasks_tab(self) -> QWidget:
+        """What somebody has to do today, and what nobody is chasing.
+
+        A shop that never sets these concludes its prices are too high, when
+        what it has is a habit of not ringing back.
+        """
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, METRICS.space(3), 0, 0)
+        layout.setSpacing(METRICS.space(3))
+
+        bar = QHBoxLayout()
+        bar.setSpacing(METRICS.space(2))
+
+        chase = QPushButton("קבע מעקב להצעה שנשלחה")
+        chase.setObjectName("Primary")
+        chase.clicked.connect(self.schedule_chase)
+        bar.addWidget(chase)
+
+        close = QPushButton("סגור משימה נבחרת")
+        close.clicked.connect(self.close_task)
+        bar.addWidget(close)
+
+        self.task_note = QLineEdit()
+        self.task_note.setPlaceholderText("מה קרה בשיחה — נשמר עם סגירת המשימה")
+        bar.addWidget(self.task_note, 1)
+        layout.addLayout(bar)
+
+        self.task_headline = QLabel("")
+        self.task_headline.setObjectName("StatLabel")
+        self.task_headline.setWordWrap(True)
+        layout.addWidget(self.task_headline)
+
+        self.task_table = DataTable(
+            ["", "מתי", "סוג", "על מה", "מה לעשות", "אחראי", "מצב"],
+            empty_text="אין משימות פתוחות",
+        )
+        self.task_table.stretch(4)
+        layout.addWidget(self.task_table, 1)
+
+        self.unchased_table = DataTable(
+            ["תיק", "לקוח", "סכום", "נשלחה"],
+            empty_text="כל ההצעות הפתוחות במעקב",
+        )
+        unchased = Card("הצעות שאיש אינו עוקב אחריהן")
+        unchased.add(self.unchased_table, 1)
+        layout.addWidget(unchased, 1)
+
+        self._tasks = None
+        self.show_tasks()
+        return page
+
+    def _task_book(self) -> Any:
+        # Read fresh each time: a chase scheduled from another page or the
+        # phone must be found here when the quotation is won and settled.
+        from ..projects.followups import default_tasks
+
+        self._tasks = default_tasks()
+        book = self.checked_book(self._tasks, "יומן המשימות")
+        if book.damaged is not None:
+            self._tasks = None  # read again next time: a busy file clears
+        return book
+
+    def schedule_chase(self) -> None:
+        from datetime import date as _date
+
+        job = getattr(self.session, "job", None)
+        if job is None:
+            self.report(
+                ProfileOSError("פתח תיק עבודה קודם"), "אין למה לקבוע מעקב"
+            )
+            return
+        try:
+            made = self._task_book().chase_quote(
+                job, sent_on=_date.today()
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "לא ניתן לקבוע מעקב")
+            return
+        self.status(
+            f"נקבעו ⁦{len(made)}⁩ תזכורות מעקב" if made
+            else "כבר קיים מעקב פתוח להצעה הזאת"
+        )
+        self.show_tasks()
+
+    def close_task(self) -> None:
+        from ..projects.followups import Outcome
+
+        row = self.task_table.currentRow()
+        if row < 0 or row >= len(self._task_rows):
+            self.report(
+                ProfileOSError("בחר משימה בטבלה"), "לא נבחרה משימה"
+            )
+            return
+        try:
+            self._task_book().close(
+                self._task_rows[row], Outcome.DONE,
+                result=self.task_note.text().strip(),
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "לא ניתן לסגור את המשימה")
+            return
+        self.task_note.clear()
+        self.show_tasks()
+
+    def show_tasks(self) -> None:
+        from datetime import date as _date
+
+        book = self._task_book()
+        rows: list[list[Any]] = []
+        colours: dict[tuple[int, int], str] = {}
+        self._task_rows: list[str] = []
+
+        for task in book.open_tasks:
+            late = task.is_overdue()
+            colours[(len(rows), 0)] = (
+                self.colours.danger if late
+                else self.colours.warning if task.due <= _date.today()
+                else self.colours.success
+            )
+            rows.append([
+                "●",
+                task.due.strftime("%d/%m/%Y"),
+                task.kind.hebrew,
+                task.subject_name or task.about or "—",
+                task.what,
+                task.assigned_to or "—",
+                f"⁦{task.days_late()}⁩ ימי איחור" if late else "פתוחה",
+            ])
+            self._task_rows.append(task.task_id)
+        self.task_table.set_rows(rows, colours=colours)
+
+        summary = book.summary()
+        self.task_headline.setText(
+            f"פתוחות ⁦{summary['open']}⁩ · להיום ⁦{summary['due_today']}⁩ · "
+            f"באיחור ⁦{summary['overdue']}⁩"
+            + (
+                f" · ⁦{summary['closed_silently']}⁩ נסגרו בלי לרשום מה קרה"
+                if summary["closed_silently"] else ""
+            )
+        )
+
+        try:
+            jobs = list(self._store().all())
+        except Exception:  # noqa: BLE001
+            jobs = []
+        self.unchased_table.set_rows([
+            [
+                job.job_id, job.customer_name or "—",
+                f"⁦{job.quote_total:,.0f} ₪⁩" if job.quote_total else "—",
+                job.quoted_on[:10] if job.quoted_on else "—",
+            ]
+            for job in book.unchased_quotes(jobs)
+        ])
+
+    # -- storage ----------------------------------------------------------- #
+    def _store(self) -> Any:
+        """The job folder, read fresh each time.
+
+        Resolving it per call rather than caching it means a data directory
+        changed in the settings takes effect without a restart — and it keeps
+        the page testable against a temporary folder.
+        """
+        from ..projects import default_store
+
+        return default_store()
+
+    def _book(self) -> Any:
+        from ..projects import default_customers
+
+        return default_customers()
+
+    # -- jobs -------------------------------------------------------------- #
+    def _jobs_tab(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, METRICS.space(3), 0, 0)
+        layout.setSpacing(METRICS.space(3))
+
+        search_row = QHBoxLayout()
+        self.search = QLineEdit()
+        self.search.setPlaceholderText("חיפוש לפי שם, לקוח, מספר או אתר…")
+        self.search.setClearButtonEnabled(True)
+        self.search.textChanged.connect(lambda _text: self.refresh())
+        search_row.addWidget(self.search, 1)
+        self.trade_filter = QComboBox()
+        self.trade_filter.addItem("כל התחומים", "")
+        self.trade_filter.addItem("אלומיניום", "aluminium")
+        self.trade_filter.addItem("אינסטלציה", "plumbing")
+        self.trade_filter.currentIndexChanged.connect(lambda _i: self.refresh())
+        search_row.addWidget(self.trade_filter)
+        layout.addLayout(search_row)
+
+        self.jobs_table = DataTable(
+            ["מספר", "שם", "לקוח", "סטטוס", "יחידות", "שווי לפני מע״מ", "עודכן", "תחום",
+             "לגבייה כולל מע״מ"],
+            empty_text="אין עדיין פרויקטים — לחץ ״פרויקט חדש״ כדי לפתוח את הראשון",
+        )
+        self.jobs_table.itemSelectionChanged.connect(self._show_job)
+        layout.addWidget(self.jobs_table, 1)
+
+        detail = Card("הפרויקט הנבחר")
+        self.job_summary = QLabel("לא נבחר פרויקט")
+        self.job_summary.setObjectName("FieldValue")
+        self.job_summary.setWordWrap(True)
+        # Right-aligned whatever the first character is: a job named in
+        # English must not swing the whole summary to the left.
+        self.job_summary.setAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignAbsolute | Qt.AlignmentFlag.AlignTop)
+        detail.add(self.job_summary)
+
+        row = QHBoxLayout()
+        row.setSpacing(METRICS.space(2))
+        self.open_button = QPushButton("פתיחה לעבודה")
+        self.open_button.setObjectName("Primary")
+        self.open_button.clicked.connect(self.open_job)
+        row.addWidget(self.open_button)
+
+        self.status_combo = QComboBox()
+        row.addWidget(self.status_combo)
+        advance = QPushButton("עדכון סטטוס")
+        advance.clicked.connect(self.advance_status)
+        row.addWidget(advance)
+        self._advance_button = advance
+
+        account = QPushButton("חשבון הפרויקט")
+        account.setToolTip("עבודות, תוספות, תשלומים, חשבוניות — וכמה עוד חייבים")
+        account.clicked.connect(self.open_account)
+        row.addWidget(account)
+
+        # The customer asks "where is my order?" — the shop answers with one
+        # click, in its own words, before the customer has to ask twice.
+        notify = QPushButton("עדכון ללקוח בוואטסאפ")
+        notify.setObjectName("WhatsApp")
+        notify.clicked.connect(self.notify_customer)
+        row.addWidget(notify)
+
+        # The rest of what can be done with a job, one click away rather than
+        # nine buttons wide: the row keeps the three things done every day.
+        from PySide6.QtWidgets import QMenu, QToolButton
+
+        more = QToolButton()
+        more.setText("עוד פעולות")
+        more.setObjectName("MoreButton")
+        more.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        menu = QMenu(more)
+        menu.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
+        for label, handler in (
+            ("הדבקת רשימת פתחים…", self.paste_openings),
+            ("שליחת היתרה ללקוח בוואטסאפ", self.send_balance),
+            ("ממתינים מהלקוח…", self.manage_needs),
+            ("רשימת תיקונים…", self.manage_snags),
+            ("גרסאות ההצעה — מה השתנה…", self.show_revisions),
+            ("משקופים עיוורים — התקנה בשני שלבים…", self.manage_blind_frames),
+            ("הזמנת חומר מהספק…", self.order_material),
+            ("הזמנה משותפת לכמה פרויקטים…", self.order_combined),
+            ("הזמנות חומר — אישור והגעה…", self.manage_material_orders),
+            ("קבע ביקור ביומן", self.plan_visit_for_job),
+            ("בקשת המלצה בגוגל", self.request_review),
+            ("הצעת בדיקה שנתית", self.offer_checkup),
+            ("תיק עבודה להדפסה", self.export_dossier),
+        ):
+            menu.addAction(label, handler)
+        more.setMenu(menu)
+        row.addWidget(more)
+        row.addStretch(1)
+        detail.add_layout(row)
+        # Nothing to act on until a job is chosen — and the buttons say so.
+        self._job_actions = [self.open_button, advance, account, notify, more,
+                             self.status_combo]
+        for widget in self._job_actions:
+            widget.setEnabled(False)
+        layout.addWidget(detail)
+
+        note = QLabel(
+            "הפרויקט נשמר כקובץ אחד לכל עבודה בתיקיית הנתונים — אפשר לגבות "
+            "אותו, לשלוח אותו במייל ולפתוח אותו גם בעוד חמש שנים. הפתחים "
+            "נבנים מחדש בכל פתיחה, כך שתיקון בכללי המערכת מגיע גם לעבודות ישנות."
+        )
+        note.setObjectName("Hint")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        return page
+
+    def _selected_job(self) -> Any:
+        rows = self.jobs_table.selectionModel()
+        if rows is None or not rows.selectedRows():
+            return None
+        index = rows.selectedRows()[0].row()
+        if index >= len(self._jobs):
+            return None
+        return self._jobs[index]
+
+    def _show_job(self) -> None:
+        from ..projects import TRANSITIONS
+
+        job = self._selected_job()
+        self.show_costing(job)
+        self.show_attachments(job)
+        self._show_summary(job)
+
+    def _show_summary(self, job: Any) -> None:
+        from ..projects import TRANSITIONS
+
+        self.status_combo.clear()
+        for widget in getattr(self, "_job_actions", []):
+            widget.setEnabled(job is not None)
+            # Six controls with nothing to act on are noise, not a hint.
+            widget.setVisible(job is not None)
+        if job is None:
+            self.job_summary.setText("בחרו פרויקט מהרשימה כדי לראות אותו ולפעול עליו")
+            return
+
+        # The name first: a line that starts with "J-2026-0001" is laid out
+        # left-to-right, and the whole summary with it.
+        lines = [f"{job.name} · ⁦{job.job_id}⁩"]
+        if job.customer_name:
+            lines.append(f"לקוח: {job.customer_name}")
+        if job.site_address:
+            lines.append(f"אתר: {job.site_address}")
+        if job.reference:
+            lines.append(f"אסמכתה: {job.reference}")
+        if job.opening_count:
+            lines.append(
+                f"סטטוס: {job.status.hebrew} · ⁦{job.unit_count}⁩ יחידות "
+                f"(⁦{job.opening_count}⁩ פתחים) · ⁦{job.total_area:.1f}⁩ מ״ר"
+            )
+        else:
+            lines.append(f"סטטוס: {job.status.hebrew}")
+        if job.quote_total:
+            lines.append(f"הצעה אחרונה: ⁦{job.quote_total:,.0f} ₪⁩ ({job.quoted_on})")
+        orders = [o for o in job.material_orders if o.state.value != "cancelled"]
+        if orders:
+            ordered = sum(o.total for o in orders)
+            waiting = [o for o in orders if o.open]
+            text = "חומר: הזמנה אחת" if len(orders) == 1 else f"חומר: ⁦{len(orders)}⁩ הזמנות"
+            if ordered:
+                text += f" · ⁦{ordered:,.0f} ₪⁩ לפי המחירונים"
+                if job.quote_total:
+                    text += f" (⁦{ordered / job.quote_total * 100:.0f}%⁩ מההצעה)"
+            text += " · " + (f"⁦{len(waiting)}⁩ עוד לא הגיעו" if waiting else "הכול הגיע")
+            lines.append(text)
+        elif job.status.value in ("won", "in_production"):
+            lines.append("חומר: עוד לא הוזמן")
+        self.job_summary.setText("  ·  ".join(lines[:1]) + "\n" + "\n".join(lines[1:]))
+
+        for status in sorted(TRANSITIONS[job.status], key=lambda s: s.value):
+            self.status_combo.addItem(status.hebrew, status.value)
+        self.status_combo.setEnabled(self.status_combo.count() > 0)
+
+    # -- money owed ------------------------------------------------------------ #
+    def send_balance(self) -> None:
+        """What the customer still owes, as one WhatsApp message from the records."""
+        from datetime import date
+
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+
+        from ..branding import active_brand
+        from ..core.config import get_settings
+        from ..projects.account import job_account
+        from ..sharing import balance_message, customer_phone, whatsapp_link
+
+        job = self._selected_job()
+        if job is None:
+            self.status("בחר פרויקט מהרשימה")
+            return
+        account = job_account(job, self._cheques_for_accounts())
+        if account.uncovered <= 0.5:
+            self.status(f"{job.job_id}: אין יתרה פתוחה — " + account.describe())
+            return
+        if job.open_snags:
+            from PySide6.QtWidgets import QMessageBox
+
+            left = len(job.open_snags)
+            answer = QMessageBox.question(
+                self, "יש תיקונים פתוחים",
+                ("נשאר תיקון אחד פתוח" if left == 1 else f"נשארו ⁦{left}⁩ תיקונים פתוחים")
+                + " בעבודה הזאת. לקוח שמחכה לתיקון בדרך כלל מחכה איתו גם עם התשלום. "
+                "לשלוח את היתרה בכל זאת?",
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+        message = balance_message(
+            brand_name=active_brand().display_name, customer_name=job.customer_name,
+            job_name=job.name, account=account, reminders=len(job.balance_reminders),
+            payment_note=getattr(get_settings(), "payment_note", "") or "",
+        )
+        try:
+            store = self._store()
+            fresh = store.load(job.job_id)
+            fresh.balance_reminders.append(date.today().isoformat())
+            store.save(fresh)
+        except Exception as exc:  # noqa: BLE001 - the message still goes; said
+            self.report(exc, "ההודעה נפתחה, אבל תאריך השליחה לא נרשם בפרויקט")
+        QDesktopServices.openUrl(QUrl(whatsapp_link(customer_phone(job), message)))
+        self.status(f"נפתח וואטסאפ עם היתרה של {job.job_id} — בדקו ושלחו")
+        self.refresh()
+
+    def _deposit_missing(self, job: Any) -> bool:
+        from ..projects.account import job_account
+
+        try:
+            account = job_account(job, self._cheques_for_accounts())
+        except Exception:  # noqa: BLE001 - not knowing is not "missing"
+            return False
+        return account.total_gross > 0 and account.received + account.in_cheques <= 0.5
+
+    def manage_needs(self) -> None:
+        """What the shop is waiting for from the customer before it can make
+        the job — ticked off as it arrives, and asked for in one message."""
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+
+        from ..branding import active_brand
+        from ..sharing import customer_phone, needs_message, whatsapp_link
+        from .money_dialogs import NeedsDialog
+
+        job = self._selected_job()
+        if job is None:
+            self.status("בחר פרויקט מהרשימה")
+            return
+        deposit = self._deposit_missing(job)
+        dialog = NeedsDialog(job, deposit_missing=deposit, parent=self)
+        dialog.exec()
+        merged = _merged_by_id(job.waiting_for, dialog.needs, "need_id")
+        if merged is not None:
+            try:
+                store = self._store()
+                fresh = store.load(job.job_id)
+                fresh.waiting_for = merged(fresh.waiting_for)
+                fresh.touch()
+                store.save(fresh)
+                job = fresh
+            except Exception as exc:  # noqa: BLE001
+                self.report(exc, "הרשימה לא נשמרה")
+                return
+            self.refresh()
+            left = len(job.open_needs)
+            self.status(f"{job.job_id}: " + (f"מחכים ללקוח ל־⁦{left}⁩ דברים" if left
+                                            else "קיבלנו מהלקוח את כל מה שצריך"))
+        if dialog.send_requested:
+            if not job.open_needs and not deposit:
+                self.status("אין מה לבקש — הכול התקבל")
+                return
+            message = needs_message(
+                brand_name=active_brand().display_name, customer_name=job.customer_name,
+                job_name=job.name, needs=job.open_needs, deposit_missing=deposit,
+            )
+            QDesktopServices.openUrl(QUrl(whatsapp_link(customer_phone(job), message)))
+            self.status("נפתח וואטסאפ עם מה שצריך מהלקוח — בדקו ושלחו")
+
+    def manage_snags(self) -> None:
+        """The punch list: what is left to put right, closed one by one, and
+        sent to the customer — the list the last payment waits on."""
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+
+        from ..branding import active_brand
+        from ..sharing import customer_phone, snag_message, whatsapp_link
+        from .money_dialogs import SnagListDialog
+
+        job = self._selected_job()
+        if job is None:
+            self.status("בחר פרויקט מהרשימה")
+            return
+        dialog = SnagListDialog(job, self)
+        dialog.exec()
+        merged = _merged_by_id(job.snags, dialog.snags, "snag_id")
+        if merged is not None:
+            try:
+                store = self._store()
+                fresh = store.load(job.job_id)
+                fresh.snags = merged(fresh.snags)
+                fresh.touch()
+                store.save(fresh)
+                job = fresh
+            except Exception as exc:  # noqa: BLE001
+                self.report(exc, "רשימת התיקונים לא נשמרה")
+                return
+            self.refresh()
+            left = len(job.open_snags)
+            self.status(f"{job.job_id}: " + (f"נשארו ⁦{left}⁩ תיקונים" if left
+                                            else "כל התיקונים בוצעו"))
+        if dialog.send_requested:
+            message = snag_message(
+                brand_name=active_brand().display_name, customer_name=job.customer_name,
+                job_name=job.name, open_snags=job.open_snags,
+                fixed_snags=[snag for snag in job.snags if not snag.is_open],
+            )
+            QDesktopServices.openUrl(QUrl(whatsapp_link(customer_phone(job), message)))
+            self.status("נפתח וואטסאפ עם רשימת התיקונים — בדקו ושלחו")
+
+    # -- material ------------------------------------------------------------- #
+    def order_material(self) -> None:
+        """Work out the job's bars and fittings, price them, and send the order."""
+        from ..projects.materials import propose
+        from .background import run_in_background
+
+        job = self._selected_job()
+        if job is None:
+            self.status("בחר פרויקט מהרשימה")
+            return
+        if job.schedule is None or not job.schedule.openings:
+            self.report(ProfileOSError("בפרויקט אין פתחים מתוכננים — אין ממה לחשב חומר"),
+                        "אין מה להזמין")
+            return
+        if getattr(self, "_proposing", False):
+            self.status("החישוב כבר בדרך")
+            return
+        self._proposing = True
+        self.status("מחשב מוטות ומחירים…")
+        # The bar lengths as they are now, taken here: the cutting page may
+        # change the setting while the work runs on its own thread.
+        import copy
+
+        from ..core.config import get_settings
+
+        defaults = copy.deepcopy(get_settings().nesting)
+        rack = self._rack(job.job_id)
+
+        def done(proposal: Any, error: BaseException | None) -> None:
+            self._proposing = False
+            if error is not None:
+                self.report(ProfileOSError(str(error)), "חישוב החומר נכשל")
+                return
+            self._send_material_order(job, proposal)
+
+        run_in_background(lambda: propose(job, defaults=defaults, rack=rack), done)
+
+    def _rack(self, job_id: str) -> Any:
+        """The offcut rack for planning — or none, said, when it cannot be read."""
+        from ..nesting.rack import rack_for
+
+        try:
+            return rack_for(job_id)
+        except Exception as exc:  # noqa: BLE001
+            self.status(f"{exc} — ההזמנה מחושבת בלי השאריות")
+            return None
+
+    def _reserve(self, proposal: Any, owner: str, batch: str = "") -> None:
+        """The offcuts the order counts on, set aside — a combined order's each
+        for the one job that will cut it (``rack_owner``)."""
+        from ..nesting.rack import reserve
+
+        used = [remnant_id for remnant_id, _p, _l in getattr(proposal, "from_rack", [])]
+        if not used:
+            return
+        owners = getattr(proposal, "rack_owner", {}) or {}
+        by_job: dict[str, list[str]] = {}
+        for remnant_id in used:
+            by_job.setdefault(owners.get(remnant_id, owner), []).append(remnant_id)
+        try:
+            done = sum(reserve(ids, job_id=job_id, batch=batch) for job_id, ids in by_job.items())
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "השאריות מהמדף לא סומנו לפרויקט — סמנו אותן ביד")
+            return
+        if done < len(set(used)):
+            # Taken meanwhile by another order: this one counted on them.
+            self.report(ProfileOSError(
+                f"⁦{len(set(used)) - done}⁩ מהשאריות שההזמנה סמכה עליהן נשמרו בינתיים לפרויקט "
+                "אחר — הוסיפו להזמנה מוטות במקומן"), "חסרות שאריות")
+
+    def order_combined(self) -> None:
+        """One supplier order for several won jobs, cut together on the same
+        bars: the ends of one job's bars become the next job's pieces."""
+        from ..projects import JobStatus
+        from ..projects.materials import propose_combined
+        from .background import run_in_background
+        from .dialogs import PickJobsDialog
+
+        try:
+            jobs = [job for job in self._store().all()
+                    if job.status in (JobStatus.WON, JobStatus.IN_PRODUCTION)
+                    and job.schedule is not None and job.schedule.openings]
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "הפרויקטים לא נקראו")
+            return
+        if len(jobs) < 2:
+            self.report(ProfileOSError(
+                "הזמנה משותפת היא לשני פרויקטים או יותר שזכיתם בהם ויש בהם פתחים"),
+                "אין מה לאחד")
+            return
+        dialog = PickJobsDialog(
+            jobs, self, title="הזמנה משותפת לכמה פרויקטים",
+            hint="הפרויקטים נחתכים יחד מאותם מוטות — סוף מוט של פרויקט אחד הופך לחלקים של "
+                 "הבא, ומגיעה הובלה אחת. כל פרויקט מקבל את החלק שלו בהזמנה ובעלות.",
+            ticked={job.job_id for job in jobs if not job.material_ordered},
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        chosen = [job for job in jobs if job.job_id in set(dialog.chosen())]
+        if getattr(self, "_proposing", False):
+            self.status("החישוב כבר בדרך")
+            return
+        self._proposing = True
+        self.status(f"מחשב חיתוך משותף ל־⁦{len(chosen)}⁩ פרויקטים…")
+        import copy
+
+        from ..core.config import get_settings
+
+        defaults = copy.deepcopy(get_settings().nesting)
+        rack = self._rack("")
+
+        def done(combined: Any, error: BaseException | None) -> None:
+            self._proposing = False
+            if error is not None:
+                self.report(ProfileOSError(str(error)), "חישוב החומר נכשל")
+                return
+            self._send_combined_order(chosen, combined)
+
+        run_in_background(lambda: propose_combined(chosen, defaults=defaults, rack=rack), done)
+
+    def _send_combined_order(self, jobs: list[Any], combined: Any) -> int:
+        """The combined order checked, then each job's part kept on the job."""
+        from types import SimpleNamespace
+        from uuid import uuid4
+
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+
+        from ..branding import active_brand
+        from ..projects.materials import Proposal, combined_message, to_order
+        from ..sharing import whatsapp_link
+        from .money_dialogs import MaterialOrderDialog
+
+        heading = SimpleNamespace(name=f"הזמנה משותפת ל־⁦{len(jobs)}⁩ פרויקטים",
+                                  material_orders=[])
+        proposal = Proposal(lines=combined.lines,
+                            warnings=[combined.describe_saving()] + combined.warnings)
+        dialog = MaterialOrderDialog(heading, proposal, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            self.status("לא נשלחה הזמנה")
+            return 0
+        values = dialog.values()
+        batch = f"CO-{uuid4().hex[:6].upper()}"
+        final = values["lines"]
+
+        def key(line: Any) -> tuple[str, str, float]:
+            return (line.code, line.unit, line.length_mm)
+
+        planned = {key(line): line.quantity for line in combined.lines}
+        store = self._store()
+        orders: dict[str, Any] = {}
+        for index, job in enumerate(jobs):
+            parts = {key(line): line for line in combined.shares.get(job.job_id, [])}
+            share = []
+            for line in final:
+                part = parts.get(key(line))
+                if not planned.get(key(line)):
+                    # Added in the dialog, not planned from any job: it goes
+                    # on the first job's part, so the order is recorded whole.
+                    if index == 0:
+                        share.append(type(line)(**{**line.__dict__}))
+                    continue
+                if part is None:
+                    continue
+                # The person may have changed the quantity (bars already on
+                # the rack, a spare bar): each job keeps its proportion of it.
+                piece = type(line)(**{**line.__dict__})
+                piece.quantity = round(line.quantity * part.quantity / planned[key(line)], 2)
+                if piece.quantity > 0:
+                    share.append(piece)
+            if share:
+                order = to_order(share, supplier=values["supplier"],
+                                 needed_by=values["needed_by"],
+                                 note=f"חלק מהזמנה משותפת ⁦{batch}⁩")
+                order.batch = batch
+                orders[job.job_id] = order
+        # Every part kept, or none: an order sent to the supplier is an
+        # order recorded on every job it is for.
+        saved: list[str] = []
+        try:
+            for job_id, order in orders.items():
+                fresh = store.load(job_id)
+                fresh.material_orders.append(order)
+                fresh.touch()
+                store.save(fresh)
+                saved.append(job_id)
+        except Exception as exc:  # noqa: BLE001
+            for job_id in saved:
+                try:
+                    fresh = store.load(job_id)
+                    fresh.material_orders = [o for o in fresh.material_orders
+                                             if o.order_id != orders[job_id].order_id]
+                    store.save(fresh)
+                except Exception:  # noqa: BLE001 - said below
+                    _log.exception("Could not take back the part of %s", job_id)
+            self.report(exc, "ההזמנה המשותפת לא נשמרה בכל הפרויקטים — היא לא נשלחה ולא נרשמה")
+            return 0
+        kept = len(saved)
+        if not kept:
+            return 0
+        # Only a job that kept a part can release its offcuts by cancelling it.
+        combined.rack_owner = {remnant_id: owner if owner in saved else saved[0]
+                               for remnant_id, owner in combined.rack_owner.items()}
+        self._reserve(combined, saved[0], batch=batch)
+        if dialog.choice == MaterialOrderDialog.SEND:
+            message = combined_message(final, brand_name=active_brand().display_name,
+                                       jobs=jobs, batch=batch, needed_by=values["needed_by"],
+                                       note=values["note"])
+            QDesktopServices.openUrl(QUrl(whatsapp_link("", message)))
+            self.status(f"ההזמנה המשותפת ⁦{batch}⁩ נשמרה ב־⁦{kept}⁩ פרויקטים ונפתחה בוואטסאפ")
+        else:
+            self.status(f"ההזמנה המשותפת ⁦{batch}⁩ נרשמה ב־⁦{kept}⁩ פרויקטים")
+        self.refresh()
+        return kept
+
+    def _send_material_order(self, job: Any, proposal: Any) -> None:
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+
+        from ..branding import active_brand
+        from ..projects.materials import order_message, to_order
+        from ..sharing import whatsapp_link
+        from .money_dialogs import MaterialOrderDialog
+
+        dialog = MaterialOrderDialog(job, proposal, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            self.status("לא נשלחה הזמנה")
+            return
+        values = dialog.values()
+        order = to_order(values["lines"], supplier=values["supplier"],
+                         needed_by=values["needed_by"], note=values["note"])
+        try:
+            store = self._store()
+            fresh = store.load(job.job_id)  # the file as it is now, not as listed
+            fresh.material_orders.append(order)
+            fresh.touch()
+            store.save(fresh)
+        except Exception as exc:  # noqa: BLE001 - nothing is sent that is not kept
+            self.report(exc, "ההזמנה לא נשמרה — לא נשלחה")
+            return
+        self._reserve(proposal, job.job_id)
+        if dialog.choice == MaterialOrderDialog.SEND:
+            message = order_message(order, brand_name=active_brand().display_name, job=fresh)
+            QDesktopServices.openUrl(QUrl(whatsapp_link("", message)))
+            self.status(f"ההזמנה נשמרה ונפתחה בוואטסאפ — בחרו את {order.supplier} ושלחו")
+        else:
+            self.status(f"ההזמנה ל{order.supplier} נרשמה בפרויקט")
+        self.refresh()
+
+    def manage_blind_frames(self) -> bool:
+        """Blind frames set and checked, kept on the job as it is on disk now."""
+        from ..projects.blindframes import KEY
+        from .dialogs import BlindFramesDialog
+
+        job = self._selected_job()
+        if job is None:
+            self.status("בחר פרויקט מהרשימה")
+            return False
+        if job.schedule is None or not job.schedule.openings:
+            self.report(ProfileOSError("אין פתחים בפרויקט — הוסיפו פתחים קודם"),
+                        "אין למה משקופים")
+            return False
+        try:
+            store = self._store()
+            job = store.load(job.job_id)
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "הפרויקט לא נקרא")
+            return False
+        dialog = BlindFramesDialog(job, known_people(), self)
+        if dialog.exec() != QDialog.DialogCode.Accepted or not dialog.changed:
+            return False
+        edited = {opening.element_id: opening for opening in dialog.job.schedule.openings}
+        try:
+            fresh = store.load(job.job_id)   # the file as it is now, not as it was opened
+            for opening in fresh.schedule.openings:
+                mine = edited.get(opening.element_id)
+                if mine is None:
+                    continue
+                if KEY in mine.metadata:
+                    opening.metadata[KEY] = mine.metadata[KEY]
+                else:
+                    opening.metadata.pop(KEY, None)
+            fresh.touch()
+            store.save(fresh)
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "המשקופים העיוורים לא נשמרו")
+            return False
+        from ..projects.blindframes import describe
+
+        current = getattr(self.session, "job", None)
+        if current is not None and current.job_id == fresh.job_id:
+            self.session.job = fresh
+        self.status(f"{fresh.name}: {describe(fresh)}")
+        self.refresh()
+        return True
+
+    def manage_material_orders(self) -> None:
+        from .money_dialogs import MaterialOrdersDialog
+
+        job = self._selected_job()
+        if job is None:
+            self.status("בחר פרויקט מהרשימה")
+            return
+        dialog = MaterialOrdersDialog(job, self)
+        dialog.exec()
+        if not dialog.changes and not dialog.invoices:
+            return
+        from datetime import date
+
+        from ..projects import MaterialOrderState
+
+        try:
+            store = self._store()
+            fresh = store.load(job.job_id)
+            by_id = {order.order_id: order for order in fresh.material_orders}
+            released: list[str] = []
+            for order_id, state in dialog.changes:
+                order = by_id.get(order_id)
+                if order is None:
+                    continue
+                order.state = MaterialOrderState(state)
+                if order.state is MaterialOrderState.RECEIVED and not order.received_on:
+                    order.received_on = date.today().isoformat()
+                if order.state is MaterialOrderState.CANCELLED:
+                    released.append(order.batch)
+            for order_id, number, net in dialog.invoices:
+                order = by_id.get(order_id)
+                if order is None:
+                    continue
+                order.invoice_number, order.invoice_net = number, net
+                order.invoice_on = date.today().isoformat()
+            fresh.touch()
+            store.save(fresh)
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "העדכון לא נשמר")
+            return
+        if released:
+            # A cancelled order no longer needs the offcuts it counted on.
+            from ..nesting.rack import release
+
+            try:
+                for batch in set(released):
+                    release(job.job_id, batch=batch)
+            except Exception as exc:  # noqa: BLE001
+                self.report(exc, "השאריות של ההזמנה שבוטלה לא שוחררו במדף")
+        self.refresh()
+
+    # -- money ------------------------------------------------------------------ #
+    def _cheques_for_accounts(self) -> list[Any]:
+        """The drawer, for adding up what jobs are owed. A drawer that cannot
+        be read is said so — the 'to collect' figures would overstate."""
+        try:
+            from ..erp.collection import default_cheques
+
+            return list(self.checked_book(default_cheques(), "מגירת הצ׳קים"))
+        except Exception as exc:  # noqa: BLE001
+            told = self.__dict__.setdefault("_told_damaged", set())
+            if "cheques-load" not in told:
+                told.add("cheques-load")
+                self.report(exc, "מגירת הצ׳קים לא נקראה — סכומי הגבייה לא כוללים צ׳קים")
+            return []
+
+    @staticmethod
+    def _owed_cell(job: Any, cheques: list[Any], job_account: Any) -> str:
+        """What the job still owes, for jobs that are owed anything yet."""
+        if job.status.value not in ("won", "in_production", "installed"):
+            return "—"
+        account = job_account(job, cheques)
+        if account.total_gross <= 0:
+            return "—"
+        if account.uncovered <= 0.5:
+            return "שולם"
+        return f"⁦{account.uncovered:,.0f} ₪⁩"
+
+    def request_review(self) -> None:
+        from datetime import date as _date
+
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+
+        from ..branding import active_brand
+        from ..core.config import get_settings
+        from ..sharing import customer_phone, review_request_message, whatsapp_link
+
+        job = self._selected_job()
+        if job is None:
+            self.status("בחר פרויקט מהרשימה")
+            return
+        link = get_settings().review_link
+        message = review_request_message(
+            brand_name=active_brand().display_name, customer_name=job.customer_name, link=link,
+        )
+        QDesktopServices.openUrl(QUrl(whatsapp_link(customer_phone(job), message)))
+        try:
+            store = self._store()
+            fresh = store.load(job.job_id)
+            fresh.review_requested = _date.today().isoformat()
+            store.save(fresh)
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "לא נרשם שהבקשה נשלחה")
+        self.status(
+            "נפתח וואטסאפ עם בקשת ההמלצה"
+            + ("" if link else " — הוסיפו קישור לביקורת בגוגל במערכת ← מפעיל")
+        )
+        self.refresh()
+
+    def offer_checkup(self) -> None:
+        from datetime import date as _date
+
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+
+        from ..branding import active_brand
+        from ..sharing import checkup_message, customer_phone, whatsapp_link
+
+        job = self._selected_job()
+        if job is None:
+            self.status("בחר פרויקט מהרשימה")
+            return
+        message = checkup_message(
+            brand_name=active_brand().display_name, customer_name=job.customer_name,
+            trade="plumbing" if job.trade.value == "plumbing" else "aluminium",
+            job_name=job.name,
+        )
+        QDesktopServices.openUrl(QUrl(whatsapp_link(customer_phone(job), message)))
+        try:
+            store = self._store()
+            fresh = store.load(job.job_id)
+            fresh.checkup_offered = _date.today().isoformat()
+            store.save(fresh)
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "לא נרשם שההצעה נשלחה")
+        self.status("נפתח וואטסאפ עם הצעת הבדיקה השנתית")
+        self.refresh()
+
+    def plan_visit_for_job(self) -> None:
+        job = self._selected_job()
+        window = self.window()
+        if job is None or not hasattr(window, "page"):
+            return
+        window.page("Home").plan_visit(job=job)
+
+    def open_account(self) -> None:
+        from .money_dialogs import JobAccountDialog
+
+        job = self._selected_job()
+        if job is None:
+            self.status("בחר פרויקט מהרשימה")
+            return
+        dialog = JobAccountDialog(
+            job.job_id, self._store(), self,
+            cheques=self._cheques_for_accounts, pricebook=self._pricebook,
+            take_cheques=self._take_cheques,
+        )
+        dialog.exec()
+        self.refresh()
+
+    def _take_cheques(self, job: Any) -> int:
+        """Cheques for this job, into the drawer — the collection page does it,
+        so there is one way cheques are recorded."""
+        window = self.window()
+        collection = window.page("Collection") if hasattr(window, "page") else None
+        if collection is None:
+            return 0
+        return collection.new_cheque(job=job)
+
+    def _pricebook(self) -> Any:
+        from ..quoting.pricebook import default_pricebook
+
+        if getattr(self, "_book_of_prices", None) is None:
+            self._book_of_prices = self.checked_book(default_pricebook(), "המחירון")
+        return self._book_of_prices
+
+    def open_pricebook(self) -> None:
+        from .money_dialogs import PriceBookDialog
+
+        try:
+            book = self._pricebook()
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "המחירון לא נקרא")
+            return
+        PriceBookDialog(book, self).exec()
+
+    def new_job(self) -> None:
+        from ..systems import DIRECTORY
+        from .dialogs import NewJobDialog
+
+        systems = [("generic", "כללי")]
+        systems += [
+            (entry.id, f"{entry.hebrew or entry.display}")
+            for entry in sorted(DIRECTORY, key=lambda e: e.display)
+        ]
+        book = self._book()
+        try:
+            customers = book.all()
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "ספר הלקוחות לא נקרא")
+            return
+        dialog = NewJobDialog(
+            customers, systems, self,
+            add_customer=lambda values: book.add(**values),
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        values = dialog.values()
+        customer = book.get(values["customer_id"]) if values["customer_id"] else None
+        try:
+            job = self._store().create(
+                values["name"],
+                customer=customer,
+                reference=values["reference"],
+                site_address=values["site_address"],
+                system_id=values["system_id"],
+                trade=values.get("trade", "aluminium"),
+                source=values.get("source", ""),
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "לא ניתן לפתוח את הפרויקט")
+            return
+
+        self.session.set_job(job)
+        self.refresh()
+        self.status(f"נפתח פרויקט {job.job_id} — {job.name}")
+
+    def paste_openings(self) -> int:
+        """Openings from a pasted list, added to the chosen job's openings."""
+        from ..elements.model import ElementSchedule
+        from .dialogs import PasteOpeningsDialog
+
+        job = self._selected_job()
+        if job is None:
+            self.report(ProfileOSError("בחרו פרויקט מהרשימה"), "לא נבחר פרויקט")
+            return 0
+        working_here = self.session.job is not None and self.session.job.job_id == job.job_id
+        store = self._store()
+        try:
+            if working_here:
+                # What is on screen for this job is written first, so the
+                # new openings join it rather than replace it.
+                self.session.save_design_to_job(store)
+            job = store.load(job.job_id)
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "הפרויקט לא נקרא")
+            return 0
+        existing = list(job.schedule.openings) if job.schedule else []
+        dialog = PasteOpeningsDialog(self, existing=existing)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return 0
+        intake = dialog.read()
+        openings = intake.openings()
+        if not openings:
+            return 0
+        for opening in openings:
+            if opening.system_id == "generic":
+                opening.system_id = job.system_id
+        try:
+            job = store.load(job.job_id)
+            if job.schedule is None:
+                job.schedule = ElementSchedule(name=job.name, system_id=job.system_id)
+            job.schedule.openings.extend(openings)
+            store.save(job)
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "הפתחים לא נוספו — שום דבר לא נשמר")
+            return 0
+        if working_here:
+            self.session.set_job(job)
+            for problem in self.session.load_schedule(job.schedule)[:3]:
+                self.status(problem)
+        self.refresh()
+        self.status(intake.describe() + f" · נוספו ל־⁦{job.job_id}⁩")
+        return len(openings)
+
+    def open_job(self) -> None:
+        job = self._selected_job()
+        if job is None:
+            self.report(ProfileOSError("בחר פרויקט מהרשימה"), "לא נבחר פרויקט")
+            return
+
+        # Work designed with no project open is the shop's work too. Before
+        # this job's openings replace it on screen, it is either carried into
+        # the job or kept aside as a draft — never simply dropped.
+        unfiled = []
+        self._carry_unbuilt: list[Any] = []
+        if self.session.job is None and (self.session.builds or self.session.unbuilt):
+            unfiled = self._ask_about_unfiled(job)
+            if unfiled is None:
+                return
+
+        # The job is switched first, so anything still waiting to be saved
+        # is written to the job (or draft) it belongs to.
+        self.session.set_job(job)
+        problems: list[str] = []
+        if job.schedule is not None:
+            problems = self.session.load_schedule(job.schedule)
+        else:
+            self.session.clear_builds()
+        for build in unfiled:
+            self.session.add_build(build)
+        if unfiled and self._carry_unbuilt:
+            # Openings that did not build travel too, so they are filed with
+            # the job rather than living on only in a draft set aside.
+            self.session.unbuilt.extend(self._carry_unbuilt)
+            self._carry_unbuilt = []
+            self.session._notify("builds")
+        for problem in problems[:3]:
+            self.status(problem)
+        if self.session.builds:
+            opened = f"נפתח {job.job_id} — {len(self.session.builds)} פתחים נטענו"
+        elif job.trade.value == "plumbing":
+            opened = f"נפתח {job.job_id} — עבודת אינסטלציה"
+        else:
+            opened = f"נפתח {job.job_id} — עדיין אין בו פתחים"
+        self.status(opened)
+        self.refresh()
+
+    def _ask_about_unfiled(self, job: Any) -> list[Any] | None:
+        """Carry the unfiled openings into ``job``, set them aside, or cancel.
+
+        Returns the builds to add to the job, an empty list when they were
+        set aside, or ``None`` to stay where we are.
+        """
+        from ..projects.draft import set_draft_aside, write_draft
+
+        count = len(self.session.builds) + len(self.session.unbuilt)
+        box = QMessageBox(self)
+        box.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setWindowTitle("יש תכנון שלא תויק")
+        box.setText(
+            f"על המסך ⁦{count}⁩ פתחים שלא שייכים לאף פרויקט.\n\n"
+            f"להוסיף אותם לפרויקט {job.job_id} — {job.name}?"
+        )
+        carry = box.addButton("הוסף לפרויקט", QMessageBox.ButtonRole.AcceptRole)
+        aside = box.addButton("שמור בצד כטיוטה", QMessageBox.ButtonRole.DestructiveRole)
+        box.addButton("ביטול", QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(carry)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is carry:
+            self._carry_unbuilt = list(self.session.unbuilt)
+            return list(self.session.builds)
+        if clicked is aside:
+            try:
+                write_draft(self.session.to_schedule())
+                set_draft_aside()
+            except Exception as exc:  # noqa: BLE001
+                self.report(exc, "הטיוטה לא נשמרה — הפרויקט לא נפתח")
+                return None
+            self.status("התכנון נשמר בצד כטיוטה")
+            return []
+        return None
+
+    def save_current(self) -> None:
+        """Write what is on screen into the open job."""
+        job = self.session.job
+        if job is None:
+            self.report(
+                ProfileOSError("אין פרויקט פתוח. פתח פרויקט חדש או בחר קיים."),
+                "אין לאן לשמור",
+            )
+            return
+
+        # Saved onto the copy on disk, not the one opened an hour ago: a
+        # status change made meanwhile from another screen is kept.
+        store = self._store()
+        try:
+            # Only the design. The quoted figure is recorded when a quotation
+            # is issued — the openings-only price here would overwrite it.
+            job = self.session.save_design_to_job(store)
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "השמירה נכשלה — העבודה עדיין על המסך, נסה שוב")
+            return
+        self.refresh()
+        self.status(f"נשמרו {job.opening_count} פתחים ב{job.job_id}")
+
+    def advance_status(self) -> None:
+        from ..projects import JobStatus
+
+        job = self._selected_job()
+        if job is None or not self.status_combo.count():
+            self.report(ProfileOSError("בחר פרויקט וסטטוס"), "אין מה לעדכן")
+            return
+        target = JobStatus(self.status_combo.currentData())
+        reason = ""
+        if target is JobStatus.LOST:
+            from ..projects.model import LOST_REASONS
+
+            reason, ok = QInputDialog.getItem(
+                self, "למה לא נסגר?", "מה הסיבה? (עוזר לדעת איפה מפסידים עבודות)",
+                list(LOST_REASONS), 0, True,
+            )
+            if not ok:
+                return
+        try:
+            # The copy on disk, not the one in the list: a payment or a line
+            # added in the job's account meanwhile is kept.
+            store = self._store()
+            job = store.load(job.job_id)
+            if target is JobStatus.WON:
+                from ..projects.winning import win
+
+                # The version the customer holds is the one they said yes to.
+                win(job, revision=self._last_sent_revision(job.job_id), note=reason)
+            else:
+                job.advance(target, reason)
+            if target is JobStatus.LOST:
+                job.lost_reason = reason.strip()
+            store.save(job)
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "לא ניתן לעדכן את הסטטוס")
+            return
+        if target in (JobStatus.WON, JobStatus.LOST):
+            # The customer decided: the quotation's chase calls are over.
+            try:
+                from ..projects.winning import settle_chases
+
+                settle_chases(job.job_id, won=target is JobStatus.WON, reason=reason)
+            except Exception as exc:  # noqa: BLE001 - the status is saved either way
+                self.report(exc, "הסטטוס עודכן, אבל משימות המעקב על ההצעה לא נסגרו")
+        if self.session.job is not None and self.session.job.job_id == job.job_id:
+            self.session.set_job(job)
+        self.refresh()
+        self.status(f"{job.job_id} עודכן ל{target.hebrew}")
+
+    def _last_sent_revision(self, job_id: str) -> int:
+        try:
+            from ..quoting.revisions import default_revisions
+
+            book = default_revisions()
+            if getattr(book, "damaged", None) is not None:
+                raise book.damaged
+            for history in book:
+                if history.job_id == job_id and history.last_sent is not None:
+                    return history.last_sent.number
+        except Exception as exc:  # noqa: BLE001 - the decision is recorded either way
+            self.report(exc, "הסטטוס נשמר, אבל לא נרשם איזו גרסה של ההצעה הלקוח אישר")
+        return 0
+
+    def show_revisions(self) -> None:
+        """Every version of the job's quotation, why each was made, and what
+        moved between them — the answer to "why did the price go up?"."""
+        from .money_dialogs import RevisionsDialog
+
+        job = self._selected_job()
+        if job is None:
+            self.status("בחר פרויקט מהרשימה")
+            return
+        try:
+            from ..quoting.revisions import default_revisions
+
+            book = default_revisions()
+            problem = getattr(book, "damaged", None)
+            history = next((h for h in book if h.job_id == job.job_id), None)
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "גרסאות ההצעה לא נקראו")
+            return
+        if problem is not None:
+            # A damaged file is not "no versions": it is said, as it is.
+            self.report(problem, "קובץ גרסאות ההצעה פגום — מוצג מה שנקרא, ושום דבר לא יישמר עליו")
+        if history is None or not len(history):
+            self.status(f"{job.job_id}: עוד לא נשלחה הצעה מהמערכת — אין גרסאות")
+            return
+        dialog = RevisionsDialog(history, accepted=job.accepted_revision, parent=self)
+        dialog.exec()
+        if not dialog.notes:
+            return
+        if problem is not None:
+            self.report(problem, "קובץ הגרסאות פגום — ההערה לא נשמרה")
+            return
+        try:
+            # Read again: a version issued from another computer while this
+            # window was open is part of the history the note is saved into.
+            book = default_revisions()
+            mine = book.for_job(job.job_id)
+            for number, note in dialog.notes.items():
+                mine.get(number).note = note
+            book.save()
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "ההערה לא נשמרה")
+            return
+        self.status("ההערה נשמרה ליד הגרסה")
+
+    def notify_customer(self) -> None:
+        """Open WhatsApp on the customer's chat with the status already written."""
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+
+        from ..branding import active_brand
+        from ..sharing import customer_phone, status_message, whatsapp_link, whatsapp_number
+
+        job = self._selected_job()
+        if job is None:
+            self.report(ProfileOSError("בחר פרויקט מהרשימה"), "אין למי לשלוח")
+            return
+        brand = active_brand()
+        phone = customer_phone(job)
+        message = status_message(
+            brand_name=brand.document_name,
+            status=job.status.value,
+            customer_name=job.customer_name,
+            job_name=job.name,
+            phone=brand.phone or "",
+        )
+        QDesktopServices.openUrl(QUrl(whatsapp_link(phone, message)))
+        self.status(
+            f"נפתח וואטסאפ עם עדכון ״{job.status.hebrew}״"
+            + ("" if whatsapp_number(phone) else " — ללקוח אין טלפון בתיק, בחר צ׳אט")
+        )
+
+    def export_dossier(self) -> None:
+        """Write the whole job as one printable page.
+
+        The elements are rebuilt from the job's own schedule rather than taken
+        from the screen, so the pack describes the job as it is saved — printing
+        one job while another is open cannot mix the two.
+        """
+        from ..projects import write_dossier
+
+        job = self._selected_job()
+        if job is None:
+            self.report(ProfileOSError("בחר פרויקט מהרשימה"), "אין מה להדפיס")
+            return
+
+        builds = list(self.session.builds)
+        if self.session.job is None or self.session.job.job_id != job.job_id:
+            builds = []
+            if job.schedule is not None:
+                from ..elements.builder import ElementBuilder
+
+                for opening in job.schedule.openings:
+                    try:
+                        builder = ElementBuilder.for_system(
+                            opening.system_id or job.system_id
+                        )
+                    except Exception:  # noqa: BLE001 - generic rules will do
+                        builder = ElementBuilder()
+                    try:
+                        builds.append(builder.build(opening))
+                    except Exception:  # noqa: BLE001 - reported by omission
+                        _log.warning("Dossier skipped %s", opening.element_id)
+
+        path, _ = QFileDialog.getSaveFileName(
+            self, "שמירת תיק העבודה", suggested_path(f"{job.job_id}.html"), "דפי HTML (*.html)"
+        )
+        if not path:
+            return
+        try:
+            written = write_dossier(job, builds, path)
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "לא ניתן להפיק את תיק העבודה")
+            return
+        self.status(f"תיק העבודה נשמר: {written}")
+
+    # -- customers ---------------------------------------------------------- #
+    def _costing_tab(self) -> QWidget:
+        """Is this job making money — asked while it can still be answered."""
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, METRICS.space(3), 0, 0)
+        layout.setSpacing(METRICS.space(3))
+
+        self.costing_headline = QLabel("")
+        self.costing_headline.setObjectName("StatLabel")
+        self.costing_headline.setWordWrap(True)
+        layout.addWidget(self.costing_headline)
+
+        self.costing_table = DataTable(
+            ["", "ערך"],
+            empty_text="בחר פרויקט ברשימה כדי לראות את הרווחיות שלו",
+        )
+        self.costing_table.horizontalHeader().setVisible(False)
+        layout.addWidget(self.costing_table, 1)
+
+        self.costing_notes = QLabel("")
+        self.costing_notes.setObjectName("Hint")
+        self.costing_notes.setWordWrap(True)
+        layout.addWidget(self.costing_notes)
+
+        note = QLabel(
+            "הרווח כאן נקרא מארבעה צדדים — מה שהוצע, מה שהוזמן מספקים, מה "
+            "שחויב וכמה חזרנו לאתר. מה שאין עליו נתון נאמר במפורש ולא נכנס "
+            "לחשבון, כי רווח שמניח אפס לעבודה שלא נרשמה גרוע מאין רווח."
+        )
+        note.setObjectName("Hint")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        return page
+
+    def show_costing(self, job: Any) -> None:
+        """Fill the profitability panel for one job."""
+        from ..projects.costing import cost_job
+
+        if job is None:
+            self.costing_table.set_rows([])
+            self.costing_headline.setText("")
+            return
+        try:
+            from ..service import default_register
+
+            service = default_register()
+        except Exception:  # noqa: BLE001 - costing works without the register
+            service = None
+        costing = cost_job(job, service=service)
+        self.costing_table.set_rows(
+            [[label, value] for label, value in costing.summary_rows()]
+        )
+        self.costing_headline.setText(f"{job.job_id} · {job.name} — {costing.verdict()}")
+        self.costing_headline.setStyleSheet(
+            f"color: {self.colours.danger if costing.is_losing else self.colours.text};"
+        )
+        self.costing_notes.setText(" · ".join(costing.warnings))
+
+    def _files_tab(self) -> QWidget:
+        """The photographs and papers that settle arguments later."""
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, METRICS.space(3), 0, 0)
+        layout.setSpacing(METRICS.space(3))
+
+        controls = QHBoxLayout()
+        controls.setSpacing(METRICS.space(2))
+        self.attachment_kind = QComboBox()
+        from ..projects.attachments import AttachmentKind
+
+        for kind in AttachmentKind:
+            self.attachment_kind.addItem(kind.hebrew, kind.value)
+        add = QPushButton("צרף קובץ…")
+        add.clicked.connect(self.add_attachment)
+        controls.addWidget(add)
+        controls.addWidget(self.attachment_kind)
+        controls.addStretch(1)
+        layout.addLayout(controls)
+
+        self.files_table = DataTable(
+            ["סוג", "תיאור", "פתח", "נוסף", "מי", "גודל"],
+            empty_text="אין מסמכים בתיק — צרף צילום מדידה או הצעה חתומה",
+        )
+        layout.addWidget(self.files_table, 1)
+
+        self.files_note = QLabel("")
+        self.files_note.setObjectName("Hint")
+        self.files_note.setWordWrap(True)
+        layout.addWidget(self.files_note)
+
+        note = QLabel(
+            "הקבצים נשמרים בתיקיית העבודה עצמה — אפשר לפתוח אותם, לשלוח אותם "
+            "ולגבות אותם בלי התוכנה. לכל קובץ נשמרת חתימת ביקורת, כך שאם מסמך "
+            "חתום הוחלף אחרי שהוגש — רואים את זה."
+        )
+        note.setObjectName("Hint")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        return page
+
+    def add_attachment(self) -> None:
+        from ..projects.attachments import AttachmentKind, attachments_for
+
+        job = self._selected_job()
+        if job is None:
+            self.report(ProfileOSError("בחר פרויקט מהרשימה"), "לא נבחר פרויקט")
+            return
+        path, _ = QFileDialog.getOpenFileName(
+            self, "צירוף מסמך לתיק", str(documents_dir()),
+            "מסמכים וצילומים (*.jpg *.jpeg *.png *.heic *.pdf *.dxf *.dwg);;כל הקבצים (*)",
+        )
+        if not path:
+            return
+        try:
+            attachments_for(job.job_id).add(
+                Path(path),
+                kind=AttachmentKind(self.attachment_kind.currentData()),
+                caption=Path(path).stem,
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "לא ניתן לצרף את הקובץ")
+            return
+        self.show_attachments(job)
+        self.status(f"צורף {Path(path).name}")
+
+    def show_attachments(self, job: Any) -> None:
+        from ..projects.attachments import attachments_for
+
+        if job is None:
+            self.files_table.set_rows([])
+            self.files_note.setText("")
+            return
+        store = attachments_for(job.job_id)
+        self.files_table.set_rows([
+            [
+                item.kind.hebrew, item.caption or item.name, item.element or "—",
+                item.added_at[:10], item.added_by or "—",
+                f"{item.size / 1024:,.0f} KB",
+            ]
+            for item in store
+        ])
+        summary = store.summary()
+        parts = [
+            f"⁦{summary['count']}⁩ מסמכים",
+            f"⁦{summary['photos']}⁩ צילומים",
+            f"⁦{summary['megabytes']:.1f}⁩ MB",
+        ]
+        changed = store.changed()
+        if changed:
+            parts.append(
+                f"⁦{len(changed)}⁩ קבצים שונו מאז שצורפו — בדוק אותם"
+            )
+        if summary["missing"]:
+            parts.append(f"⁦{summary['missing']}⁩ קבצים חסרים מהתיקייה")
+        self.files_note.setText(" · ".join(parts))
+        self.files_note.setStyleSheet(
+            f"color: {self.colours.warning};" if changed or summary["missing"] else ""
+        )
+
+    def _customers_tab(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, METRICS.space(3), 0, 0)
+        layout.setSpacing(METRICS.space(3))
+
+        bar = QHBoxLayout()
+        bar.setSpacing(METRICS.space(2))
+        add = QPushButton("לקוח חדש")
+        add.setObjectName("Primary")
+        add.clicked.connect(self.new_customer)
+        bar.addWidget(add)
+        edit = QPushButton("עריכה")
+        edit.clicked.connect(self.edit_customer)
+        bar.addWidget(edit)
+        self.customer_search = QLineEdit()
+        self.customer_search.setPlaceholderText("חיפוש לפי שם, עיר או טלפון…")
+        self.customer_search.setClearButtonEnabled(True)
+        self.customer_search.textChanged.connect(lambda _text: self.show_customers())
+        bar.addWidget(self.customer_search, 1)
+        layout.addLayout(bar)
+
+        self.customers_table = DataTable(
+            ["קוד", "שם", "טלפון", "עיר", "כתובת", "איש קשר", "דוא\"ל", "פרויקטים", "יתרה"],
+            empty_text="עדיין אין לקוחות — לחץ ״לקוח חדש״",
+        )
+        self.customers_table.doubleClicked.connect(lambda _index: self.edit_customer())
+        layout.addWidget(self.customers_table, 1)
+
+        note = QLabel(
+            "הלקוחות משותפים לכל הפרויקטים: פרטי הלקוח נכנסים להצעת המחיר "
+            "ולמסמכי המשלוח בלי להקליד אותם מחדש בכל עבודה."
+        )
+        note.setObjectName("Hint")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        return page
+
+    def new_customer(self) -> None:
+        from .dialogs import NewCustomerDialog
+
+        book = self._book()
+        try:
+            existing = book.all()
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "ספר הלקוחות לא נקרא")
+            return
+        dialog = NewCustomerDialog(self, customers=existing)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        values = dialog.values()
+        try:
+            customer = book.add(**values)
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "לא ניתן להוסיף את הלקוח")
+            return
+        self.refresh()
+        self.status(f"נוסף לקוח {customer.name}")
+
+    def _selected_customer(self) -> Any:
+        row = self.customers_table.currentRow()
+        shown = getattr(self, "_shown_customers", [])
+        if 0 <= row < len(shown):
+            return shown[row]
+        return None
+
+    def edit_customer(self) -> None:
+        from .dialogs import NewCustomerDialog
+
+        customer = self._selected_customer()
+        if customer is None:
+            self.status("בחר לקוח מהרשימה")
+            return
+        book = self._book()
+        dialog = NewCustomerDialog(self, customers=book.all(), customer=customer)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        try:
+            updated = book.update(customer.model_copy(update=dialog.values()))
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "השינויים לא נשמרו")
+            return
+        self.refresh()
+        self.status(f"עודכנו פרטי {updated.name}")
+
+    def _owed_by_customer(self) -> dict[str, float]:
+        """What each customer still owes across their jobs, not even covered
+        by a cheque — the figure to have in front of you when they call.
+        Worked out once per refresh, not on every key typed in the search."""
+        cached = getattr(self, "_owed_cache", None)
+        if cached is not None:
+            return cached
+        from ..projects.account import job_account
+
+        owed: dict[str, float] = {}
+        jobs = [job for job in getattr(self, "_all_jobs", [])
+                if job.customer_id and job.status.value in ("won", "in_production", "installed")]
+        cheques = self._cheques_for_accounts() if jobs else []
+        for job in jobs:
+            try:
+                due = job_account(job, cheques).uncovered
+            except Exception:  # noqa: BLE001 - one odd job never hides the list
+                continue
+            owed[job.customer_id] = owed.get(job.customer_id, 0.0) + due
+        self._owed_cache = owed
+        return owed
+
+    def show_customers(self) -> None:
+        """The customer list, filtered by whatever is typed in its search box."""
+        from ..projects.contacts import search_customers
+
+        try:
+            customers = self._book().all()
+        except Exception as exc:  # noqa: BLE001
+            self.customers_table._empty_text = f"ספר הלקוחות לא נקרא: {exc}"
+            self.customers_table.set_rows([])
+            self._shown_customers = []
+            return
+        needle = self.customer_search.text() if hasattr(self, "customer_search") else ""
+        shown = search_customers(customers, needle)
+        jobs_per_customer: dict[str, int] = {}
+        for job in getattr(self, "_all_jobs", []):
+            if job.customer_id:
+                jobs_per_customer[job.customer_id] = jobs_per_customer.get(job.customer_id, 0) + 1
+        owed = self._owed_by_customer()
+        self._shown_customers = shown
+        self.customers_table._empty_text = (
+            f"אין לקוח התואם ״{needle.strip()}״" if needle.strip()
+            else "עדיין אין לקוחות — לחץ ״לקוח חדש״"
+        )
+        self.customers_table.set_rows([
+            [
+                c.customer_id, c.name, f"⁦{c.phone}⁩" if c.phone else "",
+                c.city, c.address, c.contact, c.email,
+                str(jobs_per_customer.get(c.customer_id, 0) or ""),
+                f"⁦{owed[c.customer_id]:,.0f} ₪⁩" if owed.get(c.customer_id, 0) > 0.5 else "",
+            ]
+            for c in shown
+        ], numeric_columns=(7, 8))
+
+    # -- refresh ------------------------------------------------------------- #
+    def refresh(self) -> None:
+        store = self._store()
+        # The job chosen before: saving moves it in the list (newest first),
+        # and the selection must follow the job, not stay on its old row.
+        before = self._selected_job() if hasattr(self, "_jobs") else None
+        self._jobs = store.all()
+        self._all_jobs = list(self._jobs)
+        self._owed_cache = None
+        needle = self.search.text().strip().lower()
+        if needle:
+            # A customer on the phone says their number before their name:
+            # three digits or more are matched against the customer's phones.
+            import re as _re
+
+            digits = _re.sub(r"\D", "", needle)
+            phones: dict[str, str] = {}
+            if len(digits) >= 3:
+                try:
+                    from ..projects import default_customers
+
+                    for customer in default_customers().all():
+                        phones[customer.customer_id] = _re.sub(
+                            r"\D", "", " ".join(str(v) for v in (
+                                getattr(customer, "phone", ""), getattr(customer, "mobile", ""),
+                                getattr(customer, "phone2", ""),
+                            ) if v)
+                        )
+                except Exception as exc:  # noqa: BLE001 - names still match
+                    _log.warning("Customers unreadable for phone search: %s", exc)
+
+            def matches(job: Any) -> bool:
+                if needle in " ".join((
+                    job.job_id, job.name, job.customer_name, job.site_address, job.reference,
+                )).lower():
+                    return True
+                number = phones.get(job.customer_id, "")
+                local = digits[3:] if digits.startswith("972") else digits.lstrip("0")
+                return len(digits) >= 3 and bool(number) and (
+                    digits in number or (local and local in number.lstrip("0"))
+                )
+
+            self._jobs = [job for job in self._jobs if matches(job)]
+        wanted_trade = self.trade_filter.currentData() if hasattr(self, "trade_filter") else ""
+        if wanted_trade:
+            from ..projects import Trade
+
+            self._jobs = [job for job in self._jobs if job.trade.includes(Trade(wanted_trade))]
+
+        from ..projects.account import job_account
+
+        cheques = self._cheques_for_accounts()
+        colours: dict[tuple[int, int], str] = {}
+        tint = {
+            "enquiry": self.colours.text_muted,
+            "quoted": self.colours.info,
+            "won": self.colours.accent,
+            "in_production": self.colours.warning,
+            "installed": self.colours.success,
+            "lost": self.colours.danger,
+        }
+        rows = []
+        for index, job in enumerate(self._jobs):
+            rows.append([
+                job.job_id, job.name, job.customer_name or "—",
+                job.status.hebrew, str(job.unit_count),
+                # The shekel sits after the figure in Hebrew, and the whole
+                # amount is isolated so the bidi run does not reorder it.
+                f"⁦{job.quote_total:,.0f} ₪⁩" if job.quote_total else "—",
+                job.updated,
+                job.trade.hebrew,
+                self._owed_cell(job, cheques, job_account),
+            ])
+            colours[(index, 3)] = tint.get(job.status.value, self.colours.text)
+            if rows[-1][-1] not in ("—", "שולם"):
+                colours[(index, 8)] = self.colours.warning
+        self.jobs_table._empty_text = (
+            f"לא נמצא פרויקט התואם ״{needle}״" if needle
+            else "אין עדיין פרויקטים — לחץ ״פרויקט חדש״ כדי לפתוח את הראשון"
+        )
+        self.jobs_table.set_rows(rows, numeric_columns=(4, 5, 8), colours=colours)
+        # A list with a row nobody has clicked still has a most-recent job, and
+        # showing its detail beats an empty panel that says nothing was chosen.
+        if before is not None:
+            index = next((i for i, j in enumerate(self._jobs) if j.job_id == before.job_id), -1)
+            if index >= 0 and (self._selected_job() is None
+                               or self._selected_job().job_id != before.job_id):
+                self.jobs_table.selectRow(index)
+        if rows and not self.jobs_table.selectionModel().hasSelection():
+            self.jobs_table.setCurrentCell(0, 0)
+        # The summary shows the job as just re-read: a selection that stayed
+        # on the same row would otherwise keep the copy from before. Only the
+        # summary — the costing is worked out when a job is chosen, not on
+        # every refresh.
+        self._show_summary(self._selected_job())
+
+        pipeline = store.pipeline()
+        open_count = sum(
+            count for status, count in pipeline.items()
+            if status not in ("installed", "lost")
+        )
+        backlog = store.backlog_value()
+        self.stats.update_many({
+            "open": (str(open_count) if open_count else "—", "בעבודה כרגע"),
+            "quoted": (str(pipeline["quoted"]) if pipeline["quoted"] else "—",
+                       "ממתינות לתשובה"),
+            "production": (
+                str(pipeline["in_production"]) if pipeline["in_production"] else "—",
+                "על רצפת הייצור",
+            ),
+            "backlog": (
+                f"⁦{backlog:,.0f} ₪⁩" if backlog else "—",
+                "הוזמן וטרם הותקן · לפני מע״מ",
+            ),
+        })
+
+        self.show_customers()
+
+        job = self.session.job
+        self.header.set_subtitle(
+            f"פתוח: {job.job_id} — {job.name}" if job is not None
+            else "תיקי עבודה, לקוחות ומצב ההזמנות"
+        )
+
+
+# --------------------------------------------------------------------------- #
+# Profile
+# --------------------------------------------------------------------------- #
+
+class ProfilePage(Page):
+    """Import a DXF cross-section and analyse it."""
+
+    title = "Profile"
+    hebrew = "פרופיל"
+    subtitle = "ייבוא חתך מקטלוג היצרן וחישוב תכונות הנדסיות"
+
+    def build(self) -> None:
+        # The library first, the file dialog second. A fabricator looking for
+        # a mullion knows what a mullion is called; they do not know which
+        # folder the supplier's DXF was saved into three months ago.
+        self.find_button = QPushButton("חפש פרופיל")
+        self.find_button.setObjectName("Primary")
+        self.find_button.clicked.connect(self.find_profile)
+        self.header.add_action(self.find_button)
+
+        self.open_button = QPushButton("פתח שרטוט...")
+        self.open_button.clicked.connect(self.open_dxf)
+        self.header.add_action(self.open_button)
+
+        self.stats = StatRow(
+            [("area", "שטח מ״מ²"), ("ix", "Iₓ מ״מ⁴"), ("iy", "I_y מ״מ⁴"),
+             ("j", "J מ״מ⁴"), ("mass", "משקל ק״ג/מ׳")]
+        )
+        self.body.addWidget(self.stats)
+
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.view = SectionView(self.colours)
+        splitter.addWidget(self.view)
+
+        side = QWidget()
+        side_layout = QVBoxLayout(side)
+        side_layout.setContentsMargins(0, 0, 0, 0)
+        side_layout.setSpacing(METRICS.space(3))
+
+        properties_card = Card("חתך")
+        tabs = QTabWidget()
+        self.properties = DataTable(["סימן", "ערך", "יחידה"], empty_text="פתחו שרטוט פרופיל (DXF) כדי לראות את תכונות החתך")
+        tabs.addTab(self.properties, "תכונות")
+
+        features_panel = QWidget()
+        features_layout = QVBoxLayout(features_panel)
+        features_layout.setContentsMargins(0, 0, 0, 0)
+        features_layout.setSpacing(METRICS.space(2))
+        self.feature_summary = DataTable(["", ""])
+        self.feature_summary.horizontalHeader().setVisible(False)
+        self.feature_summary.setMaximumHeight(METRICS.row_height * 6 + 4)
+        features_layout.addWidget(self.feature_summary)
+        self.features = DataTable(["מאפיין", "פתח", "עומק", "חתירה"], empty_text="המאפיינים יופיעו כאן אחרי פתיחת שרטוט")
+        features_layout.addWidget(self.features, 1)
+        self.feature_notes = QLabel("")
+        self.feature_notes.setWordWrap(True)
+        self.feature_notes.setObjectName("Muted")
+        features_layout.addWidget(self.feature_notes)
+        tabs.addTab(features_panel, "מאפיינים")
+
+        properties_card.add(tabs, 1)
+        side_layout.addWidget(properties_card, 1)
+
+        check_card = Card("בדיקת עומס רוח")
+        fields = FieldGrid()
+        self.span = MillimetreBox(); self.span.setRange(100, 20000); self.span.setValue(3000); self.span.setSuffix(" מ״מ")
+        self.pressure = QDoubleSpinBox(); self.pressure.setRange(0.1, 10.0); self.pressure.setValue(1.2); self.pressure.setSingleStep(0.1); self.pressure.setSuffix(" kN/m²")
+        self.tributary = MillimetreBox(); self.tributary.setRange(100, 10000); self.tributary.setValue(1500); self.tributary.setSuffix(" מ״מ")
+        fields.add("מפתח", self.span)
+        fields.add("לחץ רוח", self.pressure)
+        fields.add("רוחב תורם", self.tributary)
+        check_card.add(fields)
+
+        run = QPushButton("בדוק")
+        run.clicked.connect(self.run_check)
+        check_card.add(run)
+        self.checks = DataTable(["בדיקה", "דרישה", "כושר", "ניצולת"], empty_text="הבדיקות יופיעו כאן אחרי פתיחת שרטוט פרופיל")
+        check_card.add(self.checks, 1)
+        self.max_span = QLabel("")
+        self.max_span.setObjectName("StatLabel")
+        check_card.add(self.max_span)
+        side_layout.addWidget(check_card, 1)
+
+        splitter.addWidget(side)
+        splitter.setStretchFactor(0, 3)
+        splitter.setStretchFactor(1, 2)
+        self.body.addWidget(splitter, 1)
+
+    def find_profile(self) -> None:
+        """Search the library — the shop's own drawings and the examples."""
+        from .finder import find_profile
+
+        chosen = find_profile(self)
+        if chosen is not None:
+            self.load(chosen.path)
+
+    def load_sample(self) -> None:
+        from ..library import sample_profiles
+
+        samples = sample_profiles()
+        if not samples:
+            self.report(ProfileOSError("שרטוטי הדוגמה לא נמצאו בהתקנה"), "אין דוגמה")
+            return
+        self.load(samples[0].path)
+
+    def open_dxf(self) -> None:
+        """A DWG is accepted too; it is converted on the way in."""
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "פתיחת שרטוט פרופיל",
+            str(documents_dir()),
+            "שרטוטים (*.dxf *.dwg);;DXF (*.dxf);;DWG (*.dwg);;כל הקבצים (*)",
+        )
+        if path:
+            self.load(Path(path))
+
+    def load(self, path: Path) -> None:
+        from ..structural import analyse_dxf
+
+        try:
+            properties, section = analyse_dxf(str(path), profile_id=path.stem)
+        except Exception as exc:  # noqa: BLE001 - surfaced to the user
+            self.report(exc, "לא ניתן לנתח את השרטוט")
+            return
+
+        # The same drawing, also as a catalogue profile, so a wall detail can be
+        # cut against the real outline rather than a schematic box. A failure
+        # here costs the detail its outline, never the analysis on screen.
+        profile = None
+        try:
+            from ..geometry import profile_from_dxf
+
+            profile, _ = profile_from_dxf(str(path), path.stem, "ui")
+        except Exception:  # noqa: BLE001 - the section itself is what matters
+            _log.warning("Could not derive a profile definition from %s", path)
+
+        self.session.set_section(properties, section, path, profile)
+        self.view.set_section(section.polygon, properties, section.validation)
+        self.properties.set_rows(properties.summary_rows(), numeric_columns=(1,))
+
+        def fmt(value: float | None, digits: int = 0) -> str:
+            return "—" if value is None else f"{value:,.{digits}f}"
+
+        self.stats.update_many({
+            "area": (fmt(properties.area, 1), path.stem),
+            "ix": (fmt(properties.ixx), ""),
+            "iy": (fmt(properties.iyy), ""),
+            "j": (fmt(properties.j), properties.torsion_method or ""),
+            "mass": (fmt(properties.mass_per_metre, 3), properties.material_id or ""),
+        })
+        self.header.set_subtitle(
+            f"{path.name} · \u2066{section.width:.0f} × {section.height:.0f}\u2069 מ״מ · "
+            f"{section.topology.chamber_count} תאים"
+        )
+        self.show_features(section, properties.material_id)
+        self.status(f"נותח {path.name}")
+        self.run_check()
+
+    def show_features(self, section: Any, material: str | None) -> None:
+        """Fill the Features tab with what was read off the drawing.
+
+        A failure here must not cost the operator the structural analysis they
+        actually asked for, so it is reported in the panel rather than raised.
+        """
+        from ..geometry.features import features_for_section
+
+        try:
+            report = features_for_section(section, material=material)
+        except Exception as exc:  # noqa: BLE001 - the section is still usable
+            _log.warning("Feature recognition failed: %s", exc)
+            self.feature_summary.set_rows([["זיהוי מאפיינים", "לא זמין"]])
+            self.features.set_rows([])
+            self.feature_notes.setText(str(exc))
+            return
+
+        self.session.set_features(report)
+        self.feature_summary.set_rows(
+            [[label, value] for label, value in report.summary_rows()]
+        )
+        rows = []
+        colours: dict[tuple[int, int], str] = {}
+        for index, feature in enumerate(report.features):
+            pocket = feature.pocket
+            rows.append([
+                feature.kind.label(self.session.language),
+                f"{pocket.mouth:.2f}",
+                f"{pocket.depth:.2f}",
+                f"{pocket.undercut:.2f}" if pocket.undercut > 0.4 else "—",
+            ])
+            if feature.kind.value != "pocket":
+                colours[(index, 0)] = self.colours.accent
+        self.features.set_rows(rows, numeric_columns=(1, 2, 3), colours=colours)
+
+        notes = [strip.evidence and
+                 f"פס פוליאמיד \u2066{strip.width:.1f}\u2069 מ״מ"
+                 for strip in report.strips]
+        notes.extend(report.warnings)
+        self.feature_notes.setText("  ".join(note for note in notes if note))
+
+    def run_check(self) -> None:
+        if self.session.section_properties is None:
+            return
+        from ..models.materials import get_material
+        from ..structural import LoadCase, check_member, maximum_span, wind_line_load
+
+        properties = self.session.section_properties
+        material = get_material(properties.material_id)
+        load = LoadCase(
+            lateral_line_load=wind_line_load(self.pressure.value(), self.tributary.value())
+        )
+        try:
+            check = check_member(properties, material, span=self.span.value(), load=load)
+            limit = maximum_span(
+                properties, material,
+                pressure_kn_m2=self.pressure.value(),
+                tributary_width_mm=self.tributary.value(),
+            )
+        except ProfileOSError as exc:
+            self.report(exc, "הבדיקה נכשלה")
+            return
+
+        colours: dict[tuple[int, int], str] = {}
+        rows = []
+        check_names = {
+            "bending": "כפיפה", "shear": "גזירה", "deflection": "כפף",
+            "web crippling": "מעיכת דופן", "buckling": "קריסה",
+        }
+        for index, entry in enumerate(check.results):
+            name = next(
+                (hebrew for key, hebrew in check_names.items() if key in entry.name.lower()),
+                entry.name,
+            )
+            rows.append([
+                name, f"{entry.demand:.4g}", f"{entry.capacity:.4g}",
+                f"{entry.utilisation * 100:.1f}%",
+            ])
+            colours[(index, 3)] = self.colours.success if entry.passes else self.colours.danger
+        self.checks.set_rows(rows, numeric_columns=(1, 2, 3), colours=colours)
+
+        verdict = "עומד" if check.passes else "נכשל"
+        self.max_span.setText(
+            f"הפרופיל {verdict} במפתח \u2066{self.span.value():.0f}\u2069 מ״מ. "
+            f"המפתח המרבי לעומסים אלה: \u2066{limit:,.0f}\u2069 מ״מ."
+        )
+
+
+# --------------------------------------------------------------------------- #
+# Element
+# --------------------------------------------------------------------------- #
+
+class ElementPage(Page):
+    """Design a window, door or curtain-wall element."""
+
+    title = "Element"
+    hebrew = "פתח"
+    subtitle = "תכנון פתח וגזירת רשימת חיתוך, זכוכית ופרזול"
+
+    def _fit_form(self) -> None:
+        """As wide as the card needs, plus room for the scroll bar: the card
+        is never squeezed under its own fields — measured again once the
+        style sheet has given the fields their real padding."""
+        scroll, card = self._form_scroll, self._form_card
+        extent = scroll.verticalScrollBar().sizeHint().width()
+        need = card.minimumSizeHint().width() + extent + 2
+        scroll.setMinimumWidth(need)
+        widest = max(METRICS.panel_width + extent + 2, need)
+        scroll.setMaximumWidth(widest)
+        # The panes are shared out again, so a form that changed width
+        # leaves no empty strip beside it.
+        splitter = getattr(self, "_splitter", None)
+        if splitter is not None:
+            total = sum(splitter.sizes())
+            if total > 0:
+                form = min(widest, max(need, splitter.sizes()[0]))
+                splitter.setSizes([form, max(0, total - form)])
+
+    def showEvent(self, event: Any) -> None:  # noqa: N802 - Qt override
+        super().showEvent(event)
+        if hasattr(self, "_form_scroll"):
+            self._fit_form()
+
+    def build(self) -> None:
+        # Searching the library is the first action on this screen, because
+        # nobody's day starts by typing twelve numbers for a window they have
+        # made four hundred times. The form stays exactly where it was for the
+        # one that is genuinely new.
+        find_button = QPushButton("חפש פתח")
+        find_button.clicked.connect(self.find_opening)
+        self.header.add_action(find_button)
+
+        # The one thing this page is for — and what its subtitle tells you to press.
+        build_button = QPushButton("בנה פתח")
+        build_button.setObjectName("Primary")
+        build_button.clicked.connect(self.build_element)
+        self.header.add_action(build_button)
+
+        template_button = QPushButton("תבניות")
+        template_button.clicked.connect(self.use_template)
+        self.header.add_action(template_button)
+
+        save_template = QPushButton("שמור כתבנית")
+        save_template.clicked.connect(self.save_as_template)
+        self.header.add_action(save_template)
+
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+
+        form_card = Card("פתח")
+        fields = FieldGrid()
+        self.name = QComboBox(); self.name.setEditable(True); self.name.addItems(["W-04", "D-01", "CW-01"])
+        self.width = MillimetreBox(); self.width.setRange(200, 12000); self.width.setValue(2400); self.width.setSuffix(" מ״מ")
+        self.height = MillimetreBox(); self.height.setRange(200, 6000); self.height.setValue(1800); self.height.setSuffix(" מ״מ")
+        self.quantity = QSpinBox(); self.quantity.setRange(1, 999); self.quantity.setValue(4)
+        self.kind = QComboBox()
+        for kind_id, kind_he in [("window", "חלון"), ("door", "דלת"), ("curtain_wall", "קיר מסך"),
+                                 ("shopfront", "חזית מסחרית"), ("sliding_unit", "מערכת הזזה")]:
+            self.kind.addItem(kind_he, kind_id)
+        self.columns = QSpinBox(); self.columns.setRange(1, 12); self.columns.setValue(3)
+        self.rows = QSpinBox(); self.rows.setRange(1, 12); self.rows.setValue(1)
+        self.sash_column = QSpinBox(); self.sash_column.setRange(0, 11); self.sash_column.setValue(1)
+        self.sash_row = QSpinBox(); self.sash_row.setRange(0, 11); self.sash_row.setValue(0)
+        self.sash_type = QComboBox()
+        from ..elements.model import OpeningType as _OT
+
+        for sash_kind in ("fixed", "casement", "tilt_turn", "top_hung", "sliding", "door"):
+            self.sash_type.addItem(_OT(sash_kind).label("he"), sash_kind)
+        self.sash_type.setCurrentIndex(2)
+        self.sill_height = MillimetreBox(); self.sill_height.setRange(0, 100000)
+        self.sill_height.setValue(900); self.sill_height.setSuffix(" מ״מ")
+
+        # Most openings are rectangles. The ones that are not are the ones a
+        # customer remembers and a competitor wins, and pricing them on the
+        # bounding box is how a gable ends up quoted at twice what it is.
+        self.shape = QComboBox()
+        from ..elements.shapes import Shape as _Shape
+
+        for entry in _Shape:
+            self.shape.addItem(entry.hebrew, entry.value)
+        self.shape.currentIndexChanged.connect(self._shape_changed)
+
+        self.height_right = MillimetreBox()
+        self.height_right.setRange(0, 6000)
+        self.height_right.setSuffix(" מ״מ")
+        self.height_right.setSpecialValueText("—")
+        self.height_right.setToolTip(
+            "גובה הצד הימני בפתח משופע. הגובה הרגיל הוא הצד השמאלי."
+        )
+
+        self.rise = MillimetreBox()
+        self.rise.setRange(0, 4000)
+        self.rise.setSuffix(" מ״מ")
+        self.rise.setSpecialValueText("—")
+        self.rise.setToolTip(
+            "גובה הקשת מעל קו הזינוק — לא הגובה הכולל, שהוא הזינוק ועוד "
+            "גובה הקשת."
+        )
+        self._shape_changed()
+
+        # Where it is fitted. Two small fields, and they are what turns a pile
+        # of finished units into a loading list somebody can work from.
+        self.location = QLineEdit()
+        self.location.setPlaceholderText("סלון, חדר שינה, מרפסת…")
+        self.floor = QSpinBox()
+        self.floor.setRange(-3, 60)
+        self.floor.setSuffix(" קומה")
+
+        # The series is a field like any other, because "which system is this
+        # in" is a question the shop answers per element, not per install.
+        # Generic keeps the family stand-ins and says so on the cut list.
+        self.system = QComboBox()
+        self.system.addItem("רגיל — ערכים טיפוסיים", "generic")
+        from ..systems import DIRECTORY as _DIRECTORY
+
+        # Classified series first, so the ones that will actually build sort
+        # ahead of the ones named but not yet placed in a family — picking
+        # the latter is still allowed, but the label says so up front rather
+        # than after a build is refused.
+        for entry in sorted(_DIRECTORY, key=lambda e: (e.family is None, e.manufacturer, e.series)):
+            label = entry.display if entry.family else f"{entry.display} — טרם סווגה"
+            self.system.addItem(label, entry.id)
+
+        # What is fitted to the window. On an Israeli flat this is not an
+        # extra — a bedroom window without a shutter is unfinished — so it is
+        # on the form beside the size rather than on a screen of its own.
+        self.shutter = QComboBox()
+        self.shutter.addItem("ללא תריס", "")
+        from ..accessories import SLATS, Drive as _Drive
+
+        for _slat in SLATS:
+            for _drive in (_Drive.MOTOR, _Drive.STRAP):
+                self.shutter.addItem(
+                    f"{_slat.hebrew} · {_drive.hebrew}", f"{_slat.slat_id}|{_drive.value}"
+                )
+
+        self.screen = QComboBox()
+        self.screen.addItem("ללא רשת", "")
+        from ..accessories import MeshKind as _Mesh, ScreenKind as _ScreenKind
+
+        for _kind in _ScreenKind:
+            for _mesh in (_Mesh.FIBREGLASS, _Mesh.ALUMINIUM):
+                self.screen.addItem(
+                    f"{_kind.hebrew} · {_mesh.hebrew}", f"{_kind.value}|{_mesh.value}"
+                )
+
+        self.sill = QComboBox()
+        from ..accessories import SillKind as _SillKind
+
+        for _sill in _SillKind:
+            self.sill.addItem(_sill.hebrew, _sill.value)
+
+        self.glass = QComboBox()
+
+        from ..glazing import STANDARD_BUILDUPS
+
+        hebrew_kinds = {"mono": "מונוליטית", "dgu": "בידודית", "tgu": "טריפל", "lam": "טריפלקס"}
+        for key, unit in STANDARD_BUILDUPS.items():
+            kind = next((name for prefix, name in hebrew_kinds.items() if key.startswith(prefix)), "")
+            self.glass.addItem(f"{kind} \u2066{unit.describe()}\u2069 · U \u2066{unit.u_value():.2f}\u2069", key)
+        self.glass.setCurrentIndex(min(1, self.glass.count() - 1))
+
+        for label, widget in [
+            ("שם", self.name), ("סוג", self.kind), ("רוחב", self.width),
+            ("גובה", self.height), ("כמות", self.quantity), ("עמודות", self.columns),
+            ("שורות", self.rows), ("עמודת כנף", self.sash_column), ("שורת כנף", self.sash_row),
+            ("סוג פתיחה", self.sash_type), ("גובה סף", self.sill_height),
+            ("צורה", self.shape), ("גובה ימין", self.height_right),
+            ("גובה קשת", self.rise),
+            ("סדרה", self.system), ("זכוכית", self.glass),
+            ("תריס", self.shutter), ("רשת", self.screen), ("אדן", self.sill),
+            ("מיקום", self.location), ("קומה", self.floor),
+        ]:
+            fields.add(label, widget)
+        form_card.add(fields)
+        form_card.body.addStretch(1)
+        # On a laptop the form is taller than the screen: it scrolls, rather
+        # than cutting its last fields off at the card's edge.
+        form_scroll = QScrollArea()
+        form_scroll.setWidget(form_card)
+        form_scroll.setWidgetResizable(True)
+        form_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        form_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        # A long series name must not make the whole form wider than its pane.
+        for combo in form_card.findChildren(QComboBox):
+            combo.setSizeAdjustPolicy(
+                QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+            combo.setMinimumContentsLength(12)
+        self._form_scroll, self._form_card = form_scroll, form_card
+        self._fit_form()
+        splitter.addWidget(form_scroll)
+
+        right = QWidget()
+        right_layout = QVBoxLayout(right)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(METRICS.space(3))
+
+        self.stats = StatRow([
+            ("pieces", "חלקים"), ("glass", "זכוכית מ״ר"), ("mass", "זכוכית ק״ג"),
+            ("gasket", "אטמים מ׳"), ("hardware", "פרזול"),
+        ])
+        right_layout.addWidget(self.stats)
+
+        inner = QSplitter(Qt.Orientation.Vertical)
+        self.view = ElevationView(self.colours)
+        inner.addWidget(self._drawing_or_model())
+
+        # Live drawing: every field that changes the shape redraws it, a
+        # quarter-second after the last change so typing "2400" draws once.
+        from PySide6.QtCore import QTimer as _QTimer
+
+        self._preview_timer = _QTimer(self)
+        self._preview_timer.setSingleShot(True)
+        self._preview_timer.setInterval(250)
+        self._preview_timer.timeout.connect(self._preview)
+        for _spin in (
+            self.width, self.height, self.columns, self.rows,
+            self.sash_column, self.sash_row,
+        ):
+            _spin.valueChanged.connect(self._schedule_preview)
+        for _combo in (self.kind, self.sash_type, self.shape, self.system, self.glass):
+            _combo.currentIndexChanged.connect(self._schedule_preview)
+        # And once on opening, so the page never starts on an empty canvas.
+        self._preview_timer.start()
+
+        lower = QWidget()
+        lower_layout = QVBoxLayout(lower)
+        lower_layout.setContentsMargins(0, 0, 0, 0)
+        lower_layout.setSpacing(METRICS.space(2))
+
+        # The verdict sits above the tabs rather than inside one, because a
+        # blocker the operator has to click to find is a blocker they will miss.
+        self.verdict = QLabel("")
+        self.verdict.setObjectName("StatLabel")
+        self.verdict.setWordWrap(True)
+        lower_layout.addWidget(self.verdict)
+
+        tabs = QTabWidget()
+        self.cuts = DataTable(["תפקיד", "פרופיל", "אורך", "כמות", "זוויות"], empty_text="״בנה פתח״ — ורשימת החיתוך תופיע כאן")
+        self.panes = DataTable(["סימון", "מידה", "מפרט", "שטח מ״ר", "משקל ק״ג", "U", "בטיחות"], empty_text="״בנה פתח״ — והזכוכיות שלו יופיעו כאן")
+        self.hardware = DataTable(["קוד", "פריט", "כמות", "יחידה"], empty_text="״בנה פתח״ — והפרזול שלו יופיע כאן")
+        self.hardware_check = QLabel("")
+        self.hardware_check.setObjectName("Hint")
+        self.hardware_check.setWordWrap(True)
+        self.feasibility = DataTable(["", "היכן", "מה", "נמדד", "גבול"], empty_text="״בנה פתח״ — והבדיקה אם אפשר לייצר אותו תופיע כאן")
+        self.warnings = QPlainTextEdit(); self.warnings.setReadOnly(True)
+
+        # Accessories get a panel rather than a column, because the number the
+        # builder is waiting for — the hole to leave in the wall — belongs
+        # beside them and nowhere else.
+        fitted = QWidget()
+        fitted_layout = QVBoxLayout(fitted)
+        fitted_layout.setContentsMargins(0, 0, 0, 0)
+        fitted_layout.setSpacing(METRICS.space(2))
+        self.opening_note = QLabel("")
+        self.opening_note.setObjectName("StatLabel")
+        self.opening_note.setWordWrap(True)
+        fitted_layout.addWidget(self.opening_note)
+        self.accessories = DataTable(
+            ["אביזר", "מידה", "כמות", "משקל ק״ג", "פרטים"],
+            empty_text="לא נבחרו אביזרים — בחר תריס, רשת או אדן בטופס",
+        )
+        fitted_layout.addWidget(self.accessories, 1)
+
+        # Performance is where a specification is won or lost, and it is the
+        # panel a customer's engineer reads first.
+        performance = QWidget()
+        performance_layout = QVBoxLayout(performance)
+        performance_layout.setContentsMargins(0, 0, 0, 0)
+        performance_layout.setSpacing(METRICS.space(2))
+        self.performance_headline = QLabel("")
+        self.performance_headline.setObjectName("StatLabel")
+        self.performance_headline.setWordWrap(True)
+        performance_layout.addWidget(self.performance_headline)
+        # Side by side rather than stacked: the figures are a narrow column and
+        # the findings are sentences, and stacking gave each of them half of a
+        # panel that was already short.
+        performance_split = QSplitter(Qt.Orientation.Horizontal)
+        self.performance = DataTable(
+            ["", "ערך"],
+            empty_text="בנה פתח כדי לראות ⁦U_w⁩, ⁦R_w⁩ ולחץ רוח",
+        )
+        self.performance.horizontalHeader().setVisible(False)
+        performance_split.addWidget(self.performance)
+        self.compliance = DataTable(["", "נושא", "תקן", "ממצא"], empty_text="״בנה פתח״ — ובדיקת התקנים תופיע כאן")
+        performance_split.addWidget(self.compliance)
+        performance_split.setStretchFactor(0, 0)
+        performance_split.setStretchFactor(1, 1)
+        performance_split.setSizes([METRICS.panel_width, METRICS.panel_width * 2])
+        performance_layout.addWidget(performance_split, 1)
+
+        tabs.addTab(self.cuts, "רשימת חיתוך")
+        tabs.addTab(self.panes, "זכוכית")
+        # The hardware tab carries the load check under the list, because the
+        # question "will this sash still close in five years" is answered by
+        # the rating and nothing else on this screen.
+        hardware_panel = QWidget()
+        hardware_layout = QVBoxLayout(hardware_panel)
+        hardware_layout.setContentsMargins(0, 0, 0, 0)
+        hardware_layout.setSpacing(METRICS.space(2))
+        hardware_layout.addWidget(self.hardware, 1)
+        hardware_layout.addWidget(self.hardware_check)
+        tabs.addTab(hardware_panel, "פרזול")
+        tabs.addTab(fitted, "אביזרים")
+        tabs.addTab(performance, "ביצועים")
+        tabs.addTab(self.feasibility, "ישימות")
+        tabs.addTab(self.warnings, "אזהרות")
+        lower_layout.addWidget(tabs, 1)
+        inner.addWidget(lower)
+        inner.setStretchFactor(0, 3)
+        inner.setStretchFactor(1, 2)
+        # On a laptop the drawing will happily take the whole panel and leave
+        # the cut list two rows deep. Give the tables a fixed share to start
+        # from; the splitter is still there for anybody who wants the drawing
+        # larger.
+        inner.setSizes([360, 300])
+        right_layout.addWidget(inner, 1)
+
+        splitter.addWidget(right)
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 1)
+        # Give the two panes their proportions outright. Left to itself a
+        # splitter halves the space, and a form capped at its panel width
+        # leaves the remainder as a hole in the middle of the screen.
+        splitter.setSizes([METRICS.panel_width, METRICS.panel_width * 3])
+        self._splitter = splitter
+        self.body.addWidget(splitter, 1)
+
+    #: Mark prefixes, so a picked preset arrives named the way the shop names
+    #: things rather than as "sliding_3".
+    MARK_PREFIX = {
+        "window": "W", "door": "D", "curtain_wall": "CW",
+        "shopfront": "SF", "sliding_unit": "S",
+    }
+
+    def find_opening(self) -> None:
+        """Pick a ready-made opening and build it, in two clicks."""
+        from .finder import find_opening
+
+        preset = find_opening(self)
+        if preset is not None:
+            self.apply_preset(preset)
+
+    # -- templates -------------------------------------------------------- #
+    def save_as_template(self) -> None:
+        """Keep this configuration so the next one of these is two clicks.
+
+        Half the errors in a quotation are in the half that was typed rather
+        than chosen, and a shop that fits fifty of the same window a year
+        types it fifty times.
+        """
+        from ..projects.templates import default_templates, template_from_opening
+
+        build = self.session.builds[-1] if self.session.builds else None
+        opening = getattr(build, "opening", None)
+        if opening is None:
+            self.report(
+                ProfileOSError("בנה פתח קודם, ואז אפשר לשמור אותו כתבנית"),
+                "אין מה לשמור",
+            )
+            return
+
+        name, ok = QInputDialog.getText(
+            self, "שמירת תבנית", "שם התבנית, כפי שהיו קוראים לה בבית המלאכה:",
+            text=str(getattr(opening, "name", "") or ""),
+        )
+        if not ok or not name.strip():
+            return
+
+        job = getattr(self.session, "job", None)
+        try:
+            book = default_templates()
+            template = book.add(template_from_opening(
+                opening, name=name.strip(),
+                from_job=str(getattr(job, "job_id", "") or ""),
+            ))
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "שמירת התבנית נכשלה")
+            return
+        self.status(f"נשמרה תבנית: {template.describe()}")
+
+    def use_template(self) -> None:
+        """Pick a saved configuration and make it at the size on the form."""
+        from ..projects.templates import default_templates
+
+        try:
+            book = default_templates()
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "לא ניתן לקרוא את התבניות")
+            return
+
+        templates = book.popular()
+        if not templates:
+            self.report(
+                ProfileOSError(
+                    "עדיין אין תבניות. בנה פתח ולחץ ״שמור כתבנית״."
+                ),
+                "אין תבניות",
+            )
+            return
+
+        labels = [template.describe() for template in templates]
+        chosen, ok = QInputDialog.getItem(
+            self, "תבניות", "איזו תבנית?", labels, 0, False
+        )
+        if not ok:
+            return
+        template = templates[labels.index(chosen)]
+
+        try:
+            opening = book.use(
+                template.template_id,
+                self.width.value() or template.typical_width or 1000.0,
+                self.height.value() or template.typical_height or 1000.0,
+                name=self.next_mark(template.kind),
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "לא ניתן להשתמש בתבנית")
+            return
+
+        self.name.setCurrentText(opening.name)
+        index = self.kind.findData(template.kind)
+        if index >= 0:
+            self.kind.setCurrentIndex(index)
+        self.width.setValue(opening.width)
+        self.height.setValue(opening.height)
+        self.columns.setValue(len(template.mullion_fractions) + 1)
+        self.rows.setValue(len(template.transom_fractions) + 1)
+        # The form is synced for display and for the next edit, but the
+        # element itself is built from ``opening`` as the template made it —
+        # not reassembled from the form, which would trade the template's own
+        # series, glazing and per-cell sash plan for whatever was last on
+        # screen.
+        system_index = self.system.findData(opening.system_id)
+        if system_index >= 0:
+            self.system.setCurrentIndex(system_index)
+        if opening.glass_spec_id:
+            glass_index = self.glass.findData(opening.glass_spec_id)
+            if glass_index >= 0:
+                self.glass.setCurrentIndex(glass_index)
+        self._build_and_display(opening)
+
+        if template.price_is_stale and template.last_price_per_m2:
+            self.status(
+                f"שים לב: {template.price_line()}"
+            )
+
+    def _shape_changed(self) -> None:
+        """Only ask for the figures the chosen shape actually needs."""
+        from ..elements.shapes import Shape as _Shape
+
+        chosen = _Shape(self.shape.currentData() or "rectangle")
+        self.height_right.setEnabled(chosen is _Shape.RAKED)
+        self.rise.setEnabled(chosen is _Shape.ARCHED)
+        if chosen is not _Shape.RAKED:
+            self.height_right.setValue(0.0)
+        if chosen is not _Shape.ARCHED:
+            self.rise.setValue(0.0)
+
+    def next_mark(self, kind: str) -> str:
+        """The next free mark for this kind of opening in this job."""
+        prefix = self.MARK_PREFIX.get(kind, "E")
+        used = {build.opening.name for build in self.session.builds}
+        for number in range(1, 1000):
+            mark = f"{prefix}-{number:02d}"
+            if mark not in used:
+                return mark
+        return f"{prefix}-999"
+
+    def apply_preset(self, preset: Any) -> None:
+        """Fill the form from a library opening, then make it.
+
+        Everything the preset sets is a field the operator can still change —
+        it is a starting point, not a lock. Building straight away is the
+        point of the exercise: the screen answers with a drawing, a cut list
+        and a verdict before anybody has typed anything.
+        """
+        self.name.setCurrentText(self.next_mark(preset.kind))
+        index = self.kind.findData(preset.kind)
+        if index >= 0:
+            self.kind.setCurrentIndex(index)
+        self.width.setValue(preset.width)
+        self.height.setValue(preset.height)
+        self.quantity.setValue(preset.quantity)
+        self.columns.setValue(preset.columns)
+        self.rows.setValue(preset.rows)
+        self.sash_column.setValue(preset.sash_column)
+        self.sash_row.setValue(preset.sash_row)
+        sash_index = self.sash_type.findData(preset.sash_type)
+        if sash_index >= 0:
+            self.sash_type.setCurrentIndex(sash_index)
+        self.sill_height.setValue(preset.sill)
+        system_index = self.system.findData(preset.system_id)
+        self.system.setCurrentIndex(system_index if system_index >= 0 else 0)
+        glass_index = self.glass.findData(preset.glass)
+        if glass_index >= 0:
+            self.glass.setCurrentIndex(glass_index)
+
+        # Somebody who typed "חלון קשת" asked for an arch. Dropping the shape
+        # here and building a rectangle is the search answering a different
+        # question from the one that was asked.
+        shape_index = self.shape.findData(getattr(preset, "shape", "rectangle"))
+        self.shape.setCurrentIndex(shape_index if shape_index >= 0 else 0)
+        self._shape_changed()
+        if getattr(preset, "rise", None):
+            self.rise.setValue(float(preset.rise))
+        if getattr(preset, "height_right", None):
+            self.height_right.setValue(float(preset.height_right))
+
+        self._apply_fittings(preset.fittings)
+        self.build_element()
+        self.status(f"{preset.title} · {preset.describe()}")
+
+    def _fittings(self) -> dict:
+        """The fit-out the form is asking for, as a job file keeps it."""
+        spec: dict[str, Any] = {}
+        shutter = self.shutter.currentData()
+        if shutter:
+            slat_id, drive = shutter.split("|", 1)
+            spec["shutter"] = {"slat_id": slat_id, "drive": drive, "box": "built_in"}
+        screen = self.screen.currentData()
+        if screen:
+            kind, mesh = screen.split("|", 1)
+            spec["screen"] = {"kind": kind, "mesh": mesh}
+        sill = self.sill.currentData()
+        if sill and sill != "none":
+            spec["sill"] = sill
+        return spec
+
+    def _apply_fittings(self, spec: dict) -> None:
+        """Set the form's fit-out fields from a saved specification."""
+        shutter = spec.get("shutter")
+        self.shutter.setCurrentIndex(
+            max(0, self.shutter.findData(
+                f"{shutter['slat_id']}|{shutter.get('drive', 'motor')}"
+            )) if shutter else 0
+        )
+        screen = spec.get("screen")
+        self.screen.setCurrentIndex(
+            max(0, self.screen.findData(
+                f"{screen['kind']}|{screen.get('mesh', 'fibreglass')}"
+            )) if screen else 0
+        )
+        sill = spec.get("sill") or "none"
+        self.sill.setCurrentIndex(max(0, self.sill.findData(sill)))
+
+    def show_accessories(self, build: Any) -> None:
+        """What is fitted, what it weighs, and the hole the builder leaves."""
+        from ..accessories import accessories_for
+
+        try:
+            fitted = accessories_for(build.opening)
+        except Exception as exc:  # noqa: BLE001 - never lose a build over a fitting
+            _log.warning("Accessory sizing failed: %s", exc)
+            self.accessories.set_rows([])
+            self.opening_note.setText(str(exc))
+            return
+
+        rows: list[list[Any]] = []
+        colours: dict[tuple[int, int], str] = {}
+        for index, accessory in enumerate(fitted):
+            detail = "; ".join(accessory.notes) or accessory.metadata.get("kind", "")
+            rows.append([
+                accessory.hebrew,
+                f"{accessory.width:.0f} × {accessory.height:.0f}",
+                accessory.quantity,
+                f"{accessory.mass * accessory.quantity:.1f}",
+                detail,
+            ])
+            if accessory.warnings:
+                colours[(index, 0)] = self.colours.warning
+        self.accessories.set_rows(rows, numeric_columns=(2, 3), colours=colours)
+
+        if not len(fitted):
+            self.opening_note.setText("")
+            self.opening_note.setStyleSheet("")
+            return
+
+        width, height = fitted.structural_opening(
+            build.opening.width, build.opening.height
+        )
+        text = (
+            f"פתח בנייה נדרש: \u2066{width:.0f} × {height:.0f}\u2069 מ״מ "
+            f"(החלון \u2066{build.opening.width:.0f} × {build.opening.height:.0f}\u2069)"
+        )
+        if fitted.warnings:
+            text += " · " + " · ".join(fitted.warnings)
+            self.opening_note.setStyleSheet(f"color: {self.colours.warning};")
+        else:
+            self.opening_note.setStyleSheet(f"color: {self.colours.success};")
+        self.opening_note.setText(text)
+
+    def show_hardware_check(self, build: Any) -> None:
+        """Whether the shop's own hardware can carry the leaves just drawn.
+
+        Silent when the library is empty: a shop that has not entered a load
+        chart yet should not be nagged on every build, but the moment they
+        have one, every oversized sash is caught here rather than in a
+        warranty call two winters later.
+        """
+        from ..hardware import default_library
+
+        try:
+            library = default_library()
+        except Exception:  # noqa: BLE001
+            self.hardware_check.setText("")
+            return
+        if not len(library):
+            self.hardware_check.setText(
+                "ספריית הפרזול ריקה — הזינו טבלת עומסים של ספק כדי שהתוכנה "
+                "תבדוק שהצירים נושאים את הכנף"
+            )
+            self.hardware_check.setStyleSheet(f"color: {self.colours.text_muted};")
+            return
+
+        from ..elements import ElementBuilder
+
+        rects = ElementBuilder().cell_rects(build.opening, build.rules)
+        problems: list[str] = []
+        heaviest = 0.0
+        for cell in build.opening.all_cells():
+            sash = getattr(cell, "sash", None)
+            if sash is None:
+                continue
+            rect = rects.get(cell.key) if isinstance(rects, dict) else None
+            width = getattr(rect, "width", build.opening.width)
+            height = getattr(rect, "height", build.opening.height)
+            glass_mass = max(
+                (panel.mass / max(panel.area, 1e-6) for panel in build.glass),
+                default=25.0,
+            )
+            selection = library.select_for(
+                opening_type=str(sash.opening_type),
+                width=width, height=height, glass_mass_per_m2=glass_mass,
+            )
+            heaviest = max(heaviest, selection.sash_mass)
+            problems.extend(selection.unmet)
+            problems.extend(selection.warnings)
+
+        if not heaviest:
+            self.hardware_check.setText("")
+            return
+        if problems:
+            self.hardware_check.setText(
+                f"כנף כבדה ביותר ⁦{heaviest:.0f}⁩ ק״ג · " + " · ".join(problems[:3])
+            )
+            self.hardware_check.setStyleSheet(f"color: {self.colours.danger};")
+        else:
+            self.hardware_check.setText(
+                f"כנף כבדה ביותר ⁦{heaviest:.0f}⁩ ק״ג — הפרזול בספרייה נושא אותה"
+            )
+            self.hardware_check.setStyleSheet(f"color: {self.colours.success};")
+
+    def show_performance(self, build: Any) -> None:
+        """U-value, sound reduction, wind pressure and what they are judged by."""
+        from ..compliance import Site, Verdict, check_compliance
+
+        try:
+            report = check_compliance(build, Site())
+        except Exception as exc:  # noqa: BLE001 - the build stands without it
+            _log.warning("Compliance check failed: %s", exc)
+            self.performance.set_rows([])
+            self.compliance.set_rows([])
+            self.performance_headline.setText(str(exc))
+            return
+
+        rows: list[list[Any]] = []
+        for section in (report.thermal, report.acoustic, report.wind, report.classes):
+            if section is not None:
+                rows.extend([label, value] for label, value in section.summary_rows())
+        self.performance.set_rows(rows)
+
+        tone = {
+            Verdict.FAIL: self.colours.danger,
+            Verdict.CHECK: self.colours.warning,
+            Verdict.PASS: self.colours.success,
+        }
+        finding_rows: list[list[Any]] = []
+        colours: dict[tuple[int, int], str] = {}
+        for index, finding in enumerate(report.findings):
+            finding_rows.append([
+                finding.verdict.hebrew, finding.subject,
+                finding.citation or "—", finding.text,
+            ])
+            colours[(index, 0)] = tone[finding.verdict]
+        self.compliance.set_rows(finding_rows, colours=colours)
+
+        headline = report.verdict()
+        if report.thermal and report.acoustic:
+            headline = (
+                f"{report.thermal.describe()} · {report.acoustic.describe()} · {headline}"
+            )
+        self.performance_headline.setText(headline)
+        self.performance_headline.setStyleSheet(
+            f"color: {self.colours.danger if report.failures else self.colours.text};"
+        )
+
+    def _builder(self, opening: Any) -> Any:
+        """The rule set for the chosen series, or the generic one.
+
+        An unclassified series is refused with the reason rather than quietly
+        cut on a stand-in: a bar cut to a guess is a bar in the skip.
+        """
+        from ..elements import ElementBuilder
+
+        if opening.system_id in ("", "generic"):
+            return ElementBuilder()
+        from ..systems import UnclassifiedSystem
+
+        try:
+            return ElementBuilder.for_system(opening.system_id)
+        except UnclassifiedSystem as exc:
+            raise ProfileOSError(
+                "הסדרה עדיין לא סווגה, אז אין לפי מה לגזור. "
+                "סווג אותה בעמוד ״קטלוג״ ואז חזור לכאן."
+            ) from exc
+
+    def _opening_from_form(self) -> Any:
+        """The opening the form currently describes. Raises if it cannot be one."""
+        from ..elements import Cell, ElementKind, Opening, OpeningType, Sash
+
+        opening = Opening(
+            name=self.name.currentText() or "Element",
+            kind=ElementKind(self.kind.currentData()),
+            width=self.width.value(), height=self.height.value(),
+            quantity=self.quantity.value(),
+            glass_spec_id=self.glass.currentData(),
+            system_id=self.system.currentData() or "generic",
+            shape=self.shape.currentData() or "rectangle",
+            height_right=self.height_right.value() or None,
+            rise=self.rise.value() or None,
+        )
+        opening.divide_evenly(self.columns.value(), self.rows.value())
+        sash_type = OpeningType(self.sash_type.currentData())
+        if sash_type is not OpeningType.FIXED:
+            column = min(self.sash_column.value(), opening.column_count - 1)
+            row = min(self.sash_row.value(), opening.row_count - 1)
+            opening.set_cell(Cell(column=column, row=row, sash=Sash(opening_type=sash_type)))
+        return opening
+
+    # -- the drawing, or the same opening live in 3D ------------------------ #
+    def _drawing_or_model(self) -> QWidget:
+        """The elevation, with a switch to the live 3D model of the same form.
+
+        Both follow the form as it is typed. The 3D model is only built when
+        somebody asks for it — it is the heavier of the two — and a machine
+        with no 3D graphics keeps the switch, greyed, with the reason.
+        """
+        from PySide6.QtWidgets import QButtonGroup, QStackedWidget
+
+        from .viewer3d import supported
+
+        box = QWidget()
+        layout = QVBoxLayout(box)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(METRICS.space(2))
+
+        bar = QHBoxLayout()
+        segment = QFrame()
+        segment.setObjectName("SegmentBar")
+        segment_row = QHBoxLayout(segment)
+        segment_row.setContentsMargins(2, 2, 2, 2)
+        segment_row.setSpacing(2)
+        self._mode_group = QButtonGroup(self)
+        for index, label in enumerate(("שרטוט", "תלת-ממד חי")):
+            button = QPushButton(label)
+            button.setObjectName("Segment")
+            button.setCheckable(True)
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
+            self._mode_group.addButton(button, index)
+            segment_row.addWidget(button)
+        self._mode_group.button(0).setChecked(True)
+        if not supported():
+            model_button = self._mode_group.button(1)
+            model_button.setEnabled(False)
+            model_button.setToolTip("במחשב הזה אין תמיכה בגרפיקה תלת-ממדית")
+        bar.addWidget(segment)
+        bar.addStretch(1)
+        layout.addLayout(bar)
+
+        self._canvas_stack = QStackedWidget()
+        self._canvas_stack.addWidget(self.view)
+        layout.addWidget(self._canvas_stack, 1)
+        self._model_view = None
+        self._last_build = None
+        self._mode_group.idClicked.connect(self._set_canvas_mode)
+        return box
+
+    def _set_canvas_mode(self, mode: int) -> None:
+        if mode == 1 and self._model_view is None:
+            from .viewer3d import Viewer3D
+
+            self._model_view = Viewer3D(background=self.colours.surface_sunken)
+            self._canvas_stack.addWidget(self._model_view)
+        self._canvas_stack.setCurrentIndex(mode)
+        if mode == 1 and self._last_build is not None:
+            self._model_view.show_build(self._last_build, keep_camera=False)
+
+    def _show_build(self, build: Any) -> None:
+        """Draw the opening — and, if the 3D model is on screen, rebuild it."""
+        self._last_build = build
+        self.view.set_build(build)
+        if self._model_view is not None and self._canvas_stack.currentIndex() == 1:
+            self._model_view.show_build(build, keep_camera=True)
+
+    def _schedule_preview(self, *_args: Any) -> None:
+        """Redraw shortly after the last keystroke, not on every one."""
+        timer = getattr(self, "_preview_timer", None)
+        if timer is not None:
+            timer.start()
+
+    def _preview(self) -> None:
+        """Draw what the form says, live, without committing anything.
+
+        The drawing next to the form is the fastest error check there is: a
+        transposed width and height, a mullion in the wrong bay, a sash on the
+        wrong side are all obvious the moment they are drawn. Nothing here
+        touches the job — "בנה פתח" is still what adds the element — and a
+        form that is half-typed simply leaves the last good drawing up.
+        """
+        try:
+            opening = self._opening_from_form()
+            build = self._builder(opening).build(
+                opening, sill_height=self.sill_height.value()
+            )
+        except Exception:  # noqa: BLE001 - a half-typed form is not an error
+            return
+        self._show_build(build)
+        self.header.set_subtitle(
+            f"תצוגה מקדימה: {opening.name} · "
+            f"\u2066{opening.width:.0f} × {opening.height:.0f}\u2069 מ״מ — "
+            "לחץ ״בנה פתח״ כדי להוסיף לפרויקט"
+        )
+
+    def build_element(self) -> None:
+        from ..elements import Cell, ElementBuilder, ElementKind, Opening, OpeningType, Sash
+
+        try:
+            opening = Opening(
+                name=self.name.currentText() or "Element",
+                kind=ElementKind(self.kind.currentData()),
+                width=self.width.value(), height=self.height.value(),
+                quantity=self.quantity.value(),
+                glass_spec_id=self.glass.currentData(),
+                system_id=self.system.currentData() or "generic",
+                shape=self.shape.currentData() or "rectangle",
+                height_right=self.height_right.value() or None,
+                rise=self.rise.value() or None,
+            )
+            opening.metadata["accessories"] = self._fittings()
+            if self.location.text().strip() or self.floor.value():
+                opening.metadata["place"] = {
+                    "location": self.location.text().strip(),
+                    "floor": self.floor.value(),
+                    # Fitted in the order they were designed, unless somebody
+                    # says otherwise: it is the order the shop thought in.
+                    "sequence": len(self.session.builds),
+                }
+            opening.divide_evenly(self.columns.value(), self.rows.value())
+
+            sash_type = OpeningType(self.sash_type.currentData())
+            if sash_type is not OpeningType.FIXED:
+                column = min(self.sash_column.value(), opening.column_count - 1)
+                row = min(self.sash_row.value(), opening.row_count - 1)
+                opening.set_cell(Cell(column=column, row=row, sash=Sash(opening_type=sash_type)))
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "לא ניתן לבנות את הפתח")
+            return
+
+        self._build_and_display(opening)
+
+    def _build_and_display(self, opening: Any) -> None:
+        """Build ``opening`` exactly as given, and show it.
+
+        Kept separate from :meth:`build_element` so a template's own series,
+        glazing and per-cell sash plan can be built as saved rather than
+        reconstructed from whatever the form currently shows — an opening
+        made from a template is the object the template already carries, not
+        a new one assembled from the form around it.
+        """
+        try:
+            build = self._builder(opening).build(opening, sill_height=self.sill_height.value())
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "לא ניתן לבנות את הפתח")
+            return
+
+        self.session.add_build(build)
+        self._show_build(build)
+
+        summary = build.summary()
+        self.stats.update_many({
+            "pieces": (str(summary["pieces"]), f"×{opening.quantity}"),
+            "glass": (f"{summary['glass_area_m2']:.2f}", f"{summary['glass_panes']} שמשות"),
+            "mass": (f"{summary['glass_mass_kg']:.0f}", ""),
+            "gasket": (f"{summary['gasket_m']:.1f}", ""),
+            "hardware": (str(summary["hardware_items"]), ""),
+        })
+
+        from ..elements.model import role_hebrew
+
+        self.cuts.set_rows(
+            [[role_hebrew(c.role), c.profile_id, f"{c.length:.1f}", c.quantity,
+              f"{c.angle_left:g}/{c.angle_right:g}"]
+             for c in sorted(build.cuts, key=lambda c: (c.role, -c.length))],
+            numeric_columns=(2, 3, 4),
+        )
+
+        colours: dict[tuple[int, int], str] = {}
+        pane_rows = []
+        for index, panel in enumerate(build.glass):
+            safety = "תקין" if panel.compliant else ("נדרשת בטיחותית" if panel.safety_required else "—")
+            if not panel.compliant:
+                colours[(index, 6)] = self.colours.danger
+            pane_rows.append([
+                panel.mark, f"{panel.width:.0f} × {panel.height:.0f}",
+                panel.build_up.describe(), f"{panel.area:.3f}", f"{panel.mass:.1f}",
+                f"{panel.build_up.u_value():.2f}", safety,
+            ])
+        self.panes.set_rows(pane_rows, numeric_columns=(3, 4, 5), colours=colours)
+
+        self.hardware.set_rows(
+            [[h.code, h.name, h.quantity, h.unit] for h in build.hardware], numeric_columns=(2,)
+        )
+        # A shaped opening carries its own geometry findings: the real area
+        # against the box it was probably priced on, the corner angles the saw
+        # has to swing, and — for anything curved — the fact that nobody has
+        # confirmed what the profile will bend to.
+        notes = [f"• {w}" for w in build.warnings]
+        shaped = opening.outline
+        if shaped is not None:
+            notes.insert(0, f"• {shaped.describe()}")
+            for member in shaped.members:
+                notes.append(f"  – {member.describe()}")
+            notes += [f"• {w}" for w in shaped.warnings]
+            from ..elements.shapes import SHAPED_GLASS_NOTE
+
+            notes.append(f"• {SHAPED_GLASS_NOTE}")
+        self.warnings.setPlainText("\n".join(notes) or "אין אזהרות.")
+        self.show_feasibility(build)
+        self.show_accessories(build)
+        self.show_performance(build)
+        self.show_hardware_check(build)
+        shape_note = (
+            f"{shaped.shape.hebrew} · שטח \u2066{shaped.area:.3f}\u2069 מ״ר · "
+            if shaped is not None else ""
+        )
+        self.header.set_subtitle(
+            f"{opening.name}: \u2066{opening.width:.0f} × {opening.height:.0f}\u2069 מ״מ · "
+            f"{shape_note}"
+            f"רשת \u2066{opening.column_count}×{opening.row_count}\u2069 · "
+            f"{len(self.session.builds)} פתחים בפרויקט"
+        )
+        self.status(f"נבנה {opening.name}")
+
+    @staticmethod
+    def _finding_text(finding: Any) -> str:
+        """The Hebrew wording where there is one, the English otherwise.
+
+        Findings carry two prepared strings rather than a key, because most of
+        them quote a measurement that has already been formatted.
+        """
+        return finding.hebrew or finding.english
+
+    def show_feasibility(self, build: Any) -> None:
+        """Say straight away whether what was just drawn can be made."""
+        from ..elements.feasibility import Severity, check_element
+
+        try:
+            report = check_element(
+                build,
+                sill_height=self.sill_height.value() if hasattr(self, "sill_height") else 0.0,
+            )
+        except Exception as exc:  # noqa: BLE001 - never lose the build over a check
+            _log.warning("Feasibility check failed: %s", exc)
+            self.verdict.setText("")
+            self.feasibility.set_rows([])
+            return
+
+        self.session.set_feasibility(report)
+        rows: list[list[Any]] = []
+        colours: dict[tuple[int, int], str] = {}
+        tone = {
+            Severity.BLOCKER: self.colours.danger,
+            Severity.WARNING: self.colours.warning,
+            Severity.NOTE: self.colours.text_muted,
+        }
+        for index, finding in enumerate(report.sorted()):
+            rows.append([
+                finding.severity.label(self.session.language),
+                finding.subject,
+                self._finding_text(finding),
+                "" if finding.measured is None else f"{finding.measured:.1f}",
+                "" if finding.limit is None else f"{finding.limit.value:.1f} {finding.limit.unit}",
+            ])
+            colours[(index, 0)] = tone[finding.severity]
+        self.feasibility.set_rows(rows, numeric_columns=(3, 4), colours=colours)
+
+        if not report.blockers and not report.warnings:
+            notes = len(report.findings)
+            tail = f" ({notes} הערות)" if notes else ""
+            self.verdict.setText(f"ניתן לייצור כמתוכנן{tail}")
+            self.verdict.setStyleSheet(f"color: {self.colours.success};")
+        elif report.can_be_made:
+            self.verdict.setText(f"ניתן לייצור, עם {len(report.warnings)} נקודות לבדיקה")
+            self.verdict.setStyleSheet(f"color: {self.colours.warning};")
+        else:
+            first = report.blockers[0]
+            self.verdict.setText(f"לא ניתן לייצור: {self._finding_text(first)}")
+            self.verdict.setStyleSheet(f"color: {self.colours.danger};")
+
+
+# --------------------------------------------------------------------------- #
+# Drawings
+# --------------------------------------------------------------------------- #
+
+class DrawingsPage(Page):
+    """Shop drawings: elevations and the wall sections that go with them.
+
+    The drawing engine has always been here; this is the screen that drives it.
+    A set is assembled from the elements as they will actually be built, so the
+    sheet in the site folder and the bar on the saw come from one calculation —
+    which is the whole argument for drawing inside the software that cuts.
+    """
+
+    title = "Drawings"
+    hebrew = "שרטוטים"
+    subtitle = "חזיתות, חתכי קיר וסט מוכן להפצה"
+
+    #: The junctions a set may include, in the order they are drawn.
+    DETAILS: tuple[tuple[str, str], ...] = (
+        ("head", "משקוף עליון"),
+        ("jamb", "מזוזה"),
+        ("sill", "סף תחתון"),
+        ("mullion", "אומנה"),
+        ("transom", "משקוף רוחב"),
+    )
+
+    def build(self) -> None:
+        from PySide6.QtSvgWidgets import QSvgWidget
+
+        produce = QPushButton("הפקת סט")
+        produce.setObjectName("Primary")
+        produce.clicked.connect(self.produce)
+        self.needs_design(produce)
+        self.header.add_action(produce)
+
+        export = QPushButton("ייצוא")
+        export.clicked.connect(self.export_package)
+        self.header.add_action(export)
+
+        self.stats = StatRow([
+            ("sheets", "גיליונות"), ("details", "חתכים"),
+            ("scale", "קנה מידה"), ("revision", "מהדורה"),
+        ])
+        self.body.addWidget(self.stats)
+
+        controls = Card("הגדרות הסט")
+        row = QHBoxLayout()
+        row.setSpacing(METRICS.space(4))
+
+        self.wall = QComboBox()
+        self.wall.addItem("בטון, בידוד, חיפוי אבן", "stone")
+        self.wall.addItem("קיר בלוקים בטיח", "block")
+
+        self.size = QComboBox()
+        for label in ("A4", "A3", "A2", "A1"):
+            self.size.addItem(label, label)
+        self.size.setCurrentText("A3")
+
+        self.elevation_scale = QComboBox()
+        for scale in (10, 20, 25, 50):
+            self.elevation_scale.addItem(f"1:{scale}", scale)
+        self.elevation_scale.setCurrentText("1:20")
+
+        self.detail_scale = QComboBox()
+        for scale in (2, 5, 10):
+            self.detail_scale.addItem(f"1:{scale}", scale)
+        self.detail_scale.setCurrentText("1:5")
+
+        for label, widget in (
+            ("קיר", self.wall), ("גיליון", self.size),
+            ("חזיתות", self.elevation_scale), ("חתכים", self.detail_scale),
+        ):
+            caption = QLabel(label)
+            caption.setObjectName("FieldLabel")
+            row.addWidget(caption)
+            row.addWidget(widget)
+        row.addStretch(1)
+        controls.add_layout(row)
+
+        # Which junctions to cut. A set with no details is a set of elevations,
+        # which is a legitimate thing to issue, so none of these is compulsory.
+        details_row = QHBoxLayout()
+        details_row.setSpacing(METRICS.space(3))
+        caption = QLabel("חתכים לכלול")
+        caption.setObjectName("FieldLabel")
+        details_row.addWidget(caption)
+        self.detail_boxes: dict[str, QCheckBox] = {}
+        for key, label in self.DETAILS:
+            box = QCheckBox(label)
+            box.setChecked(key in ("head", "jamb", "sill", "mullion"))
+            self.detail_boxes[key] = box
+            details_row.addWidget(box)
+        details_row.addStretch(1)
+        controls.add_layout(details_row)
+        self.body.addWidget(controls)
+
+        # -- the sheet itself ---------------------------------------------- #
+        picker = QHBoxLayout()
+        picker.setSpacing(METRICS.space(2))
+        caption = QLabel("גיליון")
+        caption.setObjectName("FieldLabel")
+        picker.addWidget(caption)
+        self.sheet_picker = QComboBox()
+        self.sheet_picker.currentIndexChanged.connect(self._show_sheet)
+        picker.addWidget(self.sheet_picker, 1)
+        self.body.addLayout(picker)
+
+        self.canvas = QSvgWidget()
+        self.canvas.setMinimumHeight(420)
+        self.canvas_stack = canvas_with_empty_state(
+            self, self.canvas,
+            "עדיין אין שרטוט להציג.\nתכנן פתח — והחזית וחתך הקיר ישורטטו כאן.",
+        )
+        self.body.addWidget(self.canvas_stack, 1)
+
+        self.stamp = QLabel()
+        self.stamp.setObjectName("Hint")
+        self.stamp.setWordWrap(True)
+        self.body.addWidget(self.stamp)
+
+        note = QLabel(
+            "החתכים נחתכים במפגש שבין האלומיניום לבניין: משקוף עליון, מזוזה, "
+            "סף ואומנה. אם נטען פרופיל אמיתי מהקטלוג, החתך מצויר לפי המתאר "
+            "שלו; אחרת הוא סכמטי ואומר זאת על הגיליון."
+        )
+        note.setObjectName("Hint")
+        note.setWordWrap(True)
+        self.body.addWidget(note)
+
+        self._package = None
+
+    # -- production --------------------------------------------------------- #
+    def _details(self) -> list[Any]:
+        from ..drawing.section import Detail
+
+        return [
+            Detail(key) for key, _label in self.DETAILS
+            if self.detail_boxes[key].isChecked()
+        ]
+
+    def produce(self) -> None:
+        from datetime import date
+
+        from ..branding import active_brand
+        from ..drawing import PackageInfo, Revision, SheetSize, build_package
+        from ..drawing.section import RENDERED_BLOCK, STONE_CLAD_CONCRETE
+
+        if not self.session.builds:
+            self.report(
+                ProfileOSError("עדיין לא תוכננו פתחים. תכנן פתח ואז חזור לכאן."),
+                "אין מה לשרטט",
+            )
+            return
+
+        job = self.session.job
+        brand = active_brand()
+        name = job.name if job is not None else "פרויקט"
+        info = PackageInfo(
+            project=name,
+            client=job.customer_name if job is not None else "",
+            company=brand.display_name,
+            company_line=brand.tagline or "",
+            number_prefix=f"{(job.job_id if job is not None else 'A')}-",
+            drawn_by=brand.display_name,
+            size=SheetSize(self.size.currentData()),
+            language=self.session.language,
+            wall=RENDERED_BLOCK if self.wall.currentData() == "block" else STONE_CLAD_CONCRETE,
+            revisions=[Revision("A", date.today(), "הופק לאישור", "")],
+        )
+        try:
+            self._package = build_package(
+                self.session.builds,
+                info,
+                elevation_scale=self.elevation_scale.currentData(),
+                detail_scale=self.detail_scale.currentData(),
+                profile=self.session.profile,
+                details=self._details(),
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "לא ניתן להפיק את הסט")
+            return
+
+        package = self._package
+        self.sheet_picker.blockSignals(True)
+        self.sheet_picker.clear()
+        for sheet in package.sheets:
+            block = sheet.title_block
+            self.sheet_picker.addItem(f"{block.number} — {block.title}")
+        self.sheet_picker.blockSignals(False)
+        if package.sheets:
+            self.sheet_picker.setCurrentIndex(0)
+            self._show_sheet()
+
+        self.stats.update_many({
+            "sheets": (str(len(package.sheets)), "בסט"),
+            "details": (str(len(self._details())), "מפגשים נחתכו"),
+            "scale": (f"1:{self.elevation_scale.currentData()}", "חזיתות"),
+            "revision": (info.revision, "לאישור"),
+        })
+        self.stamp.setText("  ·  ".join(package.stamps) if package.stamps else "")
+        self.status(f"הופקו {len(package.sheets)} גיליונות")
+
+    def _show_sheet(self) -> None:
+        """Render the chosen sheet into the preview."""
+        if self._package is None:
+            return
+        index = self.sheet_picker.currentIndex()
+        if not (0 <= index < len(self._package.sheets)):
+            return
+        try:
+            svg = self._package.sheets[index].to_svg()
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "לא ניתן להציג את הגיליון")
+            return
+        self.canvas_stack.setCurrentIndex(1)
+        self.canvas.load(svg.encode("utf-8"))
+
+    def export_package(self) -> None:
+        if self._package is None:
+            self.report(ProfileOSError("הפק את הסט קודם"), "אין מה לייצא")
+            return
+        folder = QFileDialog.getExistingDirectory(self, "לאן לשמור את סט השרטוטים?", str(documents_dir()))
+        if not folder:
+            return
+        try:
+            written = self._package.write(folder, formats=("pdf", "dxf", "svg"))
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "הייצוא נכשל")
+            return
+        self.status(f"נשמרו {len(written)} קבצים אל {folder}")
+
+    def refresh(self) -> None:
+        count = len(self.session.builds)
+        job = self.session.job
+        self.header.set_subtitle(
+            f"{job.job_id} — {count} פתחים מוכנים לשרטוט" if job is not None
+            else (f"{count} פתחים מוכנים לשרטוט" if count
+                  else "תכנן פתחים כדי להפיק סט שרטוטים")
+        )
+
+
+# --------------------------------------------------------------------------- #
+# Nesting
+# --------------------------------------------------------------------------- #
+
+class NestingPage(Page):
+    """Optimise the project's cut list onto stock bars."""
+
+    title = "Nesting"
+    hebrew = "אופטימיזציית חיתוך"
+    subtitle = "שיבוץ רשימת החיתוך על מוטות המלאי"
+
+    def build(self) -> None:
+        run = QPushButton("הרץ אופטימיזציה")
+        run.setObjectName("Primary")
+        run.clicked.connect(self.run)
+        self.needs_design(run)
+        self.header.add_action(run)
+
+        done = QPushButton("החיתוך בוצע")
+        done.setToolTip("השאריות שנחתכו יוצאות מהמדף, והשאריות החדשות נכנסות אליו")
+        done.clicked.connect(self.record_cut)
+        self.needs_design(done)
+        self.header.add_action(done)
+
+        rack = QPushButton("מדף השאריות…")
+        rack.clicked.connect(self.open_rack)
+        self.header.add_action(rack)
+
+        self.stats = StatRow([
+            ("bars", "מוטות"), ("pieces", "חלקים"), ("yield", "ניצולת"),
+            ("waste", "פחת"), ("remnants", "שאריות"), ("rack", "מהמדף"),
+        ])
+        self.body.addWidget(self.stats)
+
+        controls = Card("פרמטרים")
+        row = QHBoxLayout()
+        row.setSpacing(METRICS.space(4))
+        self.kerf = QDoubleSpinBox(); self.kerf.setRange(0, 20); self.kerf.setValue(3.5); self.kerf.setSuffix(" מ״מ"); self.kerf.setDecimals(1)
+        self.stock = QComboBox(); self.stock.setEditable(True); self.stock.addItems(["6000", "6500", "6000,6500", "7000"])
+        self.strategy = QComboBox()
+        for label, value in (
+            ("אוטומטי — הטוב מבין כולם", "auto"), ("אופטימלי (איטי יותר)", "milp"),
+            ("מהיר — ההתאמה הראשונה", "ffd"), ("מהיר — ההתאמה הטובה", "bfd"),
+        ):
+            self.strategy.addItem(label, value)
+        self.profile = QComboBox()
+        for label, widget in [("עובי להב", self.kerf), ("אורכי מלאי", self.stock),
+                              ("אסטרטגיה", self.strategy), ("פרופיל", self.profile)]:
+            caption = QLabel(label); caption.setObjectName("FieldLabel")
+            row.addWidget(caption); row.addWidget(widget)
+        self.use_rack = QCheckBox("קודם מהשאריות שבמדף")
+        self.use_rack.setChecked(True)
+        row.addWidget(self.use_rack)
+        row.addStretch(1)
+        controls.add_layout(row)
+        self.body.addWidget(controls)
+
+        splitter = QSplitter(Qt.Orientation.Vertical)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        self.view = NestingView(self.colours)
+        scroll.setWidget(self.view)
+        splitter.addWidget(scroll)
+
+        self.summary = DataTable(["פרופיל", "מוטות", "חלקים", "ניצולת", "פחת", "אסטרטגיה", "אופטימלי"], empty_text="״הרץ אופטימיזציה״ — והמוטות לכל פרופיל יופיעו כאן")
+        splitter.addWidget(self.summary)
+        splitter.setStretchFactor(0, 3)
+        splitter.setStretchFactor(1, 1)
+        self.body.addWidget(splitter, 1)
+
+        self.profile.currentTextChanged.connect(self._show_profile)
+
+    def refresh(self) -> None:
+        self.header.set_subtitle(
+            f"{len(self.session.builds)} פתחים ממתינים"
+            if self.session.builds else "תכנן פתח קודם — בעמוד ״פתח״"
+        )
+
+    def run(self) -> None:
+        from ..elements import collect_cut_items
+        from ..models.orders import Project
+        from ..nesting import nest_project
+
+        if not self.session.builds:
+            self.report(ProfileOSError("עדיין לא תוכננו פתחים. תכנן פתח בעמוד ״פתח״ ואז חזור לכאן."), "אין מה לשבץ")
+            return
+
+        from ..core.config import get_settings
+
+        settings = get_settings()
+        settings.nesting.kerf_mm = self.kerf.value()
+        try:
+            settings.nesting.stock_lengths_mm = [
+                float(v) for v in self.stock.currentText().split(",") if v.strip()
+            ]
+        except ValueError:
+            self.report(ProfileOSError("אורכי המלאי חייבים להיות מספרים, מופרדים בפסיק"), "קלט שגוי")
+            return
+
+        items = collect_cut_items(self.session.builds)
+        # Each profile in the bar its supplier sells it in, when the price
+        # list says; the lengths typed above for every other profile.
+        from ..models.orders import StockBar
+        from ..quoting.pricelists import bar_lengths, code_key
+
+        try:
+            supplier_lengths, _sources = bar_lengths()
+        except Exception as exc:  # noqa: BLE001 - said; the typed lengths still apply
+            supplier_lengths = {}
+            self.status(f"אורכי המוטות מהמחירונים לא נקראו: {exc}")
+        profiles = sorted({item.profile_id for item in items})
+        stock = [StockBar(profile_id=pid, length=supplier_lengths[code_key(pid)])
+                 for pid in profiles if code_key(pid) in supplier_lengths]
+        project = Project(name="פרויקט", items=items, stock_bars=stock)
+        if stock:
+            self.status(
+                f"אורך המוט לפי מחירון הספק ל־⁦{len(stock)}⁩ פרופילים; "
+                "לשאר — לפי האורכים שהוקלדו"
+            )
+        rack = None
+        if self.use_rack.isChecked():
+            from ..nesting.rack import rack_for
+
+            job = getattr(self.session, "job", None)
+            try:
+                rack = rack_for(job.job_id if job is not None else "")
+            except Exception as exc:  # noqa: BLE001 - said; cut from new bars
+                self.status(f"{exc} — החיתוך מחושב ממוטות חדשים")
+        try:
+            report = nest_project(project, strategy=self.strategy.currentData() or "auto",
+                                  inventory=rack)
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "האופטימיזציה נכשלה")
+            return
+
+        self.session.set_nesting(project, report)
+
+        from ..nesting.rack import used_from_rack
+
+        from_rack = used_from_rack(report)
+        remnants = sum(len(r.reusable_remnants(300.0)) for r in report.results.values())
+        self.stats.update_many({
+            "bars": (str(report.total_bars), f"\u2066{report.total_stock_length / 1000:.1f} m\u2069"),
+            "pieces": (str(sum(r.total_pieces for r in report.results.values())), ""),
+            "yield": (f"{report.overall_yield_pct:.2f}%", "יעד 97.5%"),
+            "waste": (f"{100 - report.overall_yield_pct:.2f}%", ""),
+            "remnants": (str(remnants), "לשימוש חוזר"),
+            "rack": (str(len(from_rack)) if from_rack else "—",
+                     "שאריות מהמדף" if from_rack else "לא נלקחו"),
+        })
+
+        colours: dict[tuple[int, int], str] = {}
+        rows = []
+        for index, (profile_id, result) in enumerate(sorted(report.results.items())):
+            rows.append([
+                profile_id, result.bar_count, result.total_pieces,
+                f"{result.yield_pct:.2f}%", f"{result.waste_pct:.2f}%",
+                result.strategy, "כן" if result.optimal else "—",
+            ])
+            colours[(index, 3)] = (
+                self.colours.success if result.yield_pct >= 95 else self.colours.warning
+            )
+        self.summary.set_rows(rows, numeric_columns=(1, 2, 3, 4), colours=colours)
+
+        self.profile.blockSignals(True)
+        self.profile.clear()
+        self.profile.addItems(sorted(report.results))
+        self.profile.blockSignals(False)
+        if report.results:
+            self._show_profile(self.profile.currentText())
+
+        self.status(
+            f"{report.total_bars} מוטות בניצולת {report.overall_yield_pct:.2f}% "
+            f"תוך \u2066{report.solve_time_s:.2f}\u2069 שניות"
+        )
+
+    def record_cut(self) -> tuple[int, int]:
+        """The cut was made as planned: the rack says so."""
+        from ..nesting.rack import record_cut
+
+        report = self.session.nesting_report
+        if report is None:
+            self.report(ProfileOSError("הריצו קודם אופטימיזציה — ואז ״החיתוך בוצע״"),
+                        "אין חיתוך לרשום")
+            return 0, 0
+        if getattr(self, "_recorded", None) is report:
+            self.report(ProfileOSError(
+                "החיתוך הזה כבר נרשם במדף — לחיתוך הבא הריצו אופטימיזציה שוב"), "כבר נרשם")
+            return 0, 0
+        answer = QMessageBox.question(
+            self, "החיתוך בוצע",
+            "לרשום שהחיתוך בוצע לפי התוכנית? השאריות שנחתכו ייצאו מהמדף, "
+            "והשאריות החדשות שארוכות מספיק ייכנסו אליו.",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return 0, 0
+        job = getattr(self.session, "job", None)
+        try:
+            taken, added = record_cut(report, job_id=job.job_id if job is not None else "")
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "המדף לא עודכן")
+            return 0, 0
+        self._recorded = report
+        self.status(f"המדף עודכן: ⁦{taken}⁩ שאריות יצאו, ⁦{added}⁩ חדשות נכנסו")
+        return taken, added
+
+    def open_rack(self) -> None:
+        from .dialogs import RackDialog
+
+        RackDialog(self).exec()
+
+    def _show_profile(self, profile_id: str) -> None:
+        report = self.session.nesting_report
+        if report is None or profile_id not in report.results:
+            return
+        self.view.set_result(report.results[profile_id])
+
+
+# --------------------------------------------------------------------------- #
+# Machining
+# --------------------------------------------------------------------------- #
+
+class MachiningPage(Page):
+    """Plan clamps and post machine code."""
+
+    title = "Machining"
+    hebrew = "עיבוד CNC"
+    subtitle = "תכנון הקיבוע והפקת קוד למכונה"
+
+    def build(self) -> None:
+        post = QPushButton("הפק תוכנית")
+        post.setObjectName("Primary")
+        post.clicked.connect(self.post)
+        self.needs_design(post)
+        self.header.add_action(post)
+
+        save = QPushButton("שמור לקובץ...")
+        save.clicked.connect(self.save)
+        self.header.add_action(save)
+
+        controls = Card("עבודה")
+        row = QHBoxLayout(); row.setSpacing(METRICS.space(4))
+        self.driver = QComboBox()
+
+        from ..cnc import available_drivers
+
+        for entry in available_drivers():
+            self.driver.addItem(entry.get("display_name") or entry["key"], entry["key"])
+        # Default to a machining centre rather than whichever driver sorts
+        # first: this page is about machining, and a saw driver emits only a
+        # cut list, which looks like the post has silently dropped the work.
+        default = self.driver.findData("elumatec.ncx")
+        if default >= 0:
+            self.driver.setCurrentIndex(default)
+        self.length = MillimetreBox(); self.length.setRange(200, 8000); self.length.setValue(2450); self.length.setSuffix(" מ״מ")
+        self.angle_left = QDoubleSpinBox(); self.angle_left.setRange(15, 165); self.angle_left.setValue(45); self.angle_left.setSuffix("°")
+        self.angle_right = QDoubleSpinBox(); self.angle_right.setRange(15, 165); self.angle_right.setValue(45); self.angle_right.setSuffix("°")
+        self.clearance = MillimetreBox(); self.clearance.setRange(0, 100); self.clearance.setValue(15); self.clearance.setSuffix(" מ״מ")
+        for label, widget in [("דרייבר", self.driver), ("אורך מוט", self.length),
+                              ("זווית שמאל", self.angle_left), ("זווית ימין", self.angle_right),
+                              ("מרווח מלחציים", self.clearance)]:
+            caption = QLabel(label); caption.setObjectName("FieldLabel")
+            row.addWidget(caption); row.addWidget(widget)
+        row.addStretch(1)
+        controls.add_layout(row)
+        self.body.addWidget(controls)
+
+        setup_card = Card("קיבוע — עיבודים מעל המוט, מלחציים מתחתיו")
+        self.clamp_view = ClampView(self.colours)
+        setup_card.add(self.clamp_view, 1)
+        self.clamp_status = QLabel("")
+        self.clamp_status.setObjectName("StatLabel")
+        setup_card.add(self.clamp_status)
+        self.body.addWidget(setup_card, 1)
+
+        code_card = Card("קוד מכונה")
+        self.code = QPlainTextEdit(); self.code.setReadOnly(True)
+        self.code.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
+        code_card.add(self.code, 1)
+        self.body.addWidget(code_card, 1)
+
+        self._results: list[Any] = []
+
+    def _build_job(self) -> Any:
+        """The pieces to post: the shop's own cut list when there is one.
+
+        A machine cannot be handed a program for a piece nobody designed. Once
+        an element has been built on the ``Element`` page, every one of its
+        real cuts — real profile, real length, real angles — becomes a piece
+        here. The demo mullion below (length/angles from this page's own
+        fields) is a fallback for opening this page on its own, not something
+        that should ever stand in for a job that already has real cuts.
+        """
+        from ..cnc import MachiningJob, PieceProgram, expand_macros
+        from ..models.machines import Clamp, MachineDefinition, Tool, ToolLibrary, ToolType
+        from ..models.profile import Face, MachiningMacro
+
+        tools = ToolLibrary(id="ui", name="Magazine", tools=[
+            Tool(number=3, name="D5 drill", tool_type=ToolType.DRILL, diameter=5.0, flute_length=40.0),
+            Tool(number=5, name="D8 end mill", tool_type=ToolType.END_MILL, diameter=8.0, flute_length=35.0),
+            Tool(number=7, name="D6 slot mill", tool_type=ToolType.SLOT_MILL, diameter=6.0, flute_length=30.0),
+            Tool(number=9, name="D12 end mill", tool_type=ToolType.END_MILL, diameter=12.0, flute_length=50.0),
+        ])
+        machine = MachineDefinition(
+            id="ui-machine", name="Machining centre", vendor="Generic", model="5-axis",
+            post_processor=self.driver.currentData(), axis_count=5,
+            machinable_faces=set(Face), clamp_clearance=self.clearance.value(),
+            clamps=[Clamp(id=f"C{i}", position=p, width=120.0)
+                    for i, p in enumerate([400.0, 1200.0, 2000.0], 1)],
+        )
+
+        def macros_for(length: float) -> list["MachiningMacro"]:
+            # A typical fixture set, scaled to the piece it is cut for. Which
+            # hardware actually sits where is a per-accessory placement this
+            # software does not compute yet; until it does, this is offered
+            # the same way nesting offers typical deductions — openly, not
+            # claimed as the supplier's own figures.
+            return [
+                MachiningMacro(macro_id="lock.euro_cylinder", face=Face.FRONT,
+                               position_x=length * 0.5, position_y=30.0, depth=25.0, tool_id=5),
+                MachiningMacro(macro_id="hinge.standard", face=Face.FRONT,
+                               position_x=length * 0.16, position_y=30.0, depth=12.0, tool_id=9),
+                MachiningMacro(macro_id="drainage.slots", face=Face.BOTTOM, position_x=length * 0.12,
+                               position_y=0.0, depth=8.0, tool_id=7,
+                               parameters={"count": 2, "spacing": length * 0.35}),
+                MachiningMacro(macro_id="notch.akm", face=Face.TOP, position_x=0.0, position_y=0.0,
+                               depth=18.0, tool_id=9, from_right_end=True, parameters={"length": 25.0}),
+            ]
+
+        pieces: list[Any] = []
+        if self.session.builds:
+            for build in self.session.builds:
+                for index, cut in enumerate(build.cuts, 1):
+                    for copy in range(1, cut.quantity + 1):
+                        suffix = f"-{copy}" if cut.quantity > 1 else ""
+                        pieces.append(PieceProgram(
+                            piece_id=f"{build.opening.element_id}-{cut.role}-{index}{suffix}",
+                            profile_id=cut.profile_id, length=cut.length,
+                            angle_left=cut.angle_left, angle_right=cut.angle_right,
+                            operations=expand_macros(macros_for(cut.length), bar_length=cut.length),
+                            mark=cut.mark or cut.role, element_ref=build.opening.element_id,
+                        ))
+            job = self.session.job
+            name = job.name if job else "; ".join(
+                dict.fromkeys(build.opening.name for build in self.session.builds)
+            )
+        else:
+            length = self.length.value()
+            pieces.append(PieceProgram(
+                piece_id="PC-101", profile_id="MB70-MULLION", length=length,
+                angle_left=self.angle_left.value(), angle_right=self.angle_right.value(),
+                operations=expand_macros(macros_for(length), bar_length=length), mark="mullion",
+            ))
+            name = "Project"
+        return MachiningJob(machine=machine, name=name, pieces=pieces, tool_library=tools)
+
+    def post(self) -> None:
+        from ..cnc import detect_collisions, get_driver
+
+        try:
+            job = self._build_job()
+            piece = job.pieces[0]
+            before = detect_collisions(
+                list(piece.operations), job.machine.active_clamps(),
+                clearance=self.clearance.value(),
+            )
+            job.plan_all_clamps()
+            plan = piece.clamp_plan
+            self.clamp_view.set_piece(piece, plan.unresolved)
+            parts: list[str] = []
+            if plan.moves:
+                parts.append(
+                    f"{len(plan.moves)} מלחציים הוזזו "
+                    f"(\u2066{plan.total_travel:.0f}\u2069 מ״מ)"
+                )
+            if plan.disabled:
+                parts.append(f"{len(plan.disabled)} מלחציים נוטרלו")
+            if plan.unresolved:
+                parts.append(f"{len(plan.unresolved)} התנגשויות לא נפתרו")
+            outcome = "; ".join(parts) if parts else "אין הפרעות מלחציים; המלחציים נותרו במקומם."
+            self.clamp_status.setText(
+                f"זוהו {len(before)} הפרעות לפני התכנון. {outcome}"
+                + ("" if plan.ok else "  לא נפתר — אין להריץ את התוכנית הזו.")
+            )
+
+            results = get_driver(self.driver.currentData()).post(job)
+        except Exception as exc:  # noqa: BLE001
+            self.code.setPlainText("")
+            self.report(exc, "ההפקה נכשלה")
+            return
+
+        self._results = results
+        self.session.set_machining(job, results)
+        preview = results[0]
+        self.code.setPlainText(preview.content[:40000])
+        self.header.set_subtitle(
+            f"{preview.filename} · \u2066{preview.size:,}\u2069 בתים · {len(job.all_operations())} עיבודים"
+        )
+        self.status(f"הופקו {len(results)} קבצים עם {self.driver.currentData()}")
+
+    def save(self) -> None:
+        if not self._results:
+            self.report(ProfileOSError("הפק תוכנית קודם"), "אין מה לשמור")
+            return
+        directory = QFileDialog.getExistingDirectory(self, "שמירת קוד מכונה אל", str(documents_dir()))
+        if not directory:
+            return
+        for result in self._results:
+            result.write(directory)
+        self.status(f"נשמרו {len(self._results)} קבצים אל {directory}")
+
+
+# --------------------------------------------------------------------------- #
+# Quotation
+# --------------------------------------------------------------------------- #
+
+class QuotePage(Page):
+    """Price the project, then negotiate the quotation without losing either.
+
+    The page edits a :class:`~profileos.quoting.editor.QuoteDraft`: change the
+    system, the glass, the finish or the margin and everything reprices; edit a
+    line's unit price in the table and the pin survives every reprice, flagged
+    when the arithmetic has moved under it. The two documents — the customer
+    copy and the internal cost sheet — are written from the same draft.
+    """
+
+    title = "Quotation"
+    hebrew = "הצעת מחיר"
+    subtitle = "תמחור, משא ומתן על השורות והפקת המסמכים"
+
+    def build(self) -> None:
+        from PySide6.QtWidgets import QTableWidgetItem
+
+        self._item_type = QTableWidgetItem
+
+        run = QPushButton("תמחר את הפרויקט")
+        run.setObjectName("Primary")
+        run.clicked.connect(self.start_draft)
+        self.header.add_action(run)
+
+        save = QPushButton("הפק מסמכים...")
+        save.clicked.connect(self.save_documents)
+        self.header.add_action(save)
+
+        # The quotation goes where the customer actually reads it. One click:
+        # the PDF is written into the job's own folder, that folder opens,
+        # and WhatsApp opens on the customer's chat with the message typed.
+        send = QPushButton("שלח ללקוח בוואטסאפ")
+        send.setObjectName("WhatsApp")
+        send.clicked.connect(self.send_whatsapp)
+        self.header.add_action(send)
+
+        self.stats = StatRow([
+            ("net", "לפני מע״מ"), ("vat", "מע״מ"), ("gross", "סה״כ לתשלום"),
+            ("margin", "רווח אחרי עריכות"), ("kg", "אלומיניום"),
+        ])
+        # What the customer pays is the figure the page is about.
+        self.stats.tiles["gross"].setProperty("hero", True)
+        self.body.addWidget(self.stats)
+
+        controls = Card("מפרט ותנאים — כל שינוי מתמחר הכל מחדש")
+        row = QHBoxLayout(); row.setSpacing(METRICS.space(4))
+        self.system = QComboBox()
+        from ..systems import DIRECTORY
+
+        self.system.addItem("רגיל — ערכים טיפוסיים", "generic")
+        for entry in sorted(DIRECTORY, key=lambda e: (e.family is None, e.id)):
+            label = entry.display if entry.family else f"{entry.display} — טרם סווגה"
+            self.system.addItem(label, entry.id)
+        self.glass = QComboBox()
+        from ..glazing.glass import STANDARD_BUILDUPS
+
+        for build_up in STANDARD_BUILDUPS.values():
+            self.glass.addItem(build_up.describe(), build_up.id)
+        self.glass.setCurrentIndex(1)
+        self.finish = QComboBox()
+        from ..quoting.editor import FINISHES
+
+        for finish in FINISHES.values():
+            self.finish.addItem(finish.hebrew, finish.id)
+        self.finish.setCurrentIndex(1)
+        self.margin = QDoubleSpinBox(); self.margin.setRange(0, 90); self.margin.setValue(25); self.margin.setSuffix(" %")
+        for label, widget in [("סדרה", self.system), ("זכוכית", self.glass),
+                              ("גמר", self.finish), ("רווח", self.margin)]:
+            caption = QLabel(label); caption.setObjectName("FieldLabel")
+            row.addWidget(caption); row.addWidget(widget)
+        row.addStretch(1)
+        # What the customer sees: a 3D picture of every opening, in a colour.
+        from .viewer3d import FINISHES as RENDER_FINISHES
+
+        self.show_3d = QCheckBox("הדמיה בהצעה")
+        self.show_3d.setChecked(True)
+        self.show_3d.setToolTip("תמונת תלת-ממד של כל פתח ליד השרטוט שלו")
+        row.addWidget(self.show_3d)
+        self.render_colour = QComboBox()
+        self.render_colour.addItem("גוון לפי הגמר", "")
+        for key, label in RENDER_FINISHES:
+            self.render_colour.addItem(label, key)
+        self.render_colour.addItem("דמוי עץ", "wood")
+        row.addWidget(self.render_colour)
+        self.show_3d.toggled.connect(self._apply_display)
+        self.render_colour.currentIndexChanged.connect(self._apply_display)
+        controls.add_layout(row)
+        self.body.addWidget(controls)
+
+        for widget in (self.system, self.glass, self.finish):
+            widget.currentIndexChanged.connect(self.apply_spec)
+        self.margin.valueChanged.connect(self.apply_spec)
+
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+
+        lines_card = Card("שורות ללקוח — לחיצה כפולה על מחיר ליחידה מקבעת אותו")
+        self.lines = DataTable(["פריט", "תיאור", "כמות", "מחיר ליחידה", "סה״כ", ""], empty_text="״תמחר את הפרויקט״ — והשורות של ההצעה יופיעו כאן")
+        self.lines.setEditTriggers(
+            self.lines.EditTrigger.DoubleClicked | self.lines.EditTrigger.EditKeyPressed
+        )
+        self.lines.itemChanged.connect(self._line_edited)
+        # The description is the sentence; the figures size to themselves.
+        self.lines.stretch(1)
+        lines_card.add(self.lines, 1)
+        line_bar = QHBoxLayout()
+        line_bar.setSpacing(METRICS.space(2))
+        from_book = QPushButton("הוסף עבודה מהמחירון")
+        from_book.setToolTip("פירוק, הובלה, מנוף, החלפת דוד, פתיחת סתימה…")
+        from_book.clicked.connect(self.add_work_line)
+        line_bar.addWidget(from_book)
+        free = QPushButton("שורה חופשית")
+        free.clicked.connect(self.add_free_line)
+        line_bar.addWidget(free)
+        drop = QPushButton("הסר שורת עבודה")
+        drop.clicked.connect(self.remove_work_line)
+        line_bar.addWidget(drop)
+        line_bar.addStretch(1)
+        undo = QPushButton("בטל עריכה אחרונה")
+        undo.clicked.connect(self.undo_edit)
+        line_bar.addWidget(undo)
+        lines_card.add_layout(line_bar)
+        splitter.addWidget(lines_card)
+
+        side = QWidget()
+        side_layout = QVBoxLayout(side)
+        side_layout.setContentsMargins(0, 0, 0, 0)
+        side_layout.setSpacing(METRICS.space(3))
+
+        options_card = Card("חלופות")
+        self.options = DataTable(["חלופה", "מפרט", "לפני מע״מ", "±"], empty_text="אחרי התמחור אפשר להוסיף חלופה (סדרה, זכוכית, גוון) ולהשוות")
+        options_card.add(self.options, 1)
+        add_option = QPushButton("הוסף חלופה תרמית")
+        add_option.clicked.connect(self.add_option)
+        options_card.add(add_option)
+        side_layout.addWidget(options_card, 1)
+
+        internal_card = Card("פנימי — לעולם לא מודפס בעותק הלקוח")
+        self.waterfall = DataTable(["רכיב", "סכום"], empty_text="יופיע אחרי התמחור")
+        internal_card.add(self.waterfall, 1)
+        self.notes = QPlainTextEdit(); self.notes.setReadOnly(True); self.notes.setMaximumHeight(100)
+        internal_card.add(self.notes)
+        side_layout.addWidget(internal_card, 1)
+
+        splitter.addWidget(side)
+        splitter.setStretchFactor(0, 3)
+        splitter.setStretchFactor(1, 2)
+        self.body.addWidget(splitter, 1)
+
+        self.draft: Any = None
+        self._loading = False
+        #: The job the draft was started for. A draft never follows the
+        #: session into another job: its lines and total belong to this one.
+        self._draft_job_id = ""
+        self.session.subscribe(self._session_changed)
+
+    def _session_changed(self, what: str) -> None:
+        if what == "builds" and self.draft is not None and self._openings_changed():
+            # Said where the person will look next, not first at issue time.
+            self.header.set_subtitle(
+                "הפתחים השתנו מאז התמחור — לחצו ״תמחר את הפרויקט״ לפני שמפיקים"
+            )
+            return
+        if what == "job":
+            self._restore_spec(self.session.job)
+        if what != "job" or self.draft is None:
+            return
+        job = self.session.job
+        if (job.job_id if job is not None else "") != self._draft_job_id:
+            self.drop_draft()
+
+    def _restore_spec(self, job: Any) -> None:
+        """The series, glass, finish and margin the job was last quoted with."""
+        spec = getattr(job, "quote_spec", None) or {}
+        if not spec:
+            return
+        self._loading = True
+        try:
+            for combo, key in ((self.system, "system_id"), (self.glass, "glass_id"),
+                               (self.finish, "finish_id")):
+                index = combo.findData(spec.get(key))
+                if index >= 0:
+                    combo.setCurrentIndex(index)
+            if isinstance(spec.get("margin"), (int, float)):
+                self.margin.setValue(float(spec["margin"]))
+        finally:
+            self._loading = False
+
+    def drop_draft(self) -> None:
+        """Forget the draft on screen — it belonged to another job."""
+        self.draft = None
+        self._draft_job_id = ""
+        self.lines.set_rows([])
+        self.options.set_rows([])
+
+    # -- the draft ----------------------------------------------------------- #
+    # -- work lines from the price book ---------------------------------------- #
+    def _load_work_lines(self, job: Any) -> None:
+        """The job's quoted work lines come with it into a new quotation —
+        read from the job on disk, not the copy the session opened with,
+        which may predate a line added in the job's account since."""
+        if self.draft is None or job is None:
+            return
+        from ..projects import default_store
+        from ..quoting.editor import ExtraLine
+
+        try:
+            fresh = default_store().load(job.job_id)
+        except Exception:  # noqa: BLE001 - a job never saved has only what is in hand
+            fresh = job
+        quoted = [line for line in fresh.lines if line.kind.value == "quoted"]
+        # Remembered, so issuing removes a line taken out of this quotation.
+        self.draft.loaded_line_ids = [line.line_id for line in quoted]
+        for index, line in enumerate(quoted, start=1):
+            self.draft.extra_lines.append(ExtraLine(
+                code=f"X-{index:02d}", description=line.description,
+                quantity=line.quantity, unit=line.unit, unit_price=line.unit_price,
+                item_code=line.item_code, job_line_id=line.line_id, origin=line.origin,
+                price_typed=line.price_typed,
+            ))
+
+    def _pricebook(self) -> Any:
+        from ..quoting.pricebook import default_pricebook
+
+        if getattr(self, "_book_of_prices", None) is None:
+            self._book_of_prices = self.checked_book(default_pricebook(), "המחירון")
+        return self._book_of_prices
+
+    def _need_draft(self) -> bool:
+        if self.draft is None:
+            self.start_draft()
+        return self.draft is not None
+
+    def add_work_line(self) -> None:
+        from .money_dialogs import PriceItemPicker
+
+        if not self._need_draft():
+            return
+        try:
+            book = self._pricebook()
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "המחירון לא נקרא")
+            return
+        job = self.session.job
+        trade = job.trade.value if job is not None else "both"
+        picker = PriceItemPicker(book, self, trade=trade)
+        if picker.exec() != QDialog.DialogCode.Accepted or picker.item() is None:
+            return
+        item = picker.item()
+        price = picker.price.value()
+        if picker.update_book.isChecked() and price > 0 and price != item.price:
+            try:
+                book.set_price(item.code, price)
+            except Exception:  # noqa: BLE001 - the line still carries its price
+                pass
+        try:
+            self.draft.add_extra_line(
+                item.name, quantity=picker.quantity.value(), unit=item.unit,
+                unit_price=price, item_code=item.code, by="desktop",
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "השורה לא נוספה")
+            return
+        self.refresh_draft()
+
+    def add_free_line(self) -> None:
+        if not self._need_draft():
+            return
+        text, ok = QInputDialog.getText(self, "שורה חופשית", "מה העבודה?")
+        if not ok or not text.strip():
+            return
+        price, ok = QInputDialog.getDouble(self, "מחיר", "מחיר לפני מע״מ:", 0, 0, 10_000_000, 2)
+        if not ok:
+            return
+        try:
+            self.draft.add_extra_line(text.strip(), unit_price=price, by="desktop")
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "השורה לא נוספה")
+            return
+        self.refresh_draft()
+
+    def remove_work_line(self) -> None:
+        if self.draft is None:
+            return
+        row = self.lines.currentRow()
+        code = self.lines.item(row, 0) if row >= 0 else None
+        if code is None or not code.text().startswith("X-"):
+            self.status("בחרו שורת עבודה (מסומנת X) כדי להסיר אותה")
+            return
+        self.draft.remove_extra_line(code.text(), by="desktop")
+        self.refresh_draft()
+
+    def _apply_display(self, *_args: Any) -> None:
+        """The picture settings go on the draft the documents are printed from."""
+        if self.draft is None:
+            return
+        self.draft.display.show_3d = self.show_3d.isChecked()
+        self.draft.display.render_colour = self.render_colour.currentData() or ""
+
+    def start_draft(self) -> None:
+        from ..quoting.editor import QuoteDraft
+
+        job = self.session.job
+        # A plumbing job is quoted from work lines alone; a window job needs
+        # its openings first.
+        work_only = job is not None and (
+            job.trade.value != "aluminium" or any(line.kind.value == "quoted" for line in job.lines)
+        )
+        if not self.session.builds and not work_only:
+            self.report(ProfileOSError("עדיין לא תוכננו פתחים. תכנן פתח בעמוד ״פתח״ ואז חזור לכאן."), "אין מה לתמחר")
+            return
+        from ..quoting.rates import shop_labour, shop_rates
+
+        # Pricing again keeps what was typed into this quotation: lines
+        # added here and not yet issued, and prices set by hand on openings
+        # that are still in it. Throwing them away silently cost real work.
+        previous = self.draft if (self.draft is not None and job is not None
+                                  and self._draft_job_id == job.job_id) else None
+        try:
+            self.draft = QuoteDraft.start(
+                [build.opening for build in self.session.builds],
+                project_name=job.name if job else "פרויקט",
+                customer=job.customer_name if job else "",
+                system_id=self.system.currentData() or "generic",
+                glass_id=self.glass.currentData(),
+                finish_id=self.finish.currentData(),
+                # Only rates the shop itself entered (System page); without
+                # them a line no price list covers stays unpriced and says so.
+                fallback_rates=shop_rates(),
+                labour=shop_labour(),
+            )
+            self.draft.set_margin(self.margin.value())
+            self._apply_display()
+            self._draft_job_id = job.job_id if job is not None else ""
+            self._load_work_lines(job)
+            kept = self._carry_over(previous) if previous is not None else 0
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "התמחור נכשל")
+            return
+        self._priced_openings = self._openings_signature()
+        self.header.set_subtitle(self.subtitle)
+        self.session.set_quote(self.draft.variant().bom, self.draft.quotation)
+        self.refresh_draft()
+        self.status(f"תומחר {self.draft.quotation.quote_id}"
+                    + (f" · נשמרו ⁦{kept}⁩ שורות ומחירים שהוזנו בהצעה" if kept else ""))
+
+    def _carry_over(self, previous: Any) -> int:
+        """Lines added in the previous draft (not yet on the job) and prices
+        set by hand on openings still in the quotation, into the new draft."""
+        from ..quoting.editor import ExtraLine
+
+        loaded = {line.job_line_id for line in self.draft.extra_lines if line.job_line_id}
+        added = [line for line in previous.extra_lines if not line.job_line_id or line.job_line_id not in loaded]
+        used = {line.code for line in self.draft.extra_lines}
+        for index, line in enumerate(added, start=len(self.draft.extra_lines) + 1):
+            code = line.code if line.code not in used else f"X-{index:02d}"
+            used.add(code)
+            self.draft.extra_lines.append(ExtraLine(
+                code=code, description=line.description, quantity=line.quantity,
+                unit=line.unit, unit_price=line.unit_price, item_code=line.item_code,
+                job_line_id=line.job_line_id, origin=line.origin,
+                price_typed=line.price_typed,
+            ))
+        present = {build.opening.element_id for build in self.session.builds}
+        overrides = {key: override for key, override in previous.overrides.items()
+                     if key[0] in present}
+        if overrides:
+            self.draft.overrides.update(overrides)
+            self.draft.recompute()
+        return len(added) + len(overrides)
+
+    def _openings_signature(self) -> str:
+        """The openings as they were priced — to notice one added or changed since."""
+        import json as _json
+
+        return _json.dumps(sorted(build.opening.model_dump_json() for build in self.session.builds))
+
+    def _openings_changed(self) -> bool:
+        priced = getattr(self, "_priced_openings", None)
+        return priced is not None and priced != self._openings_signature()
+
+    def apply_spec(self, *_args: Any) -> None:
+        if self.draft is None or self._loading:
+            return
+        try:
+            variant = self.draft.variant()
+            if self.system.currentData() != variant.system_id:
+                self.draft.set_system(self.system.currentData())
+            if self.glass.currentData() != variant.glass_id:
+                self.draft.set_glass(self.glass.currentData())
+            if self.finish.currentData() != variant.finish_id:
+                self.draft.set_finish(self.finish.currentData())
+            if abs(self.margin.value() - variant.policy.margin_pct) > 1e-9:
+                self.draft.set_margin(self.margin.value())
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "לא ניתן לתמחר מחדש")
+            return
+        self.refresh_draft()
+
+    def add_option(self) -> None:
+        if self.draft is None:
+            return
+        self.draft.add_variant("מפרט תרמי", glass_id="dgu-6-16-6", finish_id="anodized")
+        self.refresh_draft()
+
+    def undo_edit(self) -> None:
+        if self.draft is None:
+            return
+        entry = self.draft.undo()
+        self.status(f"בוטל: {entry.what}" if entry else "אין מה לבטל")
+        self.refresh_draft()
+
+    # -- line edits ----------------------------------------------------------- #
+    def _line_edited(self, item: Any) -> None:
+        if self.draft is None or self._loading or item.column() != 3:
+            return
+        code = self.lines.item(item.row(), 0)
+        if code is None:
+            return
+        try:
+            value = float(str(item.text()).replace(",", ""))
+            extra = next((line for line in self.draft.extra_lines if line.code == code.text()), None)
+            if extra is not None:
+                if value < 0:
+                    raise ProfileOSError("מחיר לא יכול להיות שלילי")
+                extra.unit_price = round(value, 2)
+                extra.price_typed = True
+            else:
+                self.draft.set_line_price(code.text(), value, by="desktop")
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "לא ניתן לקבוע את המחיר")
+        self.refresh_draft()
+
+    # -- rendering -------------------------------------------------------------- #
+    def refresh_draft(self) -> None:
+        if self.draft is None:
+            return
+        # The status bar says what the page says, not the figure it was
+        # first priced at.
+        self.session.quote_total = float(self.draft.totals()["net"])
+        window = self.window()
+        if hasattr(window, "_update_status"):
+            window._update_status()
+        self._loading = True
+        try:
+            draft = self.draft
+            totals = draft.totals()
+            sheet = draft.internal_sheet()
+            variant = draft.variant()
+
+            rows = []
+            colours: dict[tuple[int, int], str] = {}
+            openings = {opening.element_id: opening for opening in draft.openings}
+            kind_hebrew = {"window": "חלון", "door": "דלת", "curtain_wall": "קיר מסך",
+                           "shopfront": "חזית מסחרית", "sliding_unit": "מערכת הזזה"}
+            for index, line in enumerate(draft.customer_lines()):
+                opening = openings.get(line["code"])
+                description = line["description"]
+                if opening is not None:
+                    kind = kind_hebrew.get(opening.kind.value, opening.kind.value)
+                    description = (
+                        f"{opening.name or opening.element_id} — {kind} "
+                        f"\u2066{opening.width:.0f} × {opening.height:.0f}\u2069 מ״מ"
+                    )
+                note = "נערך ידנית" if line["edited"] else ""
+                if line.get("extra"):
+                    note = "לא הוזן מחיר" if line["unit_price"] <= 0 else "עבודה"
+                rows.append([
+                    line["code"], description,
+                    f"{line['quantity']:g} {line['unit']}" if line.get("extra") else f"{line['quantity']:g}",
+                    f"{line['unit_price']:,.2f}", f"{line['total']:,.2f}",
+                    note,
+                ])
+                if line["edited"] or note == "לא הוזן מחיר":
+                    colours[(index, 5)] = self.colours.warning
+            self.lines.set_rows(rows, numeric_columns=(2, 3, 4), colours=colours)
+            # Re-enable editing: set_rows makes items, so flags come from the
+            # table's triggers rather than per item.
+
+            option_rows = []
+            for row in draft.compare():
+                option_rows.append([
+                    row["name"], f"{row['glass']} · {row['finish']}",
+                    f"{row['net']:,.0f}",
+                    "—" if abs(row["difference"]) < 0.005 else f"{row['difference']:+,.0f}",
+                ])
+            self.options.set_rows(option_rows, numeric_columns=(2, 3))
+
+            waterfall_hebrew = {
+                "Materials": "חומרים", "Labour": "עבודה", "Fixed charges": "עלויות קבועות",
+                "Total cost": "עלות כוללת", "Net price": "מחיר לפני מע״מ",
+                "Gross price": "מחיר כולל מע״מ",
+            }
+
+            def hebrew_row(label: str) -> str:
+                for english, hebrew in waterfall_hebrew.items():
+                    if label.startswith(english):
+                        return label.replace(english, hebrew)
+                return (label.replace("Contingency", "בצ״מ")
+                        .replace("Overhead", "תקורה")
+                        .replace("Delivery", "הובלה והתקנה")
+                        .replace("Margin", "רווח")
+                        .replace("Tax", "מע״מ"))
+
+            self.waterfall.set_rows(
+                [[hebrew_row(label), f"{value:,.2f}"] for label, value in sheet["breakdown"]],
+                numeric_columns=(1,),
+            )
+            warnings = list(sheet["warnings"])
+            for override in sheet["overrides"]:
+                if override["stale"]:
+                    warnings.append(
+                        f"{override['element']}: השורה קובעה ידנית והחישוב זז מאז — יש להסתכל שוב."
+                    )
+            judged = self._judge_price(totals["net"], draft)
+            if judged:
+                warnings.insert(0, judged)
+            self.notes.setPlainText("\n".join(f"• {w}" for w in warnings) or "אין אזהרות.")
+
+            self.stats.update_many({
+                "net": (
+                    f"{totals['net']:,.0f}",
+                    "₪" if variant.policy.currency == "ILS" else variant.policy.currency,
+                ),
+                "vat": (f"{totals['vat']:,.0f}", f"{variant.policy.tax_pct:g}%"),
+                "gross": (f"{totals['gross']:,.0f}", ""),
+                "margin": (f"{sheet['margin_after_edits']:,.0f}", "אחרי עריכות ידניות"),
+                "kg": (f"{variant.aluminium_kg:,.0f}", f"ק״ג · {variant.finish.hebrew}"),
+            })
+            self.header.set_subtitle(
+                f"{draft.quotation.quote_id} · בתוקף עד "
+                f"\u2066{draft.quotation.valid_until.strftime('%d/%m/%Y')}\u2069"
+            )
+        finally:
+            self._loading = False
+
+    def _judge_price(self, net: float, draft: Any) -> str:
+        """This price per m² against the jobs the shop won (read once a minute)."""
+        import time
+
+        from ..quoting.benchmark import benchmark
+
+        cached = getattr(self, "_benchmark", None)
+        if cached is None or time.monotonic() - cached[0] > 60:
+            try:
+                from ..projects import default_store
+
+                cached = (time.monotonic(), benchmark(default_store().all()))
+            except Exception:  # noqa: BLE001 - no comparison is said rather than a wrong one
+                cached = (time.monotonic(), None)
+            self._benchmark = cached
+        bench = cached[1]
+        if bench is None:
+            return ""
+        area = sum(opening.area * max(1, opening.quantity) for opening in draft.openings)
+        return bench.judge(net, area)
+
+    def _unpriced_ok(self) -> bool:
+        """A price that leaves something out, in front of a customer, is work
+        given away: asked first — a line at ⁦0 ₪⁩, material no price list or
+        shop rate covers, labour with no hourly rate."""
+        if self.draft is None:
+            return True
+        if self._openings_changed():
+            # A quotation that leaves out an opening the shop floor will make
+            # is a job sold for less than it costs.
+            self.report(ProfileOSError(
+                "הפתחים בפרויקט השתנו מאז שההצעה תומחרה (נוסף פתח או שונה אחד). "
+                "לחצו ״תמחר את הפרויקט״ — שורות ומחירים שהוזנו בהצעה יישמרו."
+            ), "ההצעה לא מעודכנת")
+            return False
+        missing = self.draft.unpriced_extras()
+        quotation = self.draft.quotation
+        material = sorted(set(getattr(quotation, "unpriced_codes", []) or []))
+        hours = sum((getattr(quotation, "labour_hours", {}) or {}).values())
+        no_labour = hours > 0 and self.draft.variant().labour.hourly_rate <= 0
+        if not missing and not material and not no_labour:
+            return True
+        parts = []
+        if missing:
+            names = ", ".join(line.description for line in missing[:4])
+            parts.append(f"⁦{len(missing)}⁩ שורות בלי מחיר ({names}) — יופיעו ללקוח ב־⁦0 ₪⁩. "
+                         "לחיצה כפולה על המחיר בשורה מזינה אותו.")
+        if material:
+            parts.append(f"ל־⁦{len(material)}⁩ פריטי חומר אין מחיר — לא במחירון ספק ולא בתעריף "
+                         "הערכה של העסק — והם לא נכללו במחיר.")
+        if no_labour:
+            parts.append(f"לא הוזן תעריף לשעת עבודה, ו־⁦{hours:.1f}⁩ שעות העבודה לא נכללו במחיר.")
+        if material or no_labour:
+            parts.append("מחירונים: קטלוג ← מחירוני ספקים. תעריפים: מערכת ← מפעיל ← תעריפי הערכה.")
+        box = QMessageBox(self)
+        box.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle("המחיר לא שלם")
+        box.setText("\n\n".join(parts))
+        fix = box.addButton("חזרה להשלמה", QMessageBox.ButtonRole.RejectRole)
+        anyway = box.addButton("להפיק בכל זאת", QMessageBox.ButtonRole.AcceptRole)
+        box.setDefaultButton(fix)
+        box.exec()
+        # Only an explicit "issue anyway" issues; closing the box does not.
+        return box.clickedButton() is anyway
+
+    def save_documents(self) -> None:
+        if self.draft is None:
+            self.report(ProfileOSError("תמחר את הפרויקט קודם"), "אין מה להפיק")
+            return
+        if not self._unpriced_ok():
+            return
+        from ..quoting.document import render_quotation
+
+        directory = QFileDialog.getExistingDirectory(self, "לאן לשמור את מסמכי ההצעה?", str(documents_dir()))
+        if not directory:
+            return
+        from ..core.storage import atomic_write_text
+
+        base = Path(directory) / self.draft.quotation.quote_id
+        customer = base.with_suffix(".customer.html")
+        internal = base.with_suffix(".internal.html")
+        try:
+            customer_html = render_quotation(self.draft, language=self.session.language)
+            atomic_write_text(customer, customer_html)
+            atomic_write_text(
+                internal, render_quotation(self.draft, language=self.session.language, internal=True)
+            )
+        except Exception as exc:  # noqa: BLE001 - said, and nothing is recorded on the job
+            self.report(exc, "מסמכי ההצעה לא נשמרו — שום דבר לא נרשם בפרויקט")
+            return
+        written = [customer.name, internal.name]
+        try:
+            from .pdf import html_to_pdf
+
+            written.append(html_to_pdf(customer_html, base.with_suffix(".pdf")).name)
+        except Exception as exc:  # noqa: BLE001 - the HTML copies already exist
+            _log.warning("Quotation PDF not written: %s", exc)
+            self.report(ProfileOSError(
+                f"ה־PDF לא נוצר ({exc}). קובצי ה־HTML נשמרו — אפשר לפתוח את עותק הלקוח "
+                "בדפדפן ולהדפיס ל־PDF משם."
+            ), "ה־PDF לא נוצר")
+        self.status("נשמרו " + ", ".join(written))
+        self._record_in_job()
+
+    def _quote_folder(self) -> Path:
+        """Where a job's quotations live: one folder per job, in the data dir.
+
+        Asking "where to save?" every time is a question with one sensible
+        answer; the folder is opened afterwards so the file is still one
+        click from wherever it needs to go.
+        """
+        from ..core.config import get_settings
+
+        job = self.session.job
+        name = job.job_id if job is not None else "ללא-פרויקט"
+        return get_settings().data_dir / "quotes" / name
+
+    def send_whatsapp(self) -> None:
+        """PDF to the job folder, the folder open, the chat open with the text."""
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+
+        from ..branding import active_brand
+        from ..quoting.document import render_quotation
+        from ..sharing import customer_phone, quote_message, whatsapp_link, whatsapp_number
+        from .pdf import html_to_pdf
+
+        if self.draft is None:
+            self.report(ProfileOSError("תמחר את הפרויקט קודם"), "אין מה לשלוח")
+            return
+        if not self._unpriced_ok():
+            return
+        quote = self.draft.quotation
+        folder = self._quote_folder()
+        try:
+            pdf = html_to_pdf(
+                render_quotation(self.draft, language=self.session.language),
+                folder / f"{quote.quote_id}.pdf",
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "לא ניתן להפיק PDF")
+            return
+        self._record_in_job()
+
+        job = self.session.job
+        brand = active_brand()
+        phone = customer_phone(job) if job is not None else ""
+        message = quote_message(
+            brand_name=brand.document_name,
+            customer_name=getattr(job, "customer_name", "") or self.draft.customer,
+            job_name=getattr(job, "name", "") or self.draft.project_name,
+            quote_id=quote.quote_id,
+            total=self.draft.totals()["gross"],
+            currency=quote.currency,
+            valid_days=quote.policy.valid_days,
+            phone=brand.phone or "",
+        )
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
+        QDesktopServices.openUrl(QUrl(whatsapp_link(phone, message)))
+        self.status(
+            f"נשמר {pdf.name} — גרור אותו לצ׳אט שנפתח"
+            + ("" if whatsapp_number(phone) else " (ללקוח אין טלפון נייד בתיק — בחר צ׳אט)")
+        )
+
+    def _record_revision(self, job: Any) -> str:
+        """Keep the version that went to the customer: a new one when the
+        price or a line changed (with what changed, in words), the same one
+        when nothing did. Returns a few words for the status line."""
+        try:
+            from ..quoting.revisions import default_revisions, lines_of_rows
+
+            book = default_revisions()
+            problem = getattr(book, "damaged", None)
+            if problem is not None:
+                self.report(problem, "קובץ גרסאות ההצעה פגום — הגרסה הזאת לא נרשמה")
+                return ""
+            history = book.for_job(job.job_id)
+            revision, new = history.record_issued(
+                lines_of_rows(self.draft.customer_lines()),
+                float(self.draft.totals()["net"]), self.draft.quotation.currency,
+            )
+            book.save()
+        except Exception as exc:  # noqa: BLE001 - the quotation itself already went out
+            self.report(exc, "ההצעה נשלחה, אבל הגרסה שלה לא נרשמה")
+            return ""
+        if not new:
+            return f" · גרסה ⁦{revision.number}⁩ (ללא שינוי)"
+        return f" · נשמרה גרסה ⁦{revision.number}⁩"
+
+    def _record_in_job(self) -> None:
+        """Write the quoted figure onto the open job, and move it along.
+
+        A quotation that has been issued is a fact about the job, not only
+        about this window: the order book should show the number without the
+        operator being asked to copy it across. The status only advances from
+        enquiry — a job already won is not dragged backwards by reprinting its
+        quotation.
+        """
+        job = self.session.job
+        if job is None or self.draft is None:
+            return
+        from ..projects import JobStatus, default_store
+
+        # The design itself, not only its price: a job priced from this page
+        # without ever visiting "פרויקטים" must not come back empty the next
+        # time it is opened, with a real quoted figure sitting on top of it.
+        totals = self.draft.totals()
+        try:
+            store = default_store()
+            if job.job_id != self._draft_job_id:
+                raise ProfileOSError(
+                    "ההצעה שעל המסך תומחרה לפרויקט אחר — תמחרו מחדש לפרויקט הפתוח"
+                )
+            job = self.session.save_design_to_job(store)
+            if job.status in (JobStatus.WON, JobStatus.IN_PRODUCTION, JobStatus.INSTALLED) \
+                    and job.quote_total:
+                # The price the customer agreed to is not changed by printing
+                # the quotation again: a change after the deal is an extra,
+                # agreed and recorded as one.
+                agreed = job.quote_total
+                if abs(float(totals["net"]) - agreed) > 0.5:
+                    self.status(
+                        f"ההצעה הודפסה. הסכום שסוכם (⁦{agreed:,.0f} ₪⁩) לא השתנה — "
+                        "שינוי מחיר אחרי סגירה רושמים כתוספת בחשבון הפרויקט."
+                    )
+                return
+            job.record_quote(float(totals["net"]), self.draft.quotation.currency)
+            variant = self.draft.variant()
+            # What the norms give these openings, kept for comparing with
+            # the hours that will be booked on the job.
+            from ..quoting.labour_learning import norm_hours
+
+            job.norm_hours = norm_hours(variant.builds)
+            job.quote_spec = {
+                "system_id": variant.system_id, "glass_id": variant.glass_id,
+                "finish_id": variant.finish_id, "margin": float(variant.policy.margin_pct),
+            }
+            # The draft's work lines replace exactly the lines it was started
+            # with. A quoted line added to the job since (in its account) is
+            # kept, unmarked, and counted on top of this quotation; extras
+            # from site are never touched.
+            from ..projects import JobLine, LineKind
+
+            quote_id = self.draft.quotation.quote_id
+            loaded = {extra.job_line_id for extra in self.draft.extra_lines if extra.job_line_id}
+            started_with = getattr(self.draft, "loaded_line_ids", None)
+            replaced = set(started_with) if started_with is not None else loaded
+            kept = [
+                line for line in job.lines
+                if line.kind is not LineKind.QUOTED or line.line_id not in replaced
+            ]
+            issued = []
+            for extra in self.draft.extra_lines:
+                values = dict(
+                    kind=LineKind.QUOTED, description=extra.description,
+                    quantity=extra.quantity, unit=extra.unit,
+                    unit_price=extra.unit_price, item_code=extra.item_code,
+                    in_quote=quote_id, origin=extra.origin, price_typed=extra.price_typed,
+                )
+                if extra.job_line_id:
+                    values["line_id"] = extra.job_line_id
+                issued.append(JobLine(**values))
+            job.lines = kept + issued
+            if job.status is JobStatus.ENQUIRY:
+                job.advance(JobStatus.QUOTED, "הצעה הופקה מהמערכת")
+            store.save(job)
+        except Exception as exc:  # noqa: BLE001 - the documents are already written
+            _log.exception("Could not record the quotation on job %s", job.job_id)
+            self.report(
+                exc,
+                "המסמכים נשמרו, אבל הסכום לא נרשם בפרויקט — שמור שוב מ״פרויקטים״",
+            )
+            return
+
+        revision_note = self._record_revision(job)
+
+        # Sending a quotation creates its own chase, as the follow-up module
+        # promises — an operator should not have to remember a second click
+        # on Home for the reminders to exist at all.
+        try:
+            from ..projects import JobStatus
+            from ..projects.followups import default_tasks
+
+            # Only a quotation still waiting for an answer is chased.
+            if job.status is JobStatus.QUOTED:
+                default_tasks().chase_quote(job)
+        except Exception:  # noqa: BLE001 - the quotation itself already went out
+            _log.exception("Could not schedule follow-ups for %s", job.job_id)
+
+        self.status(f"{job.job_id} עודכן: {job.status.hebrew}" + revision_note)
+
+
+# --------------------------------------------------------------------------- #
+# Shop floor
+# --------------------------------------------------------------------------- #
+
+class ShopFloorPage(Page):
+    """Release the project to production and track it."""
+
+    title = "Shop floor"
+    hebrew = "רצפת ייצור"
+    subtitle = "שחרור פקודת עבודה ומעקב ייצור"
+
+    def build(self) -> None:
+        release = QPushButton("שחרר פקודת עבודה")
+        release.setObjectName("Primary")
+        release.clicked.connect(self.release)
+        self.header.add_action(release)
+
+        card = QPushButton("ייצא כרטיס עבודה...")
+        card.clicked.connect(self.export_card)
+        self.header.add_action(card)
+
+        labels = QPushButton("הדפס מדבקות...")
+        labels.clicked.connect(self.export_labels)
+        self.header.add_action(labels)
+
+        self.stats = StatRow([
+            ("items", "פריטים"), ("progress", "התקדמות"), ("stage", "צוואר בקבוק"),
+            ("rework", "לתיקון"), ("scrap", "פסולים"),
+        ])
+        self.body.addWidget(self.stats)
+
+        scan_card = Card("רישום סריקה")
+        # Used standing, often in gloves: targets sized for a hand, not a mouse.
+        scan_card.setObjectName("FloorCard")
+        row = QHBoxLayout(); row.setSpacing(METRICS.space(3))
+        self.item = QComboBox()
+        self.stage = QComboBox()
+
+        from ..mes import Stage
+
+        for stage in Stage:
+            if stage.value != "planned":
+                self.stage.addItem(stage.label("he"), stage.value)
+        self.operator = QComboBox()
+        _people_combo(self.operator)
+        scan = QPushButton("סרוק")
+        scan.setObjectName("Primary")
+        scan.clicked.connect(self.scan)
+        for label, widget in [("פריט", self.item), ("שלב", self.stage), ("מפעיל", self.operator)]:
+            caption = QLabel(label); caption.setObjectName("FieldLabel")
+            row.addWidget(caption); row.addWidget(widget)
+        row.addWidget(scan)
+        row.addStretch(1)
+        scan_card.add_layout(row)
+        self.scan_result = QLabel("")
+        self.scan_result.setObjectName("StatLabel")
+        scan_card.add(self.scan_result)
+        self.body.addWidget(scan_card)
+
+        tabs = QTabWidget()
+        items_page = QWidget()
+        items_layout = QVBoxLayout(items_page)
+        items_layout.setContentsMargins(0, METRICS.space(3), 0, 0)
+        self.items = DataTable(["מזהה", "סוג", "תיאור", "שלב", "התקדמות"], empty_text="שחררו פקודת עבודה — והפריטים יופיעו כאן לסריקה")
+        items_layout.addWidget(self.items, 1)
+        tabs.addTab(items_page, "פריטי ייצור")
+        tabs.addTab(self._hours_tab(), "שעות עבודה")
+        self.body.addWidget(tabs, 1)
+        self.tabs = tabs
+
+    # -- hours ----------------------------------------------------------------- #
+    def _hours_tab(self) -> QWidget:
+        """Book real hours against a job, so the margin is measured not guessed.
+
+        Every quote in this trade is priced on an estimate of how long the work
+        takes. Without hours booked against the job, that estimate is never
+        corrected, and a shop can lose money on the same kind of job for years
+        while its quotation screen keeps saying the margin is fine.
+        """
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, METRICS.space(3), 0, 0)
+        layout.setSpacing(METRICS.space(3))
+
+        entry_card = Card("רישום שעות")
+        row = QHBoxLayout()
+        row.setSpacing(METRICS.space(3))
+
+        self.hours_person = QComboBox()
+        _people_combo(self.hours_person)
+
+        self.hours_job = QLineEdit()
+        self.hours_job.setPlaceholderText("מספר תיק")
+
+        self.hours_operation = QComboBox()
+        self.hours_operation.setEditable(True)
+        self.hours_operation.addItems([
+            "חיתוך", "עיבוד CNC", "הרכבה", "זיגוג", "אריזה",
+            "התקנה באתר", "מדידה", "תיקון",
+        ])
+
+        self.hours_start = QLineEdit("07:00")
+        self.hours_start.setMaximumWidth(METRICS.space(14))
+        self.hours_end = QLineEdit("16:00")
+        self.hours_end.setMaximumWidth(METRICS.space(14))
+
+        self.hours_rework = QCheckBox("תיקון חוזר")
+
+        self.hours_rate = QDoubleSpinBox()
+        self.hours_rate.setRange(0.0, 999.0)
+        self.hours_rate.setDecimals(2)
+        self.hours_rate.setSuffix(" ₪/ש׳")
+
+        for label, widget in [
+            ("עובד", self.hours_person), ("תיק", self.hours_job),
+            ("פעולה", self.hours_operation), ("משעה", self.hours_start),
+            ("עד", self.hours_end), ("עלות", self.hours_rate),
+        ]:
+            caption = QLabel(label)
+            caption.setObjectName("FieldLabel")
+            row.addWidget(caption)
+            row.addWidget(widget)
+        row.addWidget(self.hours_rework)
+
+        book = QPushButton("רשום")
+        book.setObjectName("Primary")
+        book.clicked.connect(self.book_hours)
+        row.addWidget(book)
+        row.addStretch(1)
+        entry_card.add_layout(row)
+
+        self.hours_result = QLabel("—")
+        self.hours_result.setObjectName("StatLabel")
+        entry_card.add(self.hours_result)
+        layout.addWidget(entry_card)
+
+        self.hours_table = DataTable(
+            ["תאריך", "עובד", "תיק", "פעולה", "שעות", "עלות", "תיקון"],
+            empty_text="אין רישומי שעות — בלי שעות, הרווחיות היא הערכה בלבד",
+        )
+        layout.addWidget(self.hours_table, 1)
+
+        self.hours_summary = QLabel("")
+        self.hours_summary.setObjectName("Hint")
+        self.hours_summary.setWordWrap(True)
+        layout.addWidget(self.hours_summary)
+
+        self._timebook = None
+        self.show_hours()
+        return page
+
+    def _book(self):
+        if self._timebook is None:
+            from ..erp.timesheets import default_timebook
+
+            self._timebook = default_timebook()
+        book = self.checked_book(self._timebook, "דיווח השעות")
+        if book.damaged is not None:
+            self._timebook = None
+        return book
+
+    def book_hours(self) -> None:
+        from ..erp.timesheets import minutes_between
+
+        try:
+            minutes = minutes_between(
+                self.hours_start.text(), self.hours_end.text()
+            )
+            entry = self._book().book(
+                person=self.hours_person.currentText(),
+                job_id=self.hours_job.text().strip(),
+                minutes=minutes,
+                operation=self.hours_operation.currentText(),
+                rework=self.hours_rework.isChecked(),
+                rate=self.hours_rate.value(),
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.hours_result.setText(str(exc))
+            self.hours_result.setStyleSheet(f"color: {self.colours.danger};")
+            return
+
+        self.hours_result.setText(entry.describe())
+        self.hours_result.setStyleSheet(f"color: {self.colours.success};")
+        self.show_hours()
+
+    def show_hours(self) -> None:
+        book = self._book()
+        rows: list[list[Any]] = []
+        for entry in list(book)[:200]:
+            rows.append([
+                entry.on.isoformat(), entry.person, entry.job_id or "—",
+                entry.operation or entry.note or "—",
+                f"⁦{entry.hours:.2f}⁩",
+                f"⁦{entry.cost:,.2f} ₪⁩" if entry.rate else "—",
+                "כן" if entry.rework else "",
+            ])
+        self.hours_table.set_rows(rows)
+
+        if not len(book):
+            self.hours_summary.setText("")
+            return
+        total = round(sum(entry.hours for entry in book), 2)
+        rework = book.rework_share()
+        by_person = book.by_person()
+        leaders = ", ".join(
+            f"{name} ⁦{hours:.1f}⁩"
+            for name, hours in sorted(
+                by_person.items(), key=lambda pair: pair[1], reverse=True
+            )[:4]
+        )
+        self.hours_summary.setText(
+            f"סה״כ ⁦{total:.1f}⁩ שעות · תיקונים חוזרים ⁦{rework:.0f}%⁩ "
+            f"מהזמן · {leaders}"
+        )
+
+    def release(self) -> None:
+        from ..mes import work_order_from_builds
+
+        if not self.session.builds:
+            self.report(ProfileOSError("עדיין לא תוכננו פתחים. תכנן פתח בעמוד ״פתח״ ואז חזור לכאן."), "אין מה לשחרר")
+            return
+        from ..mes.store import save_work_order, scans
+
+        job = self.session.job
+        if job is not None:
+            try:
+                earlier = self._saved_order(job.job_id)
+            except Exception as exc:  # noqa: BLE001
+                self.report(exc, "פקודת העבודה השמורה לא נקראה — לא שוחררה חדשה")
+                return
+            if earlier is not None and scans(earlier):
+                answer = QMessageBox.question(
+                    self, "לשחרר מחדש?",
+                    f"פקודת העבודה ⁦{earlier.work_order_id}⁩ כבר בייצור "
+                    f"(⁦{scans(earlier)}⁩ סריקות). פקודה חדשה תתחיל מאפס — "
+                    "הישנה נשמרת בתיקיית הפרויקט.",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No,
+                )
+                if answer != QMessageBox.StandardButton.Yes:
+                    return
+        order = work_order_from_builds(
+            self.session.builds,
+            project_id=job.job_id if job else "PRJ",
+            name=job.name if job else "פרויקט",
+        )
+        if job is not None:
+            try:
+                order = save_work_order(order, job.job_id, self._store(), replace=True)
+            except Exception as exc:  # noqa: BLE001
+                self.report(exc, "פקודת העבודה לא נשמרה — לא שוחררה")
+                return
+            self._job_in_production(job.job_id)
+        self._show_order(order)
+        self.status(f"שוחררו ⁦{len(order)}⁩ פריטים כ־⁦{order.work_order_id}⁩"
+                    + ("" if job is not None else " — בלי פרויקט פתוח, לא נשמרו"))
+
+    # -- the order on disk ----------------------------------------------------- #
+    def _store(self) -> Any:
+        from ..projects import default_store
+
+        return default_store()
+
+    def _saved_order(self, job_id: str) -> Any:
+        from ..mes.store import load_work_order
+
+        return load_work_order(job_id, self._store())
+
+    def _show_order(self, order: Any) -> None:
+        self.session.set_work_order(order)
+        chosen = self.item.currentData()
+        self.item.clear()
+        for entry in order.items:
+            self.item.addItem(f"{entry.item_id} — {entry.description[:40]}", entry.item_id)
+        if chosen is not None:
+            index = self.item.findData(chosen)
+            if index >= 0:
+                self.item.setCurrentIndex(index)
+        self._refresh_items()
+
+    def _job_in_production(self, job_id: str) -> None:
+        """A released order means the job is being built — the order book
+        says so, instead of still showing it as merely won."""
+        from ..projects import JobStatus
+
+        store = self._store()
+        try:
+            job = store.load(job_id)
+            if job.status is JobStatus.WON:
+                job.advance(JobStatus.IN_PRODUCTION, "שוחררה פקודת עבודה")
+                store.save(job)
+                if self.session.job is not None and self.session.job.job_id == job_id:
+                    self.session.job.status = job.status
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "הפרויקט לא סומן ״בייצור״")
+
+    def refresh(self) -> None:
+        """Show the job's order as it stands on disk — with the scans the
+        tablet or the other computer recorded meanwhile."""
+        job = self.session.job
+        if job is None:
+            return
+        try:
+            order = self._saved_order(job.job_id)
+        except Exception as exc:  # noqa: BLE001
+            self.scan_result.setText(f"פקודת העבודה לא נקראה: {exc}")
+            self.scan_result.setStyleSheet(f"color: {self.colours.danger};")
+            return
+        if order is not None:
+            self._show_order(order)
+        elif self.session.work_order is not None \
+                and self.session.work_order.project_id != job.job_id:
+            # Another job's order must not stay on screen to be scanned into.
+            self.session.set_work_order(None)
+            self.item.clear()
+            self.items.set_rows([])
+            self.scan_result.setText("")
+
+    def scan(self) -> None:
+        from ..mes import Stage
+
+        order = self.session.work_order
+        if order is None:
+            self.report(ProfileOSError("שחרר פקודת עבודה קודם"), "אין מה לסרוק")
+            return
+        job = self.session.job
+        if job is not None and order.project_id != job.job_id:
+            self.report(ProfileOSError(
+                f"פקודת העבודה שעל המסך שייכת לפרויקט ⁦{order.project_id}⁩ — "
+                "פתחו אותו, או שחררו פקודה לפרויקט הפתוח"), "הסריקה לא נרשמה")
+            return
+
+        item_id = self.item.currentData()
+        ok, message = order.scan(
+            item_id or "", Stage(self.stage.currentData()),
+            operator=self.operator.currentText(), station="UI",
+        )
+        if ok and job is not None:
+            from ..mes.store import save_work_order
+
+            try:
+                order = save_work_order(order, job.job_id, self._store())
+            except Exception as exc:  # noqa: BLE001
+                # What is on screen must be what is on disk: the scan is undone.
+                self.report(exc, "הסריקה לא נשמרה")
+                self.refresh()
+                return
+            self._show_order(order)
+        colour = self.colours.success if ok else self.colours.danger
+        self.scan_result.setText(message)
+        self.scan_result.setStyleSheet(f"color: {colour};")
+        self._refresh_items()
+
+    def _refresh_items(self) -> None:
+        order = self.session.work_order
+        if order is None:
+            return
+        kind_hebrew = {
+            "profile_piece": "פרופיל", "glass_pane": "זכוכית",
+            "element": "פתח", "hardware_kit": "ערכת פרזול",
+        }
+        self.items.set_rows(
+            [[i.item_id, kind_hebrew.get(i.kind.value, i.kind.value), i.description,
+              i.stage.label("he"), f"{i.progress() * 100:.0f}%"] for i in order.items],
+            numeric_columns=(4,),
+        )
+        summary = order.summary()
+        bottleneck = order.bottleneck()
+        self.stats.update_many({
+            "items": (str(summary["items"]), order.work_order_id),
+            "progress": (f"{summary['progress_pct']:.0f}%", ""),
+            "stage": (bottleneck[0].label("he") if bottleneck else "—",
+                      f"{bottleneck[1]} פריטים" if bottleneck else ""),
+            "rework": (str(summary["rework"]), ""),
+            "scrap": (str(summary["scrapped"]), ""),
+        })
+
+    def export_card(self) -> None:
+        from ..mes import write_job_card
+
+        order = self.session.work_order
+        if order is None:
+            self.report(ProfileOSError("שחרר פקודת עבודה קודם"), "אין מה לייצא")
+            return
+        path, _ = QFileDialog.getSaveFileName(self, "שמירת כרטיס עבודה", suggested_path("job-card.html"), "HTML (*.html)")
+        if not path:
+            return
+        write_job_card(order, path, self.session.builds)
+        self.status(f"נשמר {path}")
+
+    def export_labels(self) -> None:
+        """One label per physical piece, laid out on real label stock.
+
+        Two hundred cut bars leave the saw in a morning, all silver and most
+        within a few millimetres of each other. This is what stops the
+        afternoon going on working out which four belong to which window.
+        """
+        from ..mes.labels import STOCKS, labels_for_order, write_labels
+
+        order = self.session.work_order
+        if order is None:
+            self.report(
+                ProfileOSError("שחרר פקודת עבודה קודם"), "אין מה להדפיס"
+            )
+            return
+
+        pieces = labels_for_order(order)
+        if not pieces:
+            self.report(
+                ProfileOSError("אין פריטים בפקודת העבודה"), "אין מה להדפיס"
+            )
+            return
+
+        path, _ = QFileDialog.getSaveFileName(
+            self, "שמירת גיליון מדבקות", suggested_path("labels.html"), "HTML (*.html)"
+        )
+        if not path:
+            return
+        try:
+            run = write_labels(pieces, path, stock=STOCKS["a4-24"])
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "הדפסת המדבקות נכשלה")
+            return
+        self.status(f"{run.describe()} · {path}")
+
+
+
+
+# --------------------------------------------------------------------------- #
+# Glass
+# --------------------------------------------------------------------------- #
+
+class GlassPage(Page):
+    """Nest the project's glass onto stock sheets."""
+
+    title = "Glass"
+    hebrew = "זכוכית"
+    subtitle = "שיבוץ הזיגוג על לוחות גלם"
+
+    def build(self) -> None:
+        run = QPushButton("שבץ זכוכית")
+        run.setObjectName("Primary")
+        run.clicked.connect(self.run)
+        self.needs_design(run)
+        self.header.add_action(run)
+
+        export = QPushButton("ייצא מפות חיתוך")
+        export.clicked.connect(self.export_maps)
+        self.header.add_action(export)
+
+        order = QPushButton("הזמנה לספק זכוכית...")
+        order.clicked.connect(self.export_glass_order)
+        self.header.add_action(order)
+
+        self.stats = StatRow([
+            ("sheets", "לוחות"), ("panes", "שמשות"), ("yield", "ניצולת"),
+            ("offcuts", "שאריות"), ("stages", "שלבי חיתוך"),
+        ])
+        self.body.addWidget(self.stats)
+
+        controls = Card("מכונה ומלאי")
+        row = QHBoxLayout()
+        row.setSpacing(METRICS.space(4))
+
+        self.kerf = QDoubleSpinBox()
+        self.kerf.setRange(0, 20)
+        self.kerf.setValue(0.0)
+        self.kerf.setSuffix(" מ״מ"); self.kerf.setDecimals(1)
+        self.kerf.setToolTip(
+            "גלגלת חריטה לזכוכית לא מסירה חומר — חורטים ושוברים — לכן בזכוכית "
+            "הערך אפס. מסור לפאנל מרוכב מסיר את עובי הלהב, בדרך כלל 4–5 מ״מ."
+        )
+
+        self.trim = MillimetreBox()
+        self.trim.setRange(0, 200)
+        self.trim.setValue(20.0)
+        self.trim.setSuffix(" מ״מ")
+        self.trim.setToolTip(
+            "מוסר מכל ארבע הצלעות לפני שיבוץ. לוח גלם מגיע עם שוליים פגומים, "
+            "ובזכוכית עם ציפוי — עם רצועת ציפוי מוסרת בקצה."
+        )
+
+        self.stages = QComboBox()
+        self.stages.addItems(["ללא הגבלה", "2", "3"])
+        self.stages.setToolTip(
+            "כמה פעמים קו החיתוך רשאי לפנות. קו אוטומטי מסתדר עם שניים: "
+            "חיתוכי רוחב לפסים, ואז חיתוכי אורך לשמשות."
+        )
+
+        self.stock = QComboBox()
+        self.stock.setEditable(True)
+        self.stock.addItems([
+            "כל הסטנדרטיים", "3210x2250", "3210x2550", "6000x3210",
+            "3210x2250,6000x3210",
+        ])
+        self.stock.setToolTip(
+            "מידות לוח כרוחב×גובה. בחירת הגלם חשובה בדרך כלל יותר מהשיבוץ: "
+            "שמשה של 2334 מ״מ לא תצא מלוח 2250."
+        )
+
+        for label, widget in [("עובי להב", self.kerf), ("שולי קצה", self.trim),
+                              ("שלבים", self.stages), ("גלם", self.stock)]:
+            caption = QLabel(label)
+            caption.setObjectName("FieldLabel")
+            row.addWidget(caption)
+            row.addWidget(widget)
+        row.addStretch(1)
+        controls.add_layout(row)
+        self.body.addWidget(controls)
+
+        splitter = QSplitter(Qt.Orientation.Vertical)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        self.view = SheetView(self.colours)
+        scroll.setWidget(self.view)
+        splitter.addWidget(scroll)
+
+        self.summary = DataTable(
+            ["מפרט", "שמשות", "לוחות", "ניצולת", "שאריות", "שלבים", "הוכחה"], empty_text="״שבץ זכוכית״ — והלוחות לכל מפרט יופיעו כאן"
+        )
+        splitter.addWidget(self.summary)
+        splitter.setStretchFactor(0, 3)
+        splitter.setStretchFactor(1, 1)
+        self.body.addWidget(splitter, 1)
+
+        self.material = QComboBox()
+        self.material.currentTextChanged.connect(self._show_material)
+        picker = QHBoxLayout()
+        caption = QLabel("מפרט מוצג")
+        caption.setObjectName("FieldLabel")
+        picker.addWidget(caption)
+        picker.addWidget(self.material, 1)
+        self.body.addLayout(picker)
+
+    def refresh(self) -> None:
+        panes = sum(
+            sum(pane.quantity for pane in build.glass) * build.opening.quantity
+            for build in self.session.builds
+        )
+        self.header.set_subtitle(
+            f"{panes} שמשות מתוך {len(self.session.builds)} פתחים"
+            if self.session.builds
+            else "תכנן פתח קודם — בעמוד ״פתח״"
+        )
+
+    def _spec(self) -> Any:
+        from ..nesting import SheetSpec
+
+        stages = self.stages.currentText()
+        return SheetSpec(
+            kerf=self.kerf.value(),
+            edge_trim=self.trim.value(),
+            stages=None if stages == "ללא הגבלה" else int(stages),
+        )
+
+    def _stock(self) -> list[Any]:
+        from ..nesting import SheetStock
+        from ..nesting.sheet import STANDARD_GLASS_STOCK
+
+        text = self.stock.currentText().strip()
+        if not text or text == "כל הסטנדרטיים":
+            return list(STANDARD_GLASS_STOCK)
+        sheets: list[Any] = []
+        for token in text.split(","):
+            token = token.strip()
+            width, _, height = token.lower().partition("x")
+            sheets.append(SheetStock(float(width), float(height), label=token))
+        return sheets
+
+    def run(self) -> None:
+        from ..nesting import nest_project_glass, sheet_parts_from_builds
+
+        if not self.session.builds:
+            self.report(
+                ProfileOSError("עדיין לא תוכננו פתחים. תכנן פתח בעמוד ״פתח״ ואז חזור לכאן."), "אין מה לשבץ"
+            )
+            return
+
+        try:
+            stock = self._stock()
+        except ValueError:
+            self.report(
+                ProfileOSError("מידות לוח נכתבות כרוחב×גובה, למשל 3210x2250"),
+                "קלט שגוי",
+            )
+            return
+
+        parts = sheet_parts_from_builds(self.session.builds)
+        if not parts:
+            self.report(
+                ProfileOSError("לפתחים האלה אין זכוכית"), "אין מה לשבץ"
+            )
+            return
+
+        try:
+            report = nest_project_glass(parts, stock=stock, spec=self._spec())
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "שיבוץ הזכוכית נכשל")
+            return
+
+        self.session.set_glass(report)
+
+        offcuts = sum(len(r.reusable_offcuts()) for r in report.results.values())
+        stages = max(
+            (r.stages_used or 0 for r in report.results.values()), default=0
+        )
+        self.stats.update_many({
+            "sheets": (str(report.sheet_count), f"{report.total_stock_area / 1e6:.1f} m²"),
+            "panes": (str(sum(r.total_pieces for r in report.results.values())), ""),
+            "yield": (f"{report.yield_pct:.2f}%", f"\u2066{report.total_placed_area / 1e6:.1f} m²\u2069 זיגוג"),
+            "offcuts": (str(offcuts), "חוזרות למדף"),
+            "stages": (str(stages) if stages else "—", "פניות קו"),
+        })
+
+        colours: dict[tuple[int, int], str] = {}
+        rows = []
+        for index, (material, result) in enumerate(sorted(report.results.items())):
+            if result.optimal:
+                proof = "אופטימלי"
+            elif result.metadata.get("optimal_within_stage_limit"):
+                proof = "אופטימלי עד 3 שלבים"
+            else:
+                proof = f"חסם {result.lower_bound}"
+            rows.append([
+                material, result.total_pieces, result.sheet_count,
+                f"{result.yield_pct:.2f}%", len(result.reusable_offcuts()),
+                result.stages_used or "—", proof,
+            ])
+            colours[(index, 3)] = (
+                self.colours.success if result.yield_pct >= 80 else self.colours.warning
+            )
+        self.summary.set_rows(rows, numeric_columns=(1, 2, 3, 4, 5), colours=colours)
+
+        self.material.blockSignals(True)
+        self.material.clear()
+        self.material.addItems(sorted(report.results))
+        self.material.blockSignals(False)
+        if report.results:
+            self._show_material(self.material.currentText())
+
+        for warning in report.warnings:
+            self.status(warning)
+        self.status(
+            f"{report.sheet_count} לוחות בניצולת {report.yield_pct:.2f}%"
+        )
+
+    def _show_material(self, material: str) -> None:
+        report = self.session.glass_report
+        if report is None or material not in report.results:
+            return
+        self.view.set_result(report.results[material])
+
+    def export_maps(self) -> None:
+        from ..nesting import render_layout_svg
+
+        report = self.session.glass_report
+        if report is None:
+            self.report(
+                ProfileOSError("שבץ את הזכוכית קודם"), "אין מה לייצא"
+            )
+            return
+        folder = QFileDialog.getExistingDirectory(self, "לאן לשמור את מפות החיתוך?", str(documents_dir()))
+        if not folder:
+            return
+        target = Path(folder)
+        written = 0
+        for material, result in report.results.items():
+            safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in material)
+            for layout in result.layouts:
+                path = target / f"{safe}-sheet{layout.sheet_index + 1:02d}.svg"
+                path.write_text(render_layout_svg(layout), encoding="utf-8")
+                written += 1
+        self.status(f"נשמרו {written} מפות חיתוך אל {target}")
+
+
+    def export_glass_order(self) -> None:
+        """The order that goes to the glazier — the one item that cannot be recut.
+
+        Built from the same panes the machining came from rather than retyped
+        from a cutting list, which is how a pane four millimetres out gets
+        paid for twice.
+        """
+        from ..glazing.order import (
+            order_from_builds, render_glass_order, write_glass_order,
+        )
+
+        builds = self.session.builds
+        if not builds:
+            self.report(
+                ProfileOSError(
+                    "אין פתחים בעבודה. תכנן פתחים בעמוד ״פתח״ ואז חזור לכאן."
+                ),
+                "אין מה להזמין",
+            )
+            return
+
+        job = getattr(self.session, "job", None)
+        order = order_from_builds(
+            builds,
+            job_id=str(getattr(job, "job_id", "") or ""),
+            job_name=str(getattr(job, "name", "") or ""),
+        )
+
+        problems = order.problems()
+        if problems:
+            box = QMessageBox(self)
+            box.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
+            box.setWindowTitle("הזמנת זכוכית")
+            box.setText(
+                "ההזמנה לא עברה בדיקה:\n\n"
+                + "\n".join(f"• {problem}" for problem in problems[:8])
+                + "\n\nלשמור בכל זאת? המסמך יישא באנר ״לא לשליחה״."
+            )
+            box.setStandardButtons(
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            )
+            box.setDefaultButton(QMessageBox.StandardButton.No)
+            if box.exec() != QMessageBox.StandardButton.Yes:
+                return
+
+        path, _ = QFileDialog.getSaveFileName(
+            self, "שמירת הזמנת זכוכית", suggested_path("glass-order.html"), "HTML (*.html)"
+        )
+        if not path:
+            return
+        write_glass_order(order, path)
+        self.status(f"{order.describe()} · {path}")
+
+
+# --------------------------------------------------------------------------- #
+# Plumbing
+# --------------------------------------------------------------------------- #
+
+class PlumbingPage(Page):
+    """Installation: the plumbing side of the same building.
+
+    A fabricator who also runs the plumbing — and in Israel that is most of
+    them — should not need a second program, a second licence and a second
+    place to lose the job. The five stages of a plumbing design sit on one
+    screen in the order the office works through them: count the fixtures,
+    size the supply, size the waste, keep the hot water hot, then price it.
+    """
+
+    title = "Plumbing"
+    hebrew = "אינסטלציה"
+    subtitle = "כלים סניטריים, אספקה, דלוחין, מים חמים וכתב כמויות"
+
+    def build(self) -> None:
+        design = QPushButton("חשב הכול")
+        design.setObjectName("Primary")
+        design.clicked.connect(self.run_design)
+        self.header.add_action(design)
+
+        export = QPushButton("ייצוא כתב כמויות")
+        export.clicked.connect(self.export_takeoff)
+        self.header.add_action(export)
+
+        supplier = QPushButton("הזמנה מהספק בוואטסאפ")
+        supplier.setObjectName("WhatsApp")
+        supplier.clicked.connect(self.order_from_supplier)
+        self.header.add_action(supplier)
+
+        to_quote = QPushButton("העבר להצעת מחיר")
+        to_quote.setToolTip("כל כלי סניטרי הופך לשורת התקנה מהמחירון")
+        to_quote.clicked.connect(self.send_to_quote)
+        self.header.add_action(to_quote)
+
+        keep = QPushButton("שמור בפרויקט")
+        keep.clicked.connect(self.save_to_job)
+        self.header.add_action(keep)
+        self._loaded_for = ""
+
+        self.stats = StatRow([
+            ("fixtures", "כלים"), ("demand", "ספיקה"),
+            ("dfu", "יחידות ניקוז"), ("stack", "מפל"), ("loss", "איבוד חום"),
+        ])
+        self.body.addWidget(self.stats)
+
+        tabs = QTabWidget()
+        tabs.addTab(self._fixtures_tab(), "כלים סניטריים")
+        tabs.addTab(self._supply_tab(), "אספקה")
+        tabs.addTab(self._drainage_tab(), "דלוחין ואוורור")
+        tabs.addTab(self._hot_tab(), "מים חמים")
+        tabs.addTab(self._takeoff_tab(), "כתב כמויות")
+        self.body.addWidget(tabs, 1)
+        self.tabs = tabs
+
+        self._takeoff = None
+        self._schedule = None
+
+    # -- fixtures ----------------------------------------------------------- #
+    def _fixtures_tab(self) -> QWidget:
+        from ..plumbing import FIXTURES, TYPICAL_DWELLING
+
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, METRICS.space(3), 0, 0)
+        layout.setSpacing(METRICS.space(3))
+
+        row = QHBoxLayout()
+        row.setSpacing(METRICS.space(4))
+        self.dwellings = QSpinBox()
+        self.dwellings.setRange(1, 500)
+        self.dwellings.setValue(8)
+        self.dwellings.setSuffix(" דירות")
+        self.dwellings.valueChanged.connect(self._apply_dwellings)
+
+        self.supply_kind = QComboBox()
+        self.supply_kind.addItem("מיכל הדחה", "tank")
+        self.supply_kind.addItem("מדיח לחץ", "valve")
+
+        for label, widget in (("כפל דירה טיפוסית", self.dwellings),
+                              ("סוג הדחה", self.supply_kind)):
+            caption = QLabel(label)
+            caption.setObjectName("FieldLabel")
+            row.addWidget(caption)
+            row.addWidget(widget)
+        row.addStretch(1)
+        layout.addLayout(row)
+
+        # One spin box per fixture: a schedule is a count, and typing counts is
+        # faster than any dialog that adds them one at a time.
+        # Three short columns rather than one row per fixture stretched across
+        # the screen: a count is four digits, not a sentence.
+        from PySide6.QtWidgets import QGridLayout
+
+        grid = QWidget()
+        cells = QGridLayout(grid)
+        cells.setContentsMargins(0, 0, 0, 0)
+        cells.setHorizontalSpacing(METRICS.space(3))
+        cells.setVerticalSpacing(METRICS.space(2))
+        self.counts: dict[str, QSpinBox] = {}
+        columns = 3
+        for index, item in enumerate(FIXTURES):
+            box = QSpinBox()
+            box.setRange(0, 9999)
+            box.setValue(TYPICAL_DWELLING.get(item.id, 0) * 8)
+            box.setMaximumWidth(METRICS.space(28))
+            box.valueChanged.connect(self._recount)
+            self.counts[item.id] = box
+            caption = QLabel(item.hebrew)
+            caption.setObjectName("FieldLabel")
+            row, column = divmod(index, columns)
+            cells.addWidget(caption, row, column * 2)
+            cells.addWidget(box, row, column * 2 + 1)
+        for column in range(columns):
+            cells.setColumnStretch(column * 2, 1)
+        cells.setRowStretch(len(FIXTURES) // columns + 1, 1)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setWidget(grid)
+        layout.addWidget(scroll, 1)
+
+        self.demand_label = QLabel()
+        self.demand_label.setObjectName("Hint")
+        self.demand_label.setWordWrap(True)
+        layout.addWidget(self.demand_label)
+        return page
+
+    def _apply_dwellings(self) -> None:
+        """Refill the counts from the typical dwelling, times the number given."""
+        from ..plumbing import TYPICAL_DWELLING
+
+        count = self.dwellings.value()
+        for fixture_id, box in self.counts.items():
+            box.blockSignals(True)
+            box.setValue(TYPICAL_DWELLING.get(fixture_id, 0) * count)
+            box.blockSignals(False)
+        self._recount()
+
+    def _build_schedule(self) -> Any:
+        from ..plumbing import FixtureSchedule, SupplyKind
+
+        counts = {key: box.value() for key, box in self.counts.items() if box.value()}
+        return FixtureSchedule.of(
+            counts,
+            kind=SupplyKind(self.supply_kind.currentData()),
+            name="אינסטלציה",
+        )
+
+    def _recount(self) -> None:
+        """The demand follows the counts as they are typed, not on a button."""
+        schedule = self._build_schedule()
+        self._schedule = schedule
+        if not schedule.lines:
+            self.demand_label.setText("הזן כמויות כדי לראות את הספיקה הנדרשת.")
+            return
+        self.demand_label.setText(
+            f"⁦{schedule.cold_lu:g}⁩ יחידות עומס קרים ו־⁦{schedule.hot_lu:g}⁩ חמות · "
+            f"ספיקה בו-זמנית ⁦{schedule.cold_demand():.2f}⁩ ו־⁦{schedule.hot_demand():.2f}⁩ "
+            f"ל'/שנ' · קו משותף ⁦{schedule.total_demand():.2f}⁩ ל'/שנ' · "
+            f"⁦{schedule.dfu:g}⁩ יחידות ניקוז"
+        )
+        self.stats.set("fixtures", str(schedule.fixture_count), "מחוברים")
+        self.stats.set("demand", f"⁦{schedule.total_demand():.2f}⁩", "ל'/שנ' בו-זמנית")
+        self.stats.set("dfu", f"{schedule.dfu:g}", "יחידות ניקוז")
+
+    # -- supply -------------------------------------------------------------- #
+    def _supply_tab(self) -> QWidget:
+        from ..plumbing import BUILTIN_CATALOGUES
+
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, METRICS.space(3), 0, 0)
+        layout.setSpacing(METRICS.space(3))
+
+        controls = QHBoxLayout()
+        controls.setSpacing(METRICS.space(4))
+        self.material = QComboBox()
+        for key, catalogue in sorted(BUILTIN_CATALOGUES.items()):
+            self.material.addItem(catalogue.name, key)
+
+        self.run_length = QDoubleSpinBox()
+        self.run_length.setRange(1.0, 2000.0)
+        self.run_length.setValue(45.0)
+        self.run_length.setSuffix(" מ'")
+
+        self.height_gain = QDoubleSpinBox()
+        self.height_gain.setRange(-100.0, 300.0)
+        self.height_gain.setValue(12.0)
+        self.height_gain.setSuffix(" מ'")
+
+        self.available = QDoubleSpinBox()
+        self.available.setRange(50.0, 1600.0)
+        self.available.setValue(350.0)
+        self.available.setSuffix(" קפ\"א")
+
+        for label, widget in (
+            ("חומר", self.material), ("אורך קו", self.run_length),
+            ("הפרש גובה", self.height_gain), ("לחץ זמין", self.available),
+        ):
+            caption = QLabel(label)
+            caption.setObjectName("FieldLabel")
+            controls.addWidget(caption)
+            controls.addWidget(widget)
+        controls.addStretch(1)
+        layout.addLayout(controls)
+
+        self.supply_table = DataTable(
+            ["קו", "ספיקה", "קוטר", "מהירות", "איבוד/מ'", "איבוד כולל", "מצב"],
+            empty_text="לחץ ״חשב הכול״ כדי לתכנן את קווי האספקה",
+        )
+        layout.addWidget(self.supply_table, 1)
+
+        note = QLabel(
+            "כל קו נבדק מול שלושה גבולות: מהירות מרבית, איבוד לחץ למטר, והלחץ "
+            "שבאמת זמין בקצה. קוטר שנפסל נרשם עם הסיבה — מהירות גבוהה מדי היא "
+            "רעש ובלאי, ואיבוד גבוה מדי הוא ברז שלא נותן מים בקומה העליונה."
+        )
+        note.setObjectName("Hint")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        return page
+
+    # -- drainage ------------------------------------------------------------- #
+    def _drainage_tab(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, METRICS.space(3), 0, 0)
+        layout.setSpacing(METRICS.space(3))
+
+        controls = QHBoxLayout()
+        controls.setSpacing(METRICS.space(4))
+        self.floors = QSpinBox()
+        self.floors.setRange(1, 60)
+        self.floors.setValue(4)
+        self.floors.setSuffix(" קומות")
+
+        self.fall = QComboBox()
+        for value, label in ((0.01, "1% (1:100)"), (0.02, "2% (1:50)"), (0.04, "4% (1:25)")):
+            self.fall.addItem(label, value)
+        self.fall.setCurrentIndex(1)
+
+        self.vent_length = QDoubleSpinBox()
+        self.vent_length.setRange(1.0, 300.0)
+        self.vent_length.setValue(25.0)
+        self.vent_length.setSuffix(" מ'")
+
+        for label, widget in (("קומות", self.floors), ("שיפוע ענף", self.fall),
+                              ("אורך אוורור", self.vent_length)):
+            caption = QLabel(label)
+            caption.setObjectName("FieldLabel")
+            controls.addWidget(caption)
+            controls.addWidget(widget)
+        controls.addStretch(1)
+        layout.addLayout(controls)
+
+        self.drainage_table = DataTable(
+            ["חלק", "קוטר", "נימוק"],
+            empty_text="לחץ ״חשב הכול״ כדי לתכנן את מערכת הדלוחין",
+        )
+        layout.addWidget(self.drainage_table, 1)
+
+        self.drainage_notes = QLabel()
+        self.drainage_notes.setObjectName("Hint")
+        self.drainage_notes.setWordWrap(True)
+        layout.addWidget(self.drainage_notes)
+
+        note = QLabel(
+            "שלושה כללים גוברים על הטבלאות: קו ניקוז לא קטן בכיוון הזרימה, ענף "
+            "אינו קטן מהמחסום הגדול ביותר שמתחבר אליו, ואסלה מתחברת ל־100 מ\"מ. "
+            "הקיבולות הן ערכי הטבלאות המקובלים; הרשות המאשרת היא הקובעת."
+        )
+        note.setObjectName("Hint")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        return page
+
+    # -- hot water -------------------------------------------------------------- #
+    def _hot_tab(self) -> QWidget:
+        from ..plumbing import INSULATION
+
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, METRICS.space(3), 0, 0)
+        layout.setSpacing(METRICS.space(3))
+
+        controls = QHBoxLayout()
+        controls.setSpacing(METRICS.space(4))
+        self.loop_length = QDoubleSpinBox()
+        self.loop_length.setRange(1.0, 2000.0)
+        self.loop_length.setValue(120.0)
+        self.loop_length.setSuffix(" מ'")
+
+        self.insulation = QDoubleSpinBox()
+        self.insulation.setRange(0.0, 100.0)
+        self.insulation.setValue(25.0)
+        self.insulation.setSuffix(" מ\"מ")
+
+        self.insulation_kind = QComboBox()
+        for key, (label, _lambda) in INSULATION.items():
+            self.insulation_kind.addItem(label, key)
+
+        self.dead_leg = QDoubleSpinBox()
+        self.dead_leg.setRange(0.0, 60.0)
+        self.dead_leg.setValue(5.0)
+        self.dead_leg.setSuffix(" מ'")
+
+        for label, widget in (
+            ("אורך לולאה", self.loop_length), ("עובי בידוד", self.insulation),
+            ("סוג בידוד", self.insulation_kind), ("זנב ארוך ביותר", self.dead_leg),
+        ):
+            caption = QLabel(label)
+            caption.setObjectName("FieldLabel")
+            controls.addWidget(caption)
+            controls.addWidget(widget)
+        controls.addStretch(1)
+        layout.addLayout(controls)
+
+        self.hot_grid = FieldGrid()
+        self._hot_values: dict[str, QLabel] = {}
+        for label in ("איבוד למטר", "איבוד כולל", "ספיקת מחזור", "קו חוזר",
+                      "עומד משאבה", "הספק משאבה", "צריכה שנתית", "המתנה בזנב"):
+            value = QLabel("—")
+            value.setObjectName("FieldValue")
+            value.setAlignment(
+                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignAbsolute
+                | Qt.AlignmentFlag.AlignVCenter
+            )
+            self._hot_values[label] = self.hot_grid.add(label, value)
+        layout.addWidget(self.hot_grid)
+
+        self.hot_notes = QLabel()
+        self.hot_notes.setObjectName("Hint")
+        self.hot_notes.setWordWrap(True)
+        layout.addWidget(self.hot_notes)
+
+        note = QLabel(
+            "ת\"י 1205 מחייב בידוד קווי מים חמים, וקו שאינו מבודד מאבד פי שלושה "
+            "עד ארבעה. הזנב שאינו במחזור הוא מה שמכתיב כמה שניות ממתינים בברז — "
+            "מחזור לא מתקן זנב ארוך."
+        )
+        note.setObjectName("Hint")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        layout.addStretch(1)
+        return page
+
+    # -- take-off ----------------------------------------------------------------- #
+    def _takeoff_tab(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, METRICS.space(3), 0, 0)
+        layout.setSpacing(METRICS.space(3))
+
+        controls = QHBoxLayout()
+        controls.setSpacing(METRICS.space(4))
+        self.waste = QDoubleSpinBox()
+        self.waste.setRange(0.0, 40.0)
+        self.waste.setValue(10.0)
+        self.waste.setSuffix("%")
+        caption = QLabel("פחת")
+        caption.setObjectName("FieldLabel")
+        controls.addWidget(caption)
+        controls.addWidget(self.waste)
+        controls.addStretch(1)
+        layout.addLayout(controls)
+
+        self.takeoff_table = DataTable(
+            ["סוג", "תיאור", "כמות", "יחידה", "הערה"],
+            empty_text="לחץ ״חשב הכול״ כדי להפיק כתב כמויות",
+        )
+        layout.addWidget(self.takeoff_table, 1)
+
+        note = QLabel(
+            "הצנרת נספרת באורכי מלאי ולא במטרים: 46 מ' של 28 מ\"מ נחושת הם 11 "
+            "מוטות של 5 מ' ושארית. הפחת נרשם כשורה נפרדת כדי שאפשר יהיה להתווכח "
+            "איתו, ולא מוסתר בתוך הכמות."
+        )
+        note.setObjectName("Hint")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        return page
+
+    # -- the calculation ------------------------------------------------------------ #
+    def run_design(self) -> None:
+        """Run all five stages from the counts on screen."""
+        from ..plumbing import (
+            DeadLeg,
+            PipeRun,
+            ServiceType,
+            design_circulation,
+            design_drainage,
+            get_catalogue,
+            size_pipe,
+            take_off,
+        )
+
+        schedule = self._build_schedule()
+        if not schedule.lines:
+            self.report(
+                ProfileOSError("הזן לפחות כלי סניטרי אחד"), "אין מה לחשב"
+            )
+            return
+        self._schedule = schedule
+        self._recount()
+
+        catalogue = get_catalogue(self.material.currentData())
+        material = self.material.currentData().split("-")[0]
+        length = self.run_length.value()
+        available = self.available.value() * 1000.0
+
+        # -- supply ------------------------------------------------------- #
+        runs: list[Any] = []
+        rows: list[list[str]] = []
+        colours: dict[tuple[int, int], str] = {}
+        services = (
+            ("קו ראשי משותף", schedule.total_demand(), ServiceType.COLD_WATER, 0.0),
+            ("קו מים קרים", schedule.cold_demand(), ServiceType.COLD_WATER, 0.0),
+            ("קו מים חמים", schedule.hot_demand(), ServiceType.HOT_WATER, 25.0),
+        )
+        for index, (name, flow, service, insulation) in enumerate(services):
+            if flow <= 0:
+                continue
+            try:
+                sized = size_pipe(
+                    flow, length, catalogue, service=service,
+                    fittings={"elbow_90_long": 12, "tee_through": 6,
+                              "gate_valve_open": 2, "water_meter": 1},
+                    height_gain_m=self.height_gain.value(),
+                    available_pressure=available,
+                )
+            except Exception as exc:  # noqa: BLE001
+                self.report(exc, "לא ניתן לתכנן את קו האספקה")
+                return
+            designation = sized.size.designation if sized.size else "—"
+            rows.append([
+                name, f"{flow:.2f}", designation,
+                f"{sized.velocity:.2f}" if sized.size else "—",
+                f"{sized.loss_per_metre:.0f}" if sized.size else "—",
+                f"{sized.total_loss / 1000.0:.1f}" if sized.size else "—",
+                "תקין" if sized.ok else "אין קוטר מתאים",
+            ])
+            colours[(index, 6)] = (
+                self.colours.success if sized.ok else self.colours.danger
+            )
+            if sized.size is not None:
+                runs.append(PipeRun(
+                    service, designation, length, material,
+                    insulation_mm=insulation,
+                    fittings={"elbow_90_long": 12, "tee_through": 6},
+                    valves=2, name=name,
+                ))
+        self.supply_table.set_rows(rows, numeric_columns=(1, 3, 4, 5), colours=colours)
+
+        # -- drainage ------------------------------------------------------ #
+        try:
+            drainage = design_drainage(
+                schedule,
+                floors=self.floors.value(),
+                fall=self.fall.currentData(),
+                vent_length_m=self.vent_length.value(),
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "לא ניתן לתכנן את מערכת הדלוחין")
+            return
+        self.drainage_table.set_rows([list(row) for row in drainage.rows()])
+        self.drainage_notes.setText("  ·  ".join(drainage.notes()))
+        if drainage.stack.size_mm:
+            self.stats.set("stack", f"⌀{drainage.stack.size_mm:.0f}", "מ\"מ")
+            runs.append(PipeRun(
+                ServiceType.DRAINAGE, f"{drainage.stack.size_mm:.0f} mm",
+                self.floors.value() * 3.0, "pvc",
+                fittings={"elbow_45": self.floors.value() * 2}, name="מפל",
+            ))
+
+        # -- hot water ------------------------------------------------------ #
+        flow_bore = 28.0
+        for run in runs:
+            if run.service is ServiceType.HOT_WATER:
+                size = catalogue.by_designation(run.designation)
+                if size is not None:
+                    flow_bore = size.outer_diameter
+                break
+        try:
+            circulation = design_circulation(
+                self.loop_length.value(), flow_bore, catalogue,
+                insulation_mm=self.insulation.value(),
+                material=self.insulation_kind.currentData(),
+                dead_legs=[DeadLeg("הזנב הארוך ביותר", self.dead_leg.value(), 16.0)],
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "לא ניתן לתכנן את מחזור המים החמים")
+            return
+
+        leg = circulation.dead_legs[0] if circulation.dead_legs else None
+        for label, value in (
+            ("איבוד למטר", f"⁦{circulation.loss_per_metre:.1f}⁩ ואט/מ'"),
+            ("איבוד כולל", f"⁦{circulation.total_watts:.0f}⁩ ואט"),
+            ("ספיקת מחזור", f"⁦{circulation.flow_lps:.3f}⁩ ל'/שנ'"),
+            ("קו חוזר", getattr(circulation.return_size, "designation", "—")),
+            ("עומד משאבה", f"⁦{circulation.pump_head_kpa:.1f}⁩ קפ\"א"),
+            ("הספק משאבה", f"⁦{circulation.pump_watts:.1f}⁩ ואט"),
+            ("צריכה שנתית", f"⁦{circulation.annual_kwh:,.0f}⁩ קוט\"ש"),
+            ("המתנה בזנב", f"⁦{leg.wait_seconds:.0f}⁩ שנ׳" if leg else "—"),
+        ):
+            self._hot_values[label].setText(value)
+        self.hot_notes.setText("  ·  ".join(circulation.notes))
+        self.stats.set("loss", f"⁦{circulation.total_watts:.0f}⁩", "ואט בלולאה")
+        if circulation.return_size is not None:
+            runs.append(PipeRun(
+                ServiceType.HOT_WATER, circulation.return_size.designation,
+                self.loop_length.value(), material,
+                insulation_mm=self.insulation.value(), name="קו חוזר",
+            ))
+
+        # -- take-off -------------------------------------------------------- #
+        self._takeoff = take_off(runs, schedule=schedule, waste_pct=self.waste.value())
+        self.takeoff_table.set_rows(
+            [list(row) for row in self._takeoff.rows()], numeric_columns=(2,)
+        )
+        self.status(
+            f"תוכננו {len(rows)} קווי אספקה, מפל ⌀{drainage.stack.size_mm or 0:.0f} "
+            f"ולולאת מחזור של ⁦{circulation.total_watts:.0f}⁩ ואט"
+        )
+
+    def export_takeoff(self) -> None:
+        """Write the merchant's list as a CSV anybody can open."""
+        import csv
+
+        if self._takeoff is None:
+            self.report(ProfileOSError("חשב קודם"), "אין מה לייצא")
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "שמירת כתב הכמויות", suggested_path("plumbing-takeoff.csv"), "CSV (*.csv)"
+        )
+        if not path:
+            return
+        import io
+
+        from ..core.storage import atomic_write_bytes
+
+        try:
+            buffer = io.StringIO(newline="")
+            writer = csv.writer(buffer)
+            writer.writerow(["סוג", "תיאור", "כמות", "יחידה", "הערה"])
+            writer.writerows(self._takeoff.rows())
+            atomic_write_bytes(Path(path), buffer.getvalue().encode("utf-8-sig"))
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "הייצוא נכשל")
+            return
+        self.status(f"כתב הכמויות נשמר: {path}")
+
+    def refresh(self) -> None:
+        # The open job's own fixture counts, once per job, so this page shows
+        # the plumbing of the job that is open rather than the last typed.
+        job = self.session.job
+        job_id = job.job_id if job is not None else ""
+        if job is not None and job_id != self._loaded_for:
+            # Another job: its own counts, or an empty schedule — never the
+            # previous job's fixtures waiting to be saved into this one.
+            self._loaded_for = job_id
+            spec = getattr(job, "plumbing", None)
+            self.dwellings.blockSignals(True)
+            self.dwellings.setValue(max(1, spec.dwellings) if spec is not None else 1)
+            self.dwellings.blockSignals(False)
+            for fixture_id, box in self.counts.items():
+                box.blockSignals(True)
+                box.setValue(int(spec.fixtures.get(fixture_id, 0)) if spec is not None else 0)
+                box.blockSignals(False)
+        self._recount()
+
+    # -- the plumbing as part of the job ------------------------------------- #
+    def _counts(self) -> dict[str, int]:
+        return {fid: box.value() for fid, box in self.counts.items() if box.value()}
+
+    def save_to_job(self) -> bool:
+        """The fixture schedule is the job's, kept with it."""
+        from ..projects import PlumbingSpec, Trade, default_store
+
+        job = self.session.job
+        if job is None:
+            self.report(ProfileOSError("פתחו פרויקט קודם, ואז שמרו בו את האינסטלציה."),
+                        "אין פרויקט פתוח")
+            return False
+        try:
+            store = default_store()
+            fresh = store.load(job.job_id) if store.path_for(job.job_id).exists() else job
+            fresh.plumbing = PlumbingSpec(fixtures=self._counts(), dwellings=self.dwellings.value())
+            if fresh.trade is Trade.ALUMINIUM:
+                fresh.trade = Trade.BOTH
+            fresh.touch()
+            store.save(fresh)
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "האינסטלציה לא נשמרה בפרויקט")
+            return False
+        self.session.job = fresh
+        self._loaded_for = fresh.job_id
+        self.status(f"האינסטלציה נשמרה ב{fresh.job_id}")
+        return True
+
+    def send_to_quote(self) -> None:
+        """Each fixture becomes its installation line from the price book."""
+        from ..plumbing import FIXTURES
+        from ..quoting.pricebook import default_pricebook
+
+        counts = self._counts()
+        if not counts:
+            self.report(ProfileOSError("הזינו כמויות של כלים סניטריים קודם"), "אין מה להעביר")
+            return
+        if self.session.job is None:
+            self.report(ProfileOSError(
+                "פתחו פרויקט (או צרו חדש בתחום ״אינסטלציה״) — ההצעה נשמרת בו."
+            ), "אין פרויקט פתוח")
+            return
+        if not self.save_to_job():
+            return
+        try:
+            book = default_pricebook()
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "המחירון לא נקרא")
+            return
+        names = {fixture.id: fixture.hebrew for fixture in FIXTURES}
+        window = self.window()
+        if not hasattr(window, "go_to_page"):
+            return
+        quote = window.go_to_page("Quotation")
+        if quote.draft is None or quote._draft_job_id != self.session.job.job_id:
+            quote.start_draft()
+        if quote.draft is None:
+            return
+        # The fixtures' lines replace the ones an earlier send put there, so
+        # sending again after changing a count never doubles the quotation.
+        unpriced = 0
+        lines = []
+        for fixture_id, count in counts.items():
+            item = book.for_fixture(fixture_id)
+            if item is not None:
+                lines.append(dict(description=item.name, quantity=count, unit=item.unit,
+                                  unit_price=item.price, item_code=item.code))
+                unpriced += 0 if item.priced else 1
+            else:
+                lines.append(dict(description=f"התקנת {names.get(fixture_id, fixture_id)}",
+                                  quantity=count))
+                unpriced += 1
+        quote.draft.replace_origin("plumbing-fixtures", lines, by="desktop")
+        quote.refresh_draft()
+        self.status(
+            "הכלים הועברו להצעת המחיר"
+            + (f" · ל־⁦{unpriced}⁩ שורות עוד אין מחיר — לחצו פעמיים על המחיר" if unpriced else "")
+        )
+
+    def order_from_supplier(self) -> None:
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+
+        from ..branding import active_brand
+        from ..sharing import material_list_message, whatsapp_link
+
+        if self._takeoff is None:
+            self.run_design()
+        if self._takeoff is None:
+            return
+        job = self.session.job
+        message = material_list_message(
+            self._takeoff.rows(), brand_name=active_brand().display_name,
+            job_name=job.name if job is not None else "",
+            site=job.site_address if job is not None else "",
+        )
+        QDesktopServices.openUrl(QUrl(whatsapp_link("", message)))
+        self.status("נפתח וואטסאפ עם רשימת החומרים — בחרו את הספק ושלחו")
+
+
+# --------------------------------------------------------------------------- #
+# Service
+# --------------------------------------------------------------------------- #
+
+class ServicePage(Page):
+    """The calls that come back, and what they say about the work.
+
+    Every other screen in this suite is about making the window. This is the
+    only one about the window a year later, which is where a shop's reputation
+    is actually decided — and where, until now, the record was a notebook.
+    """
+
+    title = "Service"
+    hebrew = "שירות"
+    subtitle = "קריאות שירות, אחריות ומה שחוזר מהשטח"
+
+    def build(self) -> None:
+        new_call = QPushButton("קריאה חדשה")
+        new_call.setObjectName("Primary")
+        new_call.clicked.connect(self.new_call)
+        self.header.add_action(new_call)
+
+        close_call = QPushButton("סגירת קריאה")
+        close_call.clicked.connect(self.close_call)
+        self.header.add_action(close_call)
+
+        schedule = QPushButton("קבע ביקור")
+        schedule.clicked.connect(self.plan_service_visit)
+        self.header.add_action(schedule)
+
+        on_way = QPushButton("״בדרך אליך״ בוואטסאפ")
+        on_way.setObjectName("WhatsApp")
+        on_way.setToolTip("הודעה ללקוח שהטכנאי בדרך — חוסכת את השיחה ״איפה אתם?״")
+        on_way.clicked.connect(self.tell_on_the_way)
+        self.header.add_action(on_way)
+
+        self.stats = StatRow([
+            ("open", "קריאות פתוחות"), ("overdue", "באיחור"),
+            ("ours", "שעות על חשבוננו"), ("charged", "נגבה"),
+            ("ontime", "בזמן היעד"),
+        ])
+        self.body.addWidget(self.stats)
+
+        splitter = QSplitter(Qt.Orientation.Vertical)
+
+        calls = Card("קריאות")
+        self.calls_table = DataTable(
+            ["מספר", "לקוח", "פתח", "תקלה", "נפתחה", "יעד", "מצב", "אחריות", "סיבה"],
+            empty_text="אין קריאות שירות — לחץ ״קריאה חדשה״ כדי לרשום אחת",
+        )
+        calls.add(self.calls_table, 1)
+        splitter.addWidget(calls)
+
+        lower = QWidget()
+        lower_layout = QHBoxLayout(lower)
+        lower_layout.setContentsMargins(0, 0, 0, 0)
+        lower_layout.setSpacing(METRICS.space(3))
+
+        patterns = Card("מה חוזר")
+        self.patterns_table = DataTable(
+            ["תופעה וסיבה", "מקרים"],
+            empty_text="עדיין אין מספיק קריאות מאובחנות כדי לראות דפוס",
+        )
+        patterns.add(self.patterns_table, 1)
+        pattern_note = QLabel(
+            "תקלה שחוזרת שלוש פעמים מאותה סיבה היא הודעה לבית המלאכה, "
+            "לא לטכנאי. הסיבה נרשמת בסגירת הקריאה — בלעדיה אי אפשר לראות דפוס."
+        )
+        pattern_note.setObjectName("Hint")
+        pattern_note.setWordWrap(True)
+        patterns.add(pattern_note)
+        lower_layout.addWidget(patterns, 1)
+
+        warranty = Card("אחריות")
+        self.warranty_table = DataTable(["רכיב", "חודשים"], empty_text="לא הוזנה אחריות — הוסיפו רכיב ותקופה")
+        warranty.add(self.warranty_table, 1)
+        lower_layout.addWidget(warranty, 1)
+
+        splitter.addWidget(lower)
+        splitter.setStretchFactor(0, 3)
+        splitter.setStretchFactor(1, 2)
+        splitter.setSizes([320, 240])
+        self.body.addWidget(splitter, 1)
+
+        self._calls: list[Any] = []
+
+    def _register(self) -> Any:
+        from ..service import default_register
+
+        return self.checked_book(default_register(), "יומן קריאות השירות")
+
+    def new_call(self) -> None:
+        from .dialogs import NewServiceCallDialog
+
+        dialog = NewServiceCallDialog(self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        from ..service import ServiceCall, Symptom
+
+        values = dialog.values()
+        try:
+            call = ServiceCall(
+                job_id=values["job_id"],
+                customer_name=values["customer"],
+                element_name=values["element"],
+                symptom=Symptom(values["symptom"]),
+                description=values["description"],
+                delivered=values["delivered"],
+                phone=values["phone"],
+            )
+            self._register().add(call)
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "לא ניתן לרשום את הקריאה")
+            return
+        self.refresh()
+        self.status(f"נרשמה קריאה {call.call_id} — {call.symptom.hebrew}")
+
+    def plan_service_visit(self) -> None:
+        from ..projects.agenda import default_agenda
+        from .dialogs import AppointmentDialog
+
+        call = self._selected()
+        if call is None:
+            self.report(ProfileOSError("בחר קריאה מהרשימה"), "לא נבחרה קריאה")
+            return
+        kind = "plumbing" if call.symptom.trade == "plumbing" else "service"
+        dialog = AppointmentDialog(self, kind=kind)
+        dialog.customer.setText(call.customer_name)
+        dialog.phone.setText(call.phone)
+        address = call.site
+        if not address and call.job_id:
+            try:
+                from ..projects import default_store
+
+                address = default_store().load(call.job_id).site_address
+            except Exception:  # noqa: BLE001 - typed by hand instead
+                address = ""
+        dialog.address.setText(address)
+        dialog.note.setText(call.symptom.hebrew + (f" — {call.description}" if call.description else ""))
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        appointment = dialog.appointment()
+        appointment.call_id = call.call_id
+        appointment.job_id = appointment.job_id or call.job_id
+        try:
+            self.checked_book(default_agenda(), "יומן הביקורים").add(appointment)
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "הביקור לא נשמר")
+            return
+        self.status("הביקור נקבע ביומן — מופיע בדף הבית עם תזכורת ללקוח")
+
+    def tell_on_the_way(self) -> None:
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+
+        from ..branding import active_brand
+        from ..sharing import on_the_way_message, whatsapp_link
+
+        call = self._selected()
+        if call is None:
+            self.report(ProfileOSError("בחר קריאה מהרשימה"), "לא נבחרה קריאה")
+            return
+        minutes, ok = QInputDialog.getInt(
+            self, "בדרך ללקוח", "בעוד כמה דקות מגיעים? (0 — בלי זמן)", 30, 0, 600, 5
+        )
+        if not ok:
+            return
+        message = on_the_way_message(
+            brand_name=active_brand().display_name, customer_name=call.customer_name,
+            minutes=minutes,
+        )
+        QDesktopServices.openUrl(QUrl(whatsapp_link(call.phone, message)))
+        self.status("נפתח וואטסאפ עם ההודעה ללקוח")
+
+    def close_call(self) -> None:
+        """Close the selected call with the cause, which is the whole point."""
+        from datetime import date as _date
+
+        from .dialogs import CloseServiceCallDialog
+
+        call = self._selected()
+        if call is None:
+            self.report(ProfileOSError("בחר קריאה מהרשימה"), "לא נבחרה קריאה")
+            return
+        dialog = CloseServiceCallDialog(self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        from ..service import Cause
+
+        values = dialog.values()
+        try:
+            call.close(
+                _date.today(),
+                Cause(values["cause"]),
+                minutes=values["minutes"],
+                engineer=values["engineer"],
+                note=values["note"],
+                charged=values["charged"],
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "הסגירה נכשלה")
+            return
+        self._register().update(call)
+        self.refresh()
+        self.status(f"נסגרה {call.call_id} — {call.cause.hebrew}")
+
+    def _selected(self) -> Any:
+        model = self.calls_table.selectionModel()
+        if model is None or not model.selectedRows():
+            return None
+        index = model.selectedRows()[0].row()
+        return self._calls[index] if index < len(self._calls) else None
+
+    def refresh(self) -> None:
+        from datetime import date as _date
+
+        from ..service import WARRANTY_HEBREW, WARRANTY_MONTHS
+
+        register = self._register()
+        self._calls = register.all()
+
+        rows: list[list[Any]] = []
+        colours: dict[tuple[int, int], str] = {}
+        today = _date.today()
+        for index, call in enumerate(self._calls):
+            covered = call.under_warranty
+            warranty_text = (
+                "לא ידוע" if covered is None else ("באחריות" if covered else "מחוץ לאחריות")
+            )
+            rows.append([
+                call.call_id, call.customer_name, call.element_name or "—",
+                call.symptom.hebrew,
+                call.opened.strftime("%d/%m/%Y"),
+                call.due_by().strftime("%d/%m/%Y"),
+                call.state.hebrew, warranty_text, call.cause.hebrew,
+            ])
+            if call.is_overdue(today):
+                colours[(index, 5)] = self.colours.danger
+            elif call.state.is_open:
+                colours[(index, 6)] = self.colours.warning
+            if covered is False:
+                colours[(index, 7)] = self.colours.text_muted
+        self.calls_table.set_rows(rows, colours=colours)
+        if rows and self.calls_table.currentRow() < 0:
+            self.calls_table.setCurrentCell(0, 0)
+
+        self.patterns_table.set_rows(
+            [[label, count] for label, count in register.recurring(minimum=2)],
+            numeric_columns=(1,),
+        )
+        self.warranty_table.set_rows(
+            [[WARRANTY_HEBREW.get(key, key), months]
+             for key, months in WARRANTY_MONTHS.items()],
+            numeric_columns=(1,),
+        )
+
+        quality = register.cost_of_quality()
+        performance = register.response_performance()
+        self.stats.update_many({
+            "open": (str(len(register.open_calls())), ""),
+            "overdue": (str(len(register.overdue(today))), ""),
+            "ours": (f"{quality['hours_our_fault']:.1f}", "חזרות לאתר"),
+            "charged": (f"{quality['recovered']:,.0f}", "₪"),
+            "ontime": (f"{performance['within_target']:.0f}%", f"{performance['closed']} נסגרו"),
+        })
+
+
+# --------------------------------------------------------------------------- #
+# Collection
+# --------------------------------------------------------------------------- #
+
+class CollectionPage(Page):
+    """Cheques: money that has been promised but is not money yet.
+
+    A customer who hands over five post-dated cheques has paid in a sense no
+    ledger recognises. This screen is the drawer they are kept in, and the
+    only place that says which of them can be banked this morning.
+    """
+
+    title = "Collection"
+    hebrew = "גבייה"
+    subtitle = "צ׳קים דחויים, מה נפרע ומה חזר"
+
+    def build(self) -> None:
+        add = QPushButton("קבלת צ׳קים")
+        add.setObjectName("Primary")
+        add.clicked.connect(self.new_cheque)
+        self.header.add_action(add)
+
+        statement = QPushButton("דף בנק…")
+        statement.setToolTip("ייבוא תנועות מהבנק — התאמה לצ׳קים שהופקדו, לצ׳קים לספקים ולתשלומים")
+        statement.clicked.connect(self.import_bank)
+        self.header.add_action(statement)
+
+        pay = QPushButton("צ׳ק לספק")
+        pay.setToolTip("צ׳ק שכתבתם לספק או לקבלן — יוצא מהחשבון בתאריך שלו")
+        pay.clicked.connect(lambda: self.new_cheque(outgoing=True))
+        self.header.add_action(pay)
+
+        deposit = QPushButton("הפקדה")
+        deposit.clicked.connect(self.deposit)
+        self.header.add_action(deposit)
+
+        # Money that landed is told apart from money that is only promised.
+        cleared = QPushButton("נפרע")
+        cleared.setToolTip("הכסף נכנס לחשבון — או, לצ׳ק שכתבתם, ירד ממנו")
+        cleared.clicked.connect(self.mark_cleared)
+        self.header.add_action(cleared)
+
+        bounce = QPushButton("סימון כחוזר")
+        bounce.clicked.connect(self.bounce)
+        self.header.add_action(bounce)
+
+        remind = QPushButton("תזכורת בוואטסאפ")
+        remind.setObjectName("WhatsApp")
+        remind.clicked.connect(self.remind_customer)
+        self.header.add_action(remind)
+
+        self.stats = StatRow([
+            ("in_hand", "במגירה ₪"), ("bankable", "להפקדה היום ₪"),
+            ("bounced", "חזרו ₪"), ("days", "ימי אשראי ממוצעים"),
+        ])
+        self.body.addWidget(self.stats)
+
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+
+        cheques = Card("צ׳קים")
+        self.cheques_table = DataTable(
+            ["מספר", "לקוח / ספק", "סכום", "לפירעון", "בנק", "עבודה", "מצב"],
+            empty_text="אין צ׳קים בספר — לחצו ״קבלת צ׳קים״",
+        )
+        cheques.add(self.cheques_table, 1)
+        splitter.addWidget(cheques)
+
+        side = QWidget()
+        side_layout = QVBoxLayout(side)
+        side_layout.setContentsMargins(0, 0, 0, 0)
+        side_layout.setSpacing(METRICS.space(3))
+
+        flow = Card("תזרים: נכנס ויוצא")
+        balance_row = QHBoxLayout()
+        caption = QLabel("יתרה בבנק")
+        caption.setObjectName("FieldLabel")
+        balance_row.addWidget(caption)
+        self.bank_balance = QDoubleSpinBox()
+        self.bank_balance.setRange(-10_000_000, 100_000_000)
+        self.bank_balance.setDecimals(0)
+        self.bank_balance.setSuffix(" ₪")
+        self.bank_balance.setGroupSeparatorShown(True)
+        balance_row.addWidget(self.bank_balance, 1)
+        keep = QPushButton("עדכון")
+        keep.setToolTip("היתרה כפי שהיא היום בחשבון — נקודת ההתחלה של התזרים")
+        keep.clicked.connect(self.save_bank_balance)
+        balance_row.addWidget(keep)
+        flow.add_layout(balance_row)
+        self.balance_note = QLabel("")
+        self.balance_note.setObjectName("Hint")
+        self.balance_note.setWordWrap(True)
+        flow.add(self.balance_note)
+        self.flow_table = DataTable(
+            ["שבוע", "נכנס", "יוצא", "יתרה"],
+            empty_text="אין צ׳קים דחויים — לא נכנסים ולא יוצאים",
+        )
+        flow.add(self.flow_table, 1)
+        side_layout.addWidget(flow, 1)
+
+        risk = Card("לקוחות בסיכון")
+        self.risk_table = DataTable(
+            ["לקוח", "חזרו", "שיעור"],
+            empty_text="אף צ׳ק לא חזר",
+        )
+        risk.add(self.risk_table, 1)
+        note = QLabel(
+            "צ׳ק אינו הכנסה עד שהוא נפרע. הוא לא נרשם בספרים כאן בכוונה — "
+            "רגע שרושמים אותו כתקבול, מפסיקים לשים לב שלקוח משלם בנייר."
+        )
+        note.setObjectName("Hint")
+        note.setWordWrap(True)
+        risk.add(note)
+        side_layout.addWidget(risk, 1)
+
+        splitter.addWidget(side)
+        splitter.setStretchFactor(0, 2)
+        splitter.setStretchFactor(1, 1)
+        splitter.setSizes([METRICS.panel_width * 2, METRICS.panel_width])
+        self.body.addWidget(splitter, 1)
+
+        self._book = None
+        self._cheques: list[Any] = []
+
+    def book(self) -> Any:
+        """The drawer — on disk, so a cheque typed in is still there tomorrow."""
+        from ..erp.collection import ChequeBook, default_cheques
+
+        if self._book is None:
+            try:
+                self._book = self.checked_book(default_cheques(), "מגירת הצ׳קים")
+            except Exception as exc:  # noqa: BLE001 - say so, never silently lose
+                _log.exception("Cheque drawer unreadable")
+                self.report(exc, "לא ניתן לקרוא את מגירת הצ׳קים")
+                # Shown read-only: an empty drawer here would let a cheque be
+                # "saved" to nowhere. ``_save`` refuses while this is so.
+                self._book = ChequeBook()
+        return self._book
+
+    def _save(self) -> bool:
+        """Write the drawer. On failure the screen goes back to what is on
+        disk, so it never shows a cheque that was not actually kept."""
+        book = self.book()
+        if book.path is None or getattr(book, "damaged", None) is not None:
+            self.report(
+                ProfileOSError(
+                    "מגירת הצ׳קים לא נטענה מהדיסק, ולכן השינוי לא נשמר. "
+                    "שחזרו את הקובץ מגיבוי (מערכת ← גיבוי ושחזור) ונסו שוב."
+                ),
+                "השינוי לא נשמר",
+            )
+            self._book = None
+            return False
+        try:
+            book.save()
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "שמירת הצ׳קים נכשלה — השינוי לא נשמר")
+            self._book = None
+            return False
+        return True
+
+    @staticmethod
+    def _jobs_for_cheques() -> list[Any]:
+        """The jobs a cheque can be for: open ones and recent ones, newest first."""
+        try:
+            from ..projects import JobStatus, default_store
+
+            jobs = [job for job in default_store().all() if job.status is not JobStatus.LOST]
+        except Exception:  # noqa: BLE001 - a cheque can be taken without a job
+            return []
+        return sorted(jobs, key=lambda job: job.updated or "", reverse=True)
+
+    def import_bank(self, path: Any = None) -> int:
+        """The bank's export, matched to what the shop expects; applied only
+        where ticked. Returns how many lines were applied."""
+        from ..core.config import get_settings, save_settings
+        from ..erp import bankimport
+        from ..migration.reader import read_table
+        from .dialogs import BankImportDialog
+        from .widgets import documents_dir
+
+        if path is None:
+            path, _ = QFileDialog.getOpenFileName(
+                self, "דף בנק", str(documents_dir()), "Excel / CSV (*.xlsx *.csv *.txt)")
+            if not path:
+                return 0
+        try:
+            headers = read_table(Path(path), expected=[
+                w for words in bankimport.FIELDS.values() for w in words]).headers
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "הקובץ לא נקרא")
+            return 0
+        settings = get_settings()
+        columns = dict(settings.bank_columns) or bankimport.guess_columns(headers)
+
+        def read(chosen: dict[str, str]) -> Any:
+            from ..projects import default_store
+
+            lines, _skipped = bankimport.read_statement(Path(path), chosen)
+            return bankimport.match(lines, cheques=list(self.book()),
+                                    jobs=default_store().all(), seen=bankimport.applied_keys())
+
+        dialog = BankImportDialog(path, headers, columns, read=read, parent=self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return 0
+        chosen = dialog.chosen()
+        # The columns the matches were read with — not boxes changed after.
+        settings.bank_columns = dict(dialog.read_with)
+        try:
+            save_settings(settings)
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "בחירת העמודות לא נשמרה — בפעם הבאה תתבקשו לבחור שוב")
+        return self._apply_bank(chosen)
+
+    def _apply_bank(self, chosen: list[Any]) -> int:
+        from ..erp import bankimport
+        from ..projects import Payment, PaymentMethod, default_store
+
+        applied: list[str] = []
+        store = default_store()
+        book = self.book()
+        for found in chosen:
+            line = found.line
+            try:
+                if found.kind in ("clear", "paid_out"):
+                    cheque = book.get(found.target.cheque_id)
+                    if cheque is None:
+                        continue
+                    cheque.clear(line.on)
+                elif found.kind == "bounce":
+                    cheque = book.get(found.target.cheque_id)
+                    if cheque is None:
+                        continue
+                    cheque.bounce(line.on, reason=line.text or "חזר בבנק")
+                elif found.kind == "payment":
+                    job = store.load(found.target.job_id)
+                    job.payments.append(Payment(
+                        amount=line.amount, method=PaymentMethod.TRANSFER, on=line.on.isoformat(),
+                        reference=f"בנק ⁦{line.on:%d/%m/%Y}⁩ {line.reference}".strip(),
+                        note=line.text[:200]))
+                    job.touch()
+                    store.save(job)
+                applied.append(line.key)
+            except Exception as exc:  # noqa: BLE001 - said; the others go on
+                self.report(exc, f"שורה לא הוחלה: {line.describe()}")
+        if any(found.kind != "payment" for found in chosen):
+            if not self._save():
+                # The drawer was not written: the cheque lines are not remembered.
+                applied = [found.line.key for found in chosen
+                           if found.kind == "payment" and found.line.key in applied]
+        try:
+            bankimport.remember(applied)
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "לא נשמר אילו שורות טופלו — ייבוא חוזר יציע אותן שוב")
+        self.refresh()
+        self.status(f"הוחלו ⁦{len(applied)}⁩ שורות מדף הבנק")
+        return len(applied)
+
+    def save_bank_balance(self) -> None:
+        from datetime import date
+
+        from ..core.config import get_settings, save_settings
+
+        settings = get_settings()
+        settings.bank_balance = float(self.bank_balance.value())
+        settings.bank_balance_on = date.today().isoformat()
+        try:
+            save_settings(settings)
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "היתרה לא נשמרה")
+            return
+        self.refresh()
+
+    def new_cheque(self, *, job: Any = None, outgoing: bool = False) -> int:
+        """Take one cheque or a whole series — or, ``outgoing``, record the
+        cheques written to a supplier. Returns how many were recorded."""
+        from .dialogs import NewChequeDialog
+
+        dialog = NewChequeDialog(self, jobs=self._jobs_for_cheques(), job=job, outgoing=outgoing)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return 0
+        try:
+            cheques = dialog.series()
+            for cheque in cheques:
+                self.book().add(cheque)
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "לא ניתן לרשום את הצ׳קים")
+            return 0
+        if not self._save():
+            self.refresh()
+            return 0
+        self.refresh()
+        total = sum(c.amount for c in cheques)
+        whom = ("ל" if outgoing else "מ") + cheques[0].customer
+        self.status(
+            f"נרשם צ׳ק ⁦{total:,.0f} ₪⁩ {whom}" if len(cheques) == 1
+            else f"נרשמו ⁦{len(cheques)}⁩ צ׳קים, סה״כ ⁦{total:,.0f} ₪⁩, {whom}"
+        )
+        return len(cheques)
+
+    def mark_cleared(self) -> None:
+        """The selected cheque cleared — or, with none selected, every cheque
+        deposited up to yesterday (the bank shows a batch as one line)."""
+        from datetime import date, timedelta
+
+        cheque = self._selected()
+        if cheque is not None and (cheque.state.value == "deposited"
+                                   or (cheque.outgoing and cheque.state.value == "held")):
+            try:
+                cheque.clear()
+            except Exception as exc:  # noqa: BLE001
+                self.report(exc, "לא ניתן לסמן")
+                return
+            self._save()
+            self.refresh()
+            self.status(
+                f"ירד מהחשבון: ⁦{cheque.amount:,.0f} ₪⁩ ל{cheque.customer}" if cheque.outgoing
+                else f"נפרע: ⁦{cheque.amount:,.0f} ₪⁩ מ{cheque.customer}")
+            return
+        up_to = date.today() - timedelta(days=1)
+        waiting = [c for c in self.book().deposited()
+                   if c.deposited_on is not None and c.deposited_on <= up_to]
+        if not waiting:
+            self.report(ProfileOSError(
+                "בחרו צ׳ק שהופקד — או שאין צ׳קים שהופקדו עד אתמול ועוד לא סומנו כנפרעו"
+            ), "אין מה לסמן")
+            return
+        total = sum(c.amount for c in waiting)
+        answer = QMessageBox.question(
+            self, "סימון כנפרעו",
+            f"⁦{len(waiting)}⁩ צ׳קים שהופקדו עד אתמול, סה״כ ⁦{total:,.0f} ₪⁩. "
+            "לסמן את כולם כנפרעו (הכסף נכנס לחשבון)?",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        self.book().clear_deposited(up_to=up_to)
+        self._save()
+        self.refresh()
+        self.status(f"סומנו כנפרעו ⁦{len(waiting)}⁩ צ׳קים, ⁦{total:,.0f} ₪⁩")
+
+    def _selected(self) -> Any:
+        model = self.cheques_table.selectionModel()
+        if model is None or not model.selectedRows():
+            return None
+        index = model.selectedRows()[0].row()
+        return self._cheques[index] if index < len(self._cheques) else None
+
+    def deposit(self) -> None:
+        cheque = self._selected()
+        if cheque is None:
+            self.report(ProfileOSError("בחר צ׳ק מהרשימה"), "לא נבחר צ׳ק")
+            return
+        try:
+            cheque.deposit()
+        except Exception as exc:  # noqa: BLE001 - a post-dated cheque says why
+            self.report(exc, "אי אפשר להפקיד")
+            return
+        self._save()
+        self.refresh()
+        self.status(f"הופקד ⁦{cheque.amount:,.0f} ₪⁩")
+
+    def remind_customer(self) -> None:
+        """A polite, specific reminder about one cheque, ready to send."""
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+
+        from ..branding import active_brand
+        from ..erp.collection import ChequeState
+        from ..sharing import cheque_message, phone_for, whatsapp_link, whatsapp_number
+
+        cheque = self._selected()
+        if cheque is None:
+            self.report(ProfileOSError("בחר צ׳ק מהרשימה"), "לא נבחר צ׳ק")
+            return
+        if cheque.outgoing:
+            self.report(ProfileOSError("תזכורת נשלחת ללקוח על צ׳ק שלו — זה צ׳ק שנתתם לספק"),
+                        "אין למי להזכיר")
+            return
+        brand = active_brand()
+        phone = phone_for(job_id=cheque.job_id, customer_name=cheque.customer)
+        message = cheque_message(
+            brand_name=brand.document_name,
+            customer_name=cheque.customer,
+            amount=cheque.amount,
+            due=cheque.due,
+            bounced=cheque.state is ChequeState.BOUNCED,
+            phone=brand.phone or "",
+        )
+        QDesktopServices.openUrl(QUrl(whatsapp_link(phone, message)))
+        self.status(
+            "נפתח וואטסאפ עם תזכורת"
+            + ("" if whatsapp_number(phone) else " — ללקוח אין טלפון בתיק, בחר צ׳אט")
+        )
+
+    def bounce(self) -> None:
+        cheque = self._selected()
+        if cheque is None:
+            self.report(ProfileOSError("בחר צ׳ק מהרשימה"), "לא נבחר צ׳ק")
+            return
+        if cheque.outgoing:
+            self.report(ProfileOSError(
+                "זה צ׳ק שנתתם לספק — אם הוא חזר, הספק יפנה אליכם; רשמו צ׳ק חדש במקומו"),
+                "לא סומן")
+            return
+        cheque.bounce(reason="חזר")
+        self._save()
+        self.refresh()
+        self.status(f"סומן כחוזר: ⁦{cheque.amount:,.0f} ₪⁩", )
+
+    def refresh(self) -> None:
+        book = self.book()
+        self._cheques = list(book)
+
+        rows: list[list[Any]] = []
+        colours: dict[tuple[int, int], str] = {}
+        bankable = {cheque.cheque_id for cheque in book.bankable()}
+        from ..erp.collection import ChequeState
+
+        out_words = {ChequeState.HELD: "נמסר לספק", ChequeState.CLEARED: "ירד מהחשבון"}
+        for index, cheque in enumerate(self._cheques):
+            rows.append([
+                cheque.number or cheque.cheque_id,
+                ("לספק: " if cheque.outgoing else "") + cheque.customer,
+                f"⁦−{cheque.amount:,.0f}⁩" if cheque.outgoing else f"{cheque.amount:,.0f}",
+                cheque.due.strftime("%d/%m/%Y"),
+                cheque.bank or "—", f"⁦{cheque.job_id}⁩" if cheque.job_id else "—",
+                out_words.get(cheque.state, cheque.state.hebrew) if cheque.outgoing
+                else cheque.state.hebrew,
+            ])
+            if cheque.outgoing:
+                colours[(index, 2)] = self.colours.warning
+                continue
+            if cheque.state is ChequeState.BOUNCED:
+                colours[(index, 6)] = self.colours.danger
+            elif cheque.cheque_id in bankable:
+                colours[(index, 3)] = self.colours.success
+            elif cheque.state is ChequeState.CLEARED:
+                colours[(index, 6)] = self.colours.success
+        self.cheques_table.set_rows(rows, numeric_columns=(2,), colours=colours)
+
+        from datetime import date
+
+        from ..core.config import get_settings
+
+        settings = get_settings()
+        opening = settings.bank_balance
+        if opening is not None:
+            self.bank_balance.blockSignals(True)
+            self.bank_balance.setValue(opening)
+            self.bank_balance.blockSignals(False)
+            try:
+                since = (date.today() - date.fromisoformat(settings.bank_balance_on)).days
+            except ValueError:
+                since = 0
+            self.balance_note.setText(
+                f"היתרה עודכנה לפני ⁦{since}⁩ ימים — עדכנו אותה כדי שהתזרים יהיה נכון"
+                if since > 7 else "")
+        else:
+            self.balance_note.setText(
+                "בלי יתרת הבנק, ״יתרה״ היא רק מה שנכנס פחות מה שיוצא בצ׳קים")
+        try:
+            balance_on = date.fromisoformat(settings.bank_balance_on) if opening is not None else None
+        except ValueError:
+            balance_on = None
+        flow = book.two_sided(opening=opening or 0.0, balance_on=balance_on)
+        flow_colours = {(index, 3): self.colours.danger
+                        for index, row in enumerate(flow) if row["balance"] < 0}
+        self.flow_table.set_rows(
+            [[f"⁦{row['week']:%d/%m}⁩", f"{row['in']:,.0f}" if row["in"] else "—",
+              f"{row['out']:,.0f}" if row["out"] else "—", f"⁦{row['balance']:,.0f}⁩"]
+             for row in flow],
+            numeric_columns=(1, 2, 3), colours=flow_colours,
+        )
+        self.risk_table.set_rows(
+            [[customer, count, f"{rate:.0f}%"]
+             for customer, count, rate in book.risky_customers(minimum=1)],
+            numeric_columns=(1,),
+        )
+
+        summary = book.summary()
+        self.stats.update_many({
+            "in_hand": (f"{summary['in_hand']:,.0f}", f"⁦{summary['in_hand_count']}⁩ צ׳קים"),
+            "bankable": (f"{summary['bankable_today']:,.0f}", ""),
+            "bounced": (f"{summary['bounced']:,.0f}", ""),
+            "days": (f"{summary['average_days_out']:.0f}", "ימים"),
+        })
+
+
+# --------------------------------------------------------------------------- #
+# Delivery
+# --------------------------------------------------------------------------- #
+
+class DeliveryPage(Page):
+    """Loading the lorry in the order the units come off it.
+
+    The last thing that happens in the workshop is the one nobody plans:
+    finished units loaded in the order they were glazed, arriving at a site
+    that wants the ground floor first. This screen is the fix, and it costs
+    one look at it.
+    """
+
+    title = "Delivery"
+    hebrew = "הובלה והרכבה"
+    subtitle = "רשימת העמסה בסדר ההרכבה, ותכנון ימי ההרכבה"
+
+    def build(self) -> None:
+        plan = QPushButton("תכנן")
+        plan.setObjectName("Primary")
+        plan.clicked.connect(self.replan)
+        self.header.add_action(plan)
+
+        handover = QPushButton("תיק מסירה...")
+        handover.clicked.connect(self.export_handover)
+        self.header.add_action(handover)
+
+        self.stats = StatRow([
+            ("loads", "הובלות"), ("pieces", "יחידות"), ("mass", "משקל ק״ג"),
+            ("days", "ימי הרכבה"), ("finish", "סיום צפוי"),
+        ])
+        self.body.addWidget(self.stats)
+
+        controls = QHBoxLayout()
+        controls.setSpacing(METRICS.space(3))
+
+        self.vehicle = QComboBox()
+        from ..delivery import VEHICLES
+
+        for lorry in VEHICLES:
+            self.vehicle.addItem(
+                f"{lorry.hebrew} · ⁦{lorry.payload_kg:,.0f}⁩ ק״ג", lorry.name
+            )
+        self.vehicle.setCurrentIndex(2)
+
+        self.condition = QComboBox()
+        from ..delivery import Access as _Access, SiteCondition as _Condition
+
+        for condition in _Condition:
+            self.condition.addItem(condition.hebrew, condition.value)
+
+        self.access = QComboBox()
+        for access in _Access:
+            self.access.addItem(access.hebrew, access.value)
+
+        self.crew_size = QSpinBox()
+        self.crew_size.setRange(1, 8)
+        self.crew_size.setValue(2)
+        self.crew_size.setSuffix(" אנשים")
+
+        for label, widget in (
+            ("רכב", self.vehicle), ("תנאי האתר", self.condition),
+            ("גישה", self.access), ("צוות", self.crew_size),
+        ):
+            caption = QLabel(label)
+            caption.setObjectName("FieldLabel")
+            controls.addWidget(caption)
+            controls.addWidget(widget)
+        controls.addStretch(1)
+        self.body.addLayout(controls)
+
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+
+        loading = Card("רשימת העמסה")
+        self.loads_table = DataTable(
+            ["הובלה", "סימון", "מיקום", "קומה", "מידה", "כמות", "ק״ג", "נשיאה", "אביזרים"],
+            empty_text="תכנן פתחים ולחץ ״תכנן״ — הרשימה נבנית מהעבודה שעל השולחן",
+        )
+        loading.add(self.loads_table, 1)
+        splitter.addWidget(loading)
+
+        side = QWidget()
+        side_layout = QVBoxLayout(side)
+        side_layout.setContentsMargins(0, 0, 0, 0)
+        side_layout.setSpacing(METRICS.space(3))
+
+        schedule = Card("ימי הרכבה")
+        self.days_table = DataTable(
+            ["יום", "תאריך", "יחידות", "שעות"],
+            empty_text="אין תכנון עדיין",
+        )
+        schedule.add(self.days_table, 1)
+        side_layout.addWidget(schedule, 1)
+
+        notes = Card("לשים לב")
+        # A plain text edit does not inherit the application's direction, so
+        # a Hebrew line with a number in it comes out shuffled unless both the
+        # widget and its document are told which way the text runs.
+        self.delivery_notes = QPlainTextEdit()
+        self.delivery_notes.setReadOnly(True)
+        self.delivery_notes.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
+        option = self.delivery_notes.document().defaultTextOption()
+        option.setTextDirection(Qt.LayoutDirection.RightToLeft)
+        option.setAlignment(Qt.AlignmentFlag.AlignRight)
+        self.delivery_notes.document().setDefaultTextOption(option)
+        notes.add(self.delivery_notes, 1)
+        side_layout.addWidget(notes, 1)
+
+        splitter.addWidget(side)
+        splitter.setStretchFactor(0, 2)
+        splitter.setStretchFactor(1, 1)
+        splitter.setSizes([METRICS.panel_width * 2, METRICS.panel_width])
+        self.body.addWidget(splitter, 1)
+
+    def refresh(self) -> None:
+        self.replan()
+
+    def replan(self) -> None:
+        """Rebuild the load list and the fitting days from the open work."""
+        from ..delivery import (
+            Access, Crew, SiteCondition, pack, plan_installation, units_from_builds,
+        )
+
+        builds = self.session.builds
+        if not builds:
+            self.loads_table.set_rows([])
+            self.days_table.set_rows([])
+            self.delivery_notes.setPlainText(
+                "אין פתחים בעבודה. תכנן פתחים בעמוד ״פתח״ ואז חזור לכאן."
+            )
+            self.stats.update_many({
+                key: ("—", "") for key in
+                ("loads", "pieces", "mass", "days", "finish")
+            })
+            return
+
+        units = units_from_builds(builds)
+        packing = pack(units, vehicle_name=self.vehicle.currentData())
+        plan = plan_installation(
+            units,
+            crew=Crew(name="צוות א׳", people=self.crew_size.value()),
+            condition=SiteCondition(self.condition.currentData()),
+            access=Access(self.access.currentData()),
+        )
+
+        rows: list[list[Any]] = []
+        colours: dict[tuple[int, int], str] = {}
+        index = 0
+        for load in packing.loads:
+            for unit in load.units:
+                rows.append([
+                    load.number, unit.mark, unit.location or "—", unit.floor,
+                    f"{unit.width:.0f}×{unit.height:.0f}", unit.quantity,
+                    f"{unit.total_mass:.1f}", unit.handling.hebrew,
+                    ", ".join(unit.accessories) or "—",
+                ])
+                if unit.handling.people >= 4:
+                    colours[(index, 7)] = self.colours.warning
+                index += 1
+        self.loads_table.set_rows(rows, numeric_columns=(0, 3, 5, 6), colours=colours)
+
+        self.days_table.set_rows(
+            [
+                [number, day.strftime("%d/%m/%Y"), len(tasks),
+                 f"{sum(task.minutes for task in tasks) / 60.0:.1f}"]
+                for number, (day, tasks) in enumerate(plan.days, start=1)
+            ],
+            numeric_columns=(0, 2, 3),
+        )
+
+        notes = [load.describe() for load in packing.loads]
+        notes.extend(packing.warnings)
+        notes.extend(plan.warnings)
+        self.delivery_notes.setPlainText("\n".join(f"• {note}" for note in notes))
+
+        summary = packing.summary()
+        self.stats.update_many({
+            "loads": (str(summary["loads"]), "נדרש מנוף" if summary["crane"] else ""),
+            "pieces": (str(summary["pieces"]), ""),
+            "mass": (f"{summary['mass_kg']:,.0f}", ""),
+            "days": (str(len(plan.days)), f"{plan.person_hours:.0f} שעות-אדם"),
+            "finish": (
+                plan.finish.strftime("%d/%m") if plan.finish else "—",
+                plan.finish.strftime("%Y") if plan.finish else "",
+            ),
+        })
+
+
+    def export_handover(self) -> None:
+        """The folder the customer keeps, and the warranty that starts with it.
+
+        Written at handover rather than reconstructed three years later from
+        whatever anybody remembers, which is how a claim in year four is
+        currently settled.
+        """
+        from datetime import date as _date
+
+        from ..delivery.handover import pack_from_job, write_handover
+
+        builds = self.session.builds
+        if not builds:
+            self.report(
+                ProfileOSError(
+                    "אין פתחים בעבודה. תכנן פתחים בעמוד ״פתח״ ואז חזור לכאן."
+                ),
+                "אין מה למסור",
+            )
+            return
+
+        job = getattr(self.session, "job", None)
+        from ..branding import active_brand
+
+        brand = active_brand()
+        contact = " · ".join(
+            part for part in (brand.display_name, getattr(brand, "phone", ""))
+            if part
+        )
+        pack = pack_from_job(
+            job if job is not None else _EmptyJob(),
+            builds=builds,
+            handed_over_on=_date.today(),
+            service_contact=contact,
+        )
+
+        problems = pack.problems()
+        if problems:
+            self.status(" · ".join(problems[:3]))
+
+        path, _ = QFileDialog.getSaveFileName(
+            self, "שמירת תיק מסירה", suggested_path("handover.html"), "HTML (*.html)"
+        )
+        if not path:
+            return
+        write_handover(pack, path)
+        self.status(f"{pack.describe()} · {path}")
+
+
+class _EmptyJob:
+    """Stands in when work is on the table but no job file is open."""
+
+    job_id = ""
+    name = ""
+    customer_name = ""
+    site_address = ""
+
+
+# --------------------------------------------------------------------------- #
+# Catalogue
+# --------------------------------------------------------------------------- #
+
+def _short_date(text: str) -> str:
+    """An ISO date as the shop reads it, isolated from the Hebrew around it."""
+    from datetime import date
+
+    try:
+        return f"{date.fromisoformat(str(text)[:10]):%d/%m/%Y}"
+    except ValueError:
+        return str(text)
+
+
+class CataloguePage(Page):
+    """Build an owned profile library from what suppliers publish."""
+
+    title = "Catalogue"
+    hebrew = "קטלוג"
+    subtitle = "קריאת שרטוטי יצרן וטבלאות לספרייה שבבעלותך"
+
+    def build(self) -> None:
+        self._system_ids: list[str] = []
+
+        run = QPushButton("קליטה")
+        run.setObjectName("Primary")
+        run.clicked.connect(self.run)
+        self.header.add_action(run)
+
+        edition = QPushButton("שמירה כמהדורה…")
+        edition.setToolTip("לשמור את מה שנקלט ולהשוות למהדורה הקודמת של הסדרה")
+        edition.clicked.connect(self.record_edition)
+        self.header.add_action(edition)
+
+        export = QPushButton("שמירה כתוסף")
+        export.clicked.connect(self.export_plugin)
+        self.header.add_action(export)
+
+        self.stats = StatRow([
+            ("articles", "פריטים"), ("geometry", "עם גאומטריה"),
+            ("verified", "מאומתים"), ("conflicts", "סתירות"),
+            ("unmatched", "ללא התאמה"),
+        ])
+        self.body.addWidget(self.stats)
+
+        tabs = QTabWidget()
+        tabs.addTab(self._systems_tab(), "מערכות")
+        self.ingest_page = self._ingest_tab()
+        tabs.addTab(self.ingest_page, "קליטת קטלוג")
+        self.updates_page = self._updates_tab()
+        tabs.addTab(self.updates_page, "עדכוני ספקים")
+        self.prices_page = self._prices_tab()
+        tabs.addTab(self.prices_page, "מחירוני ספקים")
+        self.body.addWidget(tabs, 1)
+        self.tabs = tabs
+        # The intake figures belong to the intake: elsewhere they are empty
+        # boxes taking the room the tables need.
+        tabs.currentChanged.connect(
+            lambda _index: self.stats.setVisible(tabs.currentWidget() is self.ingest_page)
+        )
+        self.stats.setVisible(False)
+
+    # -- supplier price lists ------------------------------------------------ #
+    def _prices_tab(self) -> QWidget:
+        """Every supplier's price list, edition by edition, and what each one
+        does to the quotations out and the jobs not yet ordered."""
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, METRICS.space(3), 0, 0)
+        layout.setSpacing(METRICS.space(3))
+
+        buttons = QHBoxLayout()
+        buttons.setSpacing(METRICS.space(2))
+        take = QPushButton("קליטת מחירון…")
+        take.setObjectName("Primary")
+        take.setToolTip("קובץ Excel או CSV מהספק: מק״ט, תיאור, מחיר, יחידה")
+        take.clicked.connect(lambda: self.import_price_list())
+        letter = QPushButton("שינוי באחוזים…")
+        letter.setToolTip("הספק הודיע ״+4% על הכול מ־1/12״ בלי קובץ חדש")
+        letter.clicked.connect(self.record_price_letter)
+        accept = QPushButton("אישור המחירון")
+        accept.clicked.connect(lambda: self._decide_price_list(True))
+        reject = QPushButton("דחייה")
+        reject.clicked.connect(lambda: self._decide_price_list(False))
+        for button in (take, letter, accept, reject):
+            buttons.addWidget(button)
+        buttons.addStretch(1)
+        layout.addLayout(buttons)
+
+        row = QSplitter(Qt.Orientation.Horizontal)
+        self.price_lists_table = DataTable(
+            ["ספק", "מקור", "בתוקף מ־", "מצב", "שינוי", "פריטים"],
+            empty_text="קלטו את המחירון שהספק שלח (Excel או CSV) — התוכנה תשווה "
+                       "אותו לקודם ותראה אילו הצעות ופרויקטים הוא משנה",
+        )
+        self.price_lists_table.itemSelectionChanged.connect(self._show_price_list)
+        row.addWidget(self.price_lists_table)
+        self.price_list_detail = QPlainTextEdit()
+        self.price_list_detail.setReadOnly(True)
+        self.price_list_detail.setPlaceholderText("בחרו מחירון כדי לראות מה השתנה ואת מי זה מזיז")
+        row.addWidget(self.price_list_detail)
+        row.setStretchFactor(0, 3)
+        row.setStretchFactor(1, 2)
+        layout.addWidget(row, 1)
+
+        note = QLabel(
+            "הצעות מחיר מתומחרות מהמחירון שבתוקף. מחירון חדש לא משנה אף מחיר עד "
+            "שמאשרים אותו; ותאריך תחולה עתידי נותן זמן להזמין חומר במחיר הישן."
+        )
+        note.setObjectName("Hint")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        self._price_list_ids: list[str] = []
+        return page
+
+    def _refresh_price_lists(self) -> None:
+        from ..quoting.pricelists import ListState, default_price_lists
+
+        book = self.checked_book(default_price_lists(), "מחירוני הספקים")
+        editions = list(book)
+        self._price_list_ids = [e.edition_id for e in editions]
+        rows, colours = [], {}
+        tint = {
+            ListState.PENDING: self.colours.warning,
+            ListState.ACCEPTED: self.colours.success,
+            ListState.REJECTED: self.colours.text_faint,
+        }
+        for index, edition in enumerate(editions):
+            rows.append([
+                edition.supplier, edition.source, _short_date(edition.effective),
+                book.state_text(edition),
+                book.diff(edition).summary(), len(edition.prices),
+            ])
+            state = book.state_text(edition)
+            colours[(index, 3)] = (
+                self.colours.text_faint if state == "הוחלף"
+                else self.colours.warning if state == "ייכנס לתוקף"
+                else tint.get(edition.state, self.colours.text)
+            )
+        self.price_lists_table.clearSelection()
+        self.price_lists_table.set_rows(rows, numeric_columns=(5,), colours=colours)
+        self.price_list_detail.clear()
+
+    def _show_price_list(self) -> None:
+        from ..quoting.pricelists import ListState, default_price_lists, impact
+
+        edition_id = self._selected(self.price_lists_table, self._price_list_ids)
+        book = default_price_lists()
+        edition = book.get(edition_id)
+        if edition is None:
+            return
+        lines = [
+            f"\u2068{edition.supplier}\u2069 — \u2068{edition.source}\u2069 · {edition.currency}",
+            f"בתוקף מ־⁦{_short_date(edition.effective)}⁩ · ⁦{len(edition.prices)}⁩ פריטים"
+            + (f" · נקלט על ידי {edition.recorded_by}" if edition.recorded_by else ""),
+            f"התנאים שלכם: {edition.terms()}",
+        ]
+        with_length = sum(1 for row in edition.prices.values() if edition.length_of(row))
+        if with_length:
+            lines.append(
+                f"אורך מוט ידוע ל־⁦{with_length}⁩ פריטים"
+                + (f" (ברירת מחדל ⁦{edition.bar_length_mm / 1000:g}⁩ מ׳)" if edition.bar_length_mm else "")
+            )
+        else:
+            lines.append("אורך המוט לא ידוע — ההזמנה תחושב לפי הגדרת המפעל")
+        if edition.state != ListState.PENDING:
+            lines.append(
+                book.state_text(edition)
+                + (f" — הוחלט על ידי {edition.decided_by}" if edition.decided_by else "")
+            )
+        lines.append("")
+        if edition.warnings:
+            lines.append("שימו לב")
+            lines += [f"  • {warning}" for warning in edition.warnings[:10]]
+            lines.append("")
+        lines += book.diff(edition).lines()
+        try:
+            from ..projects import default_store
+
+            effect = impact(book, edition, default_store().all())
+        except Exception as exc:  # noqa: BLE001 - named, never read as "nothing"
+            lines.append(f"ההשפעה על הפרויקטים לא חושבה: {exc}")
+            effect = None
+        if effect is not None:
+            if effect.quoted:
+                lines.append("הצעות פתוחות שתומחרו על המחירון הקודם")
+                lines += [f"  • {change.describe()}" for change in effect.quoted]
+                lines.append("")
+            if effect.to_order:
+                header = "פרויקטים שנסגרו — אם עוד לא הזמנתם להם חומר"
+                if effect.buy_before:
+                    header += f" — הזמנה לפני ⁦{_short_date(effect.buy_before)}⁩ במחיר הישן"
+                lines.append(header)
+                lines += [f"  • {change.describe()}" for change in effect.to_order]
+                lines.append("")
+            if effect.quoted or effect.to_order:
+                lines.append(
+                    "הערכה: אורך חיתוך נטו בלי פחת, במחיר אחרי ההנחה שלכם — "
+                    "בפועל השינוי גדול יותר."
+                )
+            unmatched = sum(c.unmatched_units for c in effect.quoted + effect.to_order)
+            if unmatched:
+                lines.append(
+                    f"⁦{unmatched}⁩ שורות לא חושבו: יחידת המידה במחירון לא תואמת "
+                    "לכמות בפרויקט (למשל מחיר לק״ג בלי משקל למטר מהקטלוג)."
+                )
+        self.price_list_detail.setPlainText("\n".join(lines).rstrip())
+
+    def import_price_list(self, path: Path | None = None, *, finding_id: str = "") -> None:
+        """Take in a supplier's price list as a waiting edition."""
+        from ..quoting.pricelists import default_price_lists, rows_from_file
+        from .dialogs import PriceListDialog
+
+        if path is None:
+            chosen, _ = QFileDialog.getOpenFileName(
+                self, "מחירון ספק", str(documents_dir()), "מחירונים (*.xlsx *.xlsm *.csv *.tsv *.txt)"
+            )
+            if not chosen:
+                return
+            path = Path(chosen)
+        try:
+            rows, skipped, matched = rows_from_file(path)
+        except Exception as exc:  # noqa: BLE001 - the reason is the answer
+            self.report(exc, "המחירון לא נקרא")
+            return
+        book = self.checked_book(default_price_lists(), "מחירוני הספקים")
+        known = sorted({e.supplier for e in book})
+        terms = {}
+        for supplier_id in book.suppliers():
+            latest = book.accepted(supplier_id)[-1]
+            terms[supplier_id] = (latest.discount_pct, latest.surcharge_pct,
+                                  latest.bar_length_mm)
+        dialog = PriceListDialog(path.name, len(rows), skipped, matched, known,
+                                 terms=terms, parent=self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        values = dialog.values()
+        if values["unit"]:
+            for row in rows:
+                row.unit = row.unit or values["unit"]
+        try:
+            edition = book.record(
+                rows, supplier=values["supplier"], source=values["source"],
+                valid_from=values["valid_from"], currency=values["currency"],
+                recorded_by=values["recorded_by"],
+                discount_pct=values["discount_pct"], surcharge_pct=values["surcharge_pct"],
+                bar_length_mm=values["bar_length_mm"],
+                warnings=[f"לא נקרא: {line}" for line in skipped[:50]],
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "המחירון לא נשמר")
+            return
+        if finding_id:
+            try:
+                from ..catalogue.watch import default_findings
+
+                default_findings().handle(finding_id, f"נקלט כמחירון {edition.edition_id}")
+            except Exception as exc:  # noqa: BLE001 - the list is saved either way
+                _log.warning("Could not mark the finding handled: %s", exc)
+            self._refresh_findings()
+        self.tabs.setCurrentWidget(self.prices_page)
+        self._refresh_price_lists()
+        if edition.edition_id in self._price_list_ids:
+            self.price_lists_table.selectRow(self._price_list_ids.index(edition.edition_id))
+        self.status(f"נשמר מחירון ממתין מ{edition.supplier}: {book.diff(edition).summary()}")
+
+    def record_price_letter(self) -> None:
+        """A supplier's percentage letter, as a waiting edition of its list."""
+        from ..quoting.pricelists import default_price_lists
+        from .dialogs import PriceLetterDialog
+
+        book = self.checked_book(default_price_lists(), "מחירוני הספקים")
+        suppliers = sorted({book.accepted(s)[-1].supplier for s in book.suppliers()})
+        if not suppliers:
+            self.report(ProfileOSError("אין עדיין מחירון מאושר — קלטו קודם את המחירון המלא"),
+                        "אין מחירון לשנות")
+            return
+        dialog = PriceLetterDialog(suppliers, parent=self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        values = dialog.values()
+        try:
+            edition = book.record_uplift(
+                values["supplier"], values["pct"], source=values["source"],
+                valid_from=values["valid_from"], recorded_by=values["recorded_by"],
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "השינוי לא נשמר")
+            return
+        self._refresh_price_lists()
+        if edition.edition_id in self._price_list_ids:
+            self.price_lists_table.selectRow(self._price_list_ids.index(edition.edition_id))
+        self.status(f"נשמר מחירון ממתין מ{edition.supplier}: {book.diff(edition).summary()}")
+
+    def _decide_price_list(self, accept: bool) -> None:
+        from ..quoting.pricelists import default_price_lists
+
+        edition_id = self._selected(self.price_lists_table, self._price_list_ids)
+        if not edition_id:
+            self.report(ProfileOSError("בחרו מחירון מהרשימה"), "לא נבחר מחירון")
+            return
+        book = self.checked_book(default_price_lists(), "מחירוני הספקים")
+        edition = book.get(edition_id)
+        if edition is None:
+            return
+        question = (
+            f"לאשר את \u2068{edition.source}\u2069 כמחירון של \u2068{edition.supplier}\u2069?\n"
+            f"{book.diff(edition).summary()}\n"
+            "הצעות מחיר חדשות יתומחרו ממנו"
+            + (f" מ־{_short_date(edition.valid_from)}." if edition.valid_from else ".")
+            if accept else
+            f"לדחות את \u2068{edition.source}\u2069? הוא יישמר ברשימה ולא ישמש לתמחור."
+        )
+        name, ok = QInputDialog.getText(
+            self, "אישור מחירון" if accept else "דחיית מחירון", question + "\n\nמי מחליט?",
+        )
+        if not ok:
+            return
+        try:
+            if accept:
+                book.accept(edition_id, by=name)
+            else:
+                book.reject(edition_id, by=name)
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "ההחלטה לא נשמרה")
+            return
+        self._refresh_price_lists()
+        self.status("המחירון אושר" if accept else "המחירון נדחה")
+
+    # -- supplier updates ----------------------------------------------------- #
+    def _updates_tab(self) -> QWidget:
+        """What the suppliers published, and what it changes for this shop.
+
+        Three questions, top to bottom: where do we look, what turned up
+        there, and — once a catalogue was read — what is different from the
+        figures the shop already works to, and which open jobs that touches.
+        """
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, METRICS.space(3), 0, 0)
+        layout.setSpacing(METRICS.space(3))
+
+        splitter = QSplitter(Qt.Orientation.Vertical)
+
+        sources = Card("איפה הספקים מפרסמים")
+        buttons = QHBoxLayout()
+        buttons.setSpacing(METRICS.space(2))
+        for text, handler, primary in (
+            ("בדיקה עכשיו", self.check_sources, True),
+            ("מעקב אחרי תיקייה…", lambda: self.add_source("folder"), False),
+            ("מעקב אחרי אתר ספק…", lambda: self.add_source("web"), False),
+            ("הפסקת מעקב", self.remove_source, False),
+        ):
+            button = QPushButton(text)
+            if primary:
+                button.setObjectName("Primary")
+                self.check_button = button
+            button.clicked.connect(handler)
+            buttons.addWidget(button)
+        buttons.addStretch(1)
+        sources.add_layout(buttons)
+        self.sources_table = DataTable(
+            ["ספק", "סוג", "מיקום", "נבדק", "מצב"],
+            empty_text="הוסיפו את התיקייה שאליה נשמרים קבצי הספקים, או את דף "
+                       "ההורדות באתר שלהם — והתוכנה תודיע כשמופיע קטלוג חדש",
+        )
+        sources.add(self.sources_table, 1)
+        splitter.addWidget(sources)
+
+        files = Card("קבצים חדשים אצל הספקים")
+        buttons = QHBoxLayout()
+        buttons.setSpacing(METRICS.space(2))
+        for text, handler in (
+            ("קליטה…", self.ingest_finding),
+            ("הורדה", self.download_finding),
+            ("פתיחה", self.open_finding),
+            ("סימון כטופל", self.dismiss_finding),
+        ):
+            button = QPushButton(text)
+            button.clicked.connect(handler)
+            buttons.addWidget(button)
+        self.show_handled = QCheckBox("להציג גם מה שטופל")
+        self.show_handled.toggled.connect(lambda _on: self._refresh_findings())
+        buttons.addStretch(1)
+        buttons.addWidget(self.show_handled)
+        files.add_layout(buttons)
+        self.findings_table = DataTable(
+            ["ספק", "קובץ", "מה קרה", "נמצא", "טופל"],
+            empty_text="אין קבצים חדשים",
+        )
+        files.add(self.findings_table, 1)
+        splitter.addWidget(files)
+
+        editions = Card("מהדורות קטלוג")
+        buttons = QHBoxLayout()
+        buttons.setSpacing(METRICS.space(2))
+        accept = QPushButton("אישור המהדורה")
+        accept.setObjectName("Primary")
+        accept.clicked.connect(self.accept_edition)
+        reject = QPushButton("דחייה")
+        reject.clicked.connect(self.reject_edition)
+        tell = QPushButton("שליחה לצוות…")
+        tell.setToolTip("סיכום השינויים בוואטסאפ — למנהל העבודה ולמשרד")
+        tell.clicked.connect(self.send_edition)
+        buttons.addWidget(accept)
+        buttons.addWidget(reject)
+        buttons.addWidget(tell)
+        buttons.addStretch(1)
+        editions.add_layout(buttons)
+        row = QSplitter(Qt.Orientation.Horizontal)
+        self.editions_table = DataTable(
+            ["סדרה", "מקור", "התקבלה", "מצב", "שינויים", "פרויקטים פתוחים"],
+            empty_text="קלטו קטלוג בלשונית ״קליטת קטלוג״ ושמרו אותו כמהדורה — "
+                       "והשינויים מול הקודמת יופיעו כאן",
+        )
+        self.editions_table.itemSelectionChanged.connect(self._show_edition)
+        row.addWidget(self.editions_table)
+        self.edition_detail = QPlainTextEdit()
+        self.edition_detail.setReadOnly(True)
+        self.edition_detail.setPlaceholderText("בחרו מהדורה כדי לראות מה השתנה")
+        row.addWidget(self.edition_detail)
+        row.setStretchFactor(0, 3)
+        row.setStretchFactor(1, 2)
+        editions.add(row, 1)
+        splitter.addWidget(editions)
+        splitter.setStretchFactor(0, 2)
+        splitter.setStretchFactor(1, 2)
+        splitter.setStretchFactor(2, 3)
+
+        layout.addWidget(splitter, 1)
+
+        note = QLabel(
+            "התוכנה לא ממציאה ולא מורידה נתוני ספק בעצמה: היא מודיעה כשמופיע קובץ, "
+            "המספרים נכנסים רק מקובץ הספק עצמו בקליטה, והספרייה מתעדכנת רק "
+            "כשמישהו מאשר את המהדורה."
+        )
+        note.setObjectName("Hint")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+
+        self._source_ids: list[str] = []
+        self._finding_ids: list[str] = []
+        self._edition_ids: list[str] = []
+        self._from_finding = ""
+        self._checking = False
+        self._downloading: set[str] = set()
+        return page
+
+    def _books(self) -> tuple[Any, Any, Any]:
+        from ..catalogue.editions import default_editions
+        from ..catalogue.watch import default_findings, default_watch
+
+        return (
+            self.checked_book(default_watch(), "רשימת המקורות במעקב"),
+            self.checked_book(default_findings(), "רשימת הקבצים החדשים"),
+            self.checked_book(default_editions(), "מהדורות הקטלוג"),
+        )
+
+    def _refresh_updates(self) -> None:
+        self._refresh_sources()
+        self._refresh_findings()
+        self._refresh_editions()
+
+    def _refresh_sources(self) -> None:
+        from datetime import datetime
+
+        from ..catalogue.watch import Kind, default_watch
+
+        watch = self.checked_book(default_watch(), "רשימת המקורות במעקב")
+        sources = list(watch)
+        self._source_ids = [s.source_id for s in sources]
+        rows, colours = [], {}
+        for index, source in enumerate(sources):
+            checked = "עדיין לא"
+            if source.last_checked:
+                try:
+                    checked = f"⁦{datetime.fromisoformat(source.last_checked):%d/%m %H:%M}⁩"
+                except ValueError:
+                    checked = source.last_checked
+            state = source.last_error or (
+                f"⁦{len(source.known)}⁩ קבצים מוכרים" if source.last_checked else "ממתין לבדיקה"
+            )
+            rows.append([
+                source.title, Kind.HEBREW.get(source.kind, source.kind),
+                source.location, checked, state,
+            ])
+            if source.last_error:
+                colours[(index, 4)] = self.colours.warning
+        self.sources_table.clearSelection()
+        self.sources_table.set_rows(rows, colours=colours)
+
+    def _refresh_findings(self) -> None:
+        from ..catalogue.watch import Change, default_findings
+
+        findings = self.checked_book(default_findings(), "רשימת הקבצים החדשים")
+        shown = [f for f in findings if f.open or self.show_handled.isChecked()]
+        self._finding_ids = [f.finding_id for f in shown]
+        rows, colours = [], {}
+        for index, finding in enumerate(shown):
+            rows.append([
+                finding.supplier, finding.name,
+                Change.HEBREW.get(finding.change, finding.change),
+                _short_date(finding.found_on),
+                finding.handled_how or "—",
+            ])
+            if finding.open:
+                colours[(index, 2)] = self.colours.warning
+        # The rows move when the list changes; a selection kept by position
+        # would quietly point at a different file.
+        self.findings_table.clearSelection()
+        self.findings_table.set_rows(rows, colours=colours)
+
+    def _refresh_editions(self) -> None:
+        from ..catalogue.editions import EditionState, default_editions, open_jobs_on
+
+        book = self.checked_book(default_editions(), "מהדורות הקטלוג")
+        jobs = self._open_jobs()
+        editions = list(book)
+        self._edition_ids = [e.edition_id for e in editions]
+        rows, colours = [], {}
+        tint = {
+            EditionState.PENDING: self.colours.warning,
+            EditionState.ACCEPTED: self.colours.success,
+            EditionState.REJECTED: self.colours.text_faint,
+        }
+        for index, edition in enumerate(editions):
+            affected = open_jobs_on(edition.system_id, jobs)
+            rows.append([
+                edition.label, edition.source, _short_date(edition.received_on),
+                EditionState.HEBREW.get(edition.state, edition.state),
+                book.diff(edition).summary(),
+                len(affected) or "—",
+            ])
+            colours[(index, 3)] = tint.get(edition.state, self.colours.text)
+        self.editions_table.clearSelection()
+        self.editions_table.set_rows(rows, numeric_columns=(5,), colours=colours)
+        self.edition_detail.clear()
+
+    def _open_jobs(self) -> list[Any]:
+        try:
+            from ..projects import default_store
+
+            return default_store().all()
+        except Exception:  # noqa: BLE001 - the comparison still shows without jobs
+            return []
+
+    def _selected(self, table: Any, ids: list[str]) -> str:
+        model = table.selectionModel()
+        if model is None or not model.selectedRows():
+            return ""
+        row = model.selectedRows()[0].row()
+        return ids[row] if row < len(ids) else ""
+
+    def _edition_facts(self, edition: Any) -> tuple[Any, list[Any], list[Any], list[Any], list[str]]:
+        """The comparison, the open jobs, the cutting figures and the stock it
+        touches — and, by name, any book that could not be read, so "nothing
+        affected" is never said when nothing could be looked at."""
+        from ..catalogue.editions import (
+            confirmation_hits, default_editions, open_jobs_on, stock_of_removed,
+        )
+
+        unread: list[str] = []
+        diff = default_editions().diff(edition)
+        try:
+            from ..projects import default_store
+
+            affected = open_jobs_on(edition.system_id, default_store().all())
+        except Exception as exc:  # noqa: BLE001 - named below instead
+            _log.warning("Jobs unreadable: %s", exc)
+            affected, unread = [], unread + ["תיקי העבודה"]
+        hits: list[Any] = []
+        if edition.system_id:
+            try:
+                from ..systems import default_confirmations
+
+                book = default_confirmations()
+                if getattr(book, "damaged", None) is not None:
+                    unread.append("נתוני היצרן שאושרו לחיתוך")
+                hits = confirmation_hits(diff, book.get(edition.system_id))
+            except Exception as exc:  # noqa: BLE001
+                _log.warning("Confirmations unreadable: %s", exc)
+                unread.append("נתוני היצרן שאושרו לחיתוך")
+        stock: list[Any] = []
+        if diff.removed:
+            try:
+                from ..erp.stocktake import default_stocktakes
+
+                sheets = default_stocktakes()
+                if getattr(sheets, "damaged", None) is not None:
+                    unread.append("ספירות המלאי")
+                stock = stock_of_removed(diff, sheets)
+            except Exception as exc:  # noqa: BLE001
+                _log.warning("Stocktakes unreadable: %s", exc)
+                unread.append("ספירות המלאי")
+        return diff, affected, hits, stock, unread
+
+    def _show_edition(self) -> None:
+        from ..catalogue.editions import EditionState, default_editions
+
+        edition_id = self._selected(self.editions_table, self._edition_ids)
+        edition = default_editions().get(edition_id)
+        if edition is None:
+            return
+        diff, affected, hits, stock, unread = self._edition_facts(edition)
+        lines = [
+            f"{edition.label} — {edition.source}",
+            f"התקבלה ⁦{_short_date(edition.received_on)}⁩"
+            + (f" · נקלטה על ידי {edition.recorded_by}" if edition.recorded_by else "")
+            + (" · קטלוג מלא" if edition.complete else " · עדכון חלקי"),
+        ]
+        if edition.revision:
+            lines.append(f"מהדורת הספק: {edition.revision}")
+        if not edition.system_id:
+            lines.append("לא שויכה לסדרה מהרשימה — לא נבדקו פרויקטים ונתוני חיתוך")
+        if edition.state != EditionState.PENDING:
+            lines.append(
+                f"{EditionState.HEBREW[edition.state]}"
+                + (f" על ידי {edition.decided_by}" if edition.decided_by else "")
+                + (f" — {edition.note}" if edition.note else "")
+            )
+        lines.append("")
+        if unread:
+            lines.append("לא נבדק — הקובץ לא נקרא: " + ", ".join(unread))
+            lines.append("")
+        if edition.warnings:
+            lines.append("שימו לב")
+            lines += [f"  • {warning}" for warning in edition.warnings]
+            lines.append("")
+        lines += diff.lines()
+        if affected:
+            lines.append("פרויקטים פתוחים על הסדרה")
+            lines += [f"  • ⁦{job.job_id}⁩ — {job.name}" for job in affected]
+            lines.append("")
+        if hits:
+            lines.append("נתוני החיתוך שאושרו לסדרה נוגעים בפרופילים שהשתנו")
+            lines += [f"  • {hit.describe()}" for hit in hits]
+            lines.append("אחרי האישור צריך להזין אותם שוב מהקטלוג החדש.")
+            lines.append("")
+        if stock:
+            lines.append("במלאי מפרופילים שלא נמצאו בקטלוג החדש")
+            lines += [f"  • {left.describe()}" for left in stock]
+        self.edition_detail.setPlainText("\n".join(lines).rstrip())
+
+    def send_edition(self) -> None:
+        """The changes, as a WhatsApp message to whoever the shop chooses."""
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+
+        from ..branding import active_brand
+        from ..catalogue.editions import default_editions
+        from ..sharing import catalogue_change_message, whatsapp_link
+
+        edition = default_editions().get(
+            self._selected(self.editions_table, self._edition_ids)
+        )
+        if edition is None:
+            self.report(ProfileOSError("בחרו מהדורה מהרשימה"), "לא נבחרה מהדורה")
+            return
+        diff, affected, hits, stock, unread = self._edition_facts(edition)
+        if unread:
+            self.report(
+                ProfileOSError("לא ניתן היה לקרוא את " + ", ".join(unread)
+                               + " — ההודעה הייתה חסרה. בדקו במסך מערכת ← גיבוי ושחזור."),
+                "ההודעה לא נשלחה",
+            )
+            return
+        message = catalogue_change_message(
+            edition, diff, brand_name=active_brand().display_name,
+            jobs=affected, hits=hits, stock=stock,
+        )
+        QDesktopServices.openUrl(QUrl(whatsapp_link(None, message)))
+        self.status("ההודעה נפתחה בוואטסאפ — בחרו למי לשלוח")
+
+    # -- sources -------------------------------------------------------------- #
+    def add_source(self, kind: str) -> None:
+        from ..catalogue.watch import default_watch
+        from .dialogs import WatchSourceDialog
+
+        dialog = WatchSourceDialog(kind, parent=self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        values = dialog.values()
+        try:
+            source = default_watch().add(
+                values["kind"], values["location"],
+                supplier=values["supplier"], system_id=values["system_id"],
+            )
+        except Exception as exc:  # noqa: BLE001 - the reason is the answer
+            self.report(exc, "המקור לא נוסף")
+            return
+        self._refresh_sources()
+        self.status(f"{source.title} נוסף למעקב — בודקים עכשיו מה כבר קיים בו")
+        self.check_sources()
+
+    def remove_source(self) -> None:
+        from ..catalogue.watch import default_watch
+
+        source_id = self._selected(self.sources_table, self._source_ids)
+        if not source_id:
+            self.report(ProfileOSError("בחרו מקור מהרשימה"), "לא נבחר מקור")
+            return
+        try:
+            default_watch().remove(source_id)
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "המקור לא הוסר")
+            return
+        self._refresh_sources()
+        self.status("המעקב אחרי המקור הופסק. הקבצים שנמצאו בו נשארו ברשימה.")
+
+    def check_sources(self) -> None:
+        """Check every source now, off the screen's thread."""
+        from ..catalogue.watch import check_all
+        from .background import run_in_background
+
+        if self._checking:
+            return
+        self._checking = True
+        self.check_button.setEnabled(False)
+        self.check_button.setText("בודק…")
+
+        def done(summary: Any, error: BaseException | None) -> None:
+            self._checking = False
+            self.check_button.setEnabled(True)
+            self.check_button.setText("בדיקה עכשיו")
+            if error is not None:
+                from ..catalogue.watch import in_words
+
+                self.report(ProfileOSError(in_words(error)), "הבדיקה נכשלה")
+                return
+            self._refresh_updates()
+            self.status(summary.describe())
+
+        run_in_background(lambda: check_all(fetch=self.fetch), done)
+
+    #: Replaced in tests; ``None`` means the real network.
+    fetch = None
+
+    # -- findings ------------------------------------------------------------- #
+    def _finding(self) -> Any:
+        from ..catalogue.watch import default_findings
+
+        finding_id = self._selected(self.findings_table, self._finding_ids)
+        if not finding_id:
+            self.report(ProfileOSError("בחרו קובץ מהרשימה"), "לא נבחר קובץ")
+            return None
+        finding = default_findings().get(finding_id)
+        if finding is None:
+            self.report(ProfileOSError("הקובץ כבר לא ברשימה"), "לא נמצא")
+        return finding
+
+    def _local_file(self, finding: Any, then: Any, failed: Any = None) -> None:
+        """The finding as a file on this computer, downloading it if needed."""
+        from ..catalogue.watch import default_findings, download
+        from .background import run_in_background
+
+        if finding.local_path and Path(finding.local_path).is_file():
+            then(Path(finding.local_path))
+            return
+        if not finding.is_web:
+            path = Path(finding.where)
+            if not path.is_file():
+                self.report(ProfileOSError(f"הקובץ {finding.name} כבר לא בתיקייה"), "לא נמצא")
+                return
+            then(path)
+            return
+        self.status(f"מוריד את {finding.name}…")
+
+        def done(path: Any, error: BaseException | None) -> None:
+            if error is not None:
+                from ..catalogue.watch import in_words
+
+                if failed is not None:
+                    failed()
+                self.report(ProfileOSError(in_words(error)), "ההורדה נכשלה")
+                return
+            try:
+                default_findings().set_local_path(finding.finding_id, str(path))
+            except Exception as exc:  # noqa: BLE001 - the file is there either way
+                _log.warning("Could not note the download: %s", exc)
+            self.status(f"נשמר: {path}")
+            then(Path(path))
+
+        run_in_background(lambda: download(finding, fetch=self.fetch), done)
+
+    def download_finding(self) -> None:
+        finding = self._finding()
+        if finding is None:
+            return
+        if finding.finding_id in self._downloading:
+            self.status("ההורדה כבר בדרך")
+            return
+        self._downloading.add(finding.finding_id)
+
+        def done(_path: Path) -> None:
+            self._downloading.discard(finding.finding_id)
+            self._refresh_findings()
+
+        self._local_file(finding, done, failed=lambda: self._downloading.discard(finding.finding_id))
+
+    def open_finding(self) -> None:
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+
+        finding = self._finding()
+        if finding is None:
+            return
+        if finding.is_web and not finding.local_path:
+            QDesktopServices.openUrl(QUrl(finding.where))
+            return
+        target = Path(finding.local_path or finding.where)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(target)))
+
+    def dismiss_finding(self) -> None:
+        from ..catalogue.watch import default_findings
+
+        finding = self._finding()
+        if finding is None:
+            return
+        try:
+            default_findings().handle(finding.finding_id, "נבדק — לא רלוונטי")
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "לא סומן")
+            return
+        self._refresh_findings()
+
+    def ingest_finding(self) -> None:
+        """Take a new supplier file straight to the ingestion tab."""
+        finding = self._finding()
+        if finding is None:
+            return
+
+        def use(path: Path, *, drawings: bool) -> None:
+            from ..catalogue.watch import default_watch
+
+            if drawings:
+                self._drawings = path
+                self.drawings_label.setText(str(path))
+            else:
+                self._table = path
+                self.table_label.setText(path.name)
+            source = default_watch().get(finding.source_id)
+            if source is not None and source.system_id:
+                from ..systems import DIRECTORY
+
+                entry = DIRECTORY.get(source.system_id)
+                if entry is not None:
+                    self.series.setCurrentText(entry.series)
+            self._from_finding = finding.finding_id
+            self.tabs.setCurrentWidget(self.ingest_page)
+            self.status("הקובץ מוכן לקליטה — הוסיפו את השרטוטים או הטבלה המתאימים ולחצו ״קליטה״")
+
+        def ready(path: Path) -> None:
+            from ..catalogue.watch import downloads_dir, stage, unpack
+            from .background import run_in_background
+
+            suffix = path.suffix.lower()
+            if suffix == ".zip":
+                folder = downloads_dir() / "חבילות"
+                self.status(f"פותח את {path.name}…")
+
+                def opened(target: Any, error: BaseException | None) -> None:
+                    if error is not None:
+                        from ..catalogue.watch import in_words
+
+                        self.report(ProfileOSError(in_words(error)), "הקובץ הדחוס לא נפתח")
+                        return
+                    use(Path(target), drawings=True)
+
+                run_in_background(lambda: unpack(path, folder), opened)
+            elif suffix == ".dxf":
+                # Only this drawing: its folder may hold last year's too.
+                try:
+                    use(stage(path), drawings=True)
+                except OSError as exc:
+                    self.report(exc, "הקובץ לא הועתק לקליטה")
+            elif suffix in (".xlsx", ".xlsm"):
+                self.import_price_list(path, finding_id=finding.finding_id)
+            elif suffix in (".csv", ".tsv", ".txt"):
+                box = QMessageBox(self)
+                box.setWindowTitle("מה יש בקובץ?")
+                box.setText(f"{path.name} — מחירון או טבלת פרופילים מהקטלוג?")
+                prices = box.addButton("מחירון", QMessageBox.ButtonRole.AcceptRole)
+                table = box.addButton("טבלת קטלוג", QMessageBox.ButtonRole.AcceptRole)
+                box.addButton("ביטול", QMessageBox.ButtonRole.RejectRole)
+                box.exec()
+                if box.clickedButton() is prices:
+                    self.import_price_list(path, finding_id=finding.finding_id)
+                elif box.clickedButton() is table:
+                    use(path, drawings=False)
+            elif suffix == ".pdf":
+                use(path, drawings=False)
+            elif suffix == ".dwg":
+                self.report(
+                    ProfileOSError("קובץ DWG צריך לשמור קודם כ־DXF (בתוכנת השרטוט, "
+                                   "״שמירה בשם״) ואז לקלוט אותו."),
+                    "לא ניתן לקלוט",
+                )
+            else:
+                self.report(
+                    ProfileOSError("את סוג הקובץ הזה אי אפשר לקלוט ישירות — פתחו אותו "
+                                   "ושמרו את הטבלה כ־CSV"),
+                    "לא ניתן לקלוט",
+                )
+
+        self._local_file(finding, ready)
+
+    # -- editions ------------------------------------------------------------- #
+    def record_edition(self) -> None:
+        """Keep the catalogue just read as a pending edition, and compare it."""
+        from ..catalogue.editions import default_editions
+        from ..catalogue.watch import default_findings
+        from .dialogs import RecordEditionDialog
+
+        report = self.session.catalogue_report
+        if report is None or not report.entries:
+            self.report(ProfileOSError("קלטו קודם קטלוג בלשונית ״קליטת קטלוג״"), "אין מה לשמור")
+            return
+        dialog = RecordEditionDialog(self.series.currentText(), len(report.entries), parent=self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        values = dialog.values()
+        book = self.checked_book(default_editions(), "מהדורות הקטלוג")
+        try:
+            edition = book.record(
+                report, source=values["source"], series=values["series"],
+                system_id=values["system_id"], complete=values["complete"],
+                recorded_by=values["recorded_by"], revision=values["revision"],
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "המהדורה לא נשמרה")
+            return
+        if self._from_finding:
+            try:
+                default_findings().handle(self._from_finding, f"נקלט כמהדורה {edition.edition_id}")
+            except Exception as exc:  # noqa: BLE001 - the edition is saved either way
+                _log.warning("Could not mark the finding handled: %s", exc)
+            self._from_finding = ""
+        self._refresh_updates()
+        self.tabs.setCurrentWidget(self.updates_page)
+        if edition.edition_id in self._edition_ids:
+            self.editions_table.selectRow(self._edition_ids.index(edition.edition_id))
+        self.status(f"נשמרה מהדורה ממתינה ל{edition.label}: {book.diff(edition).summary()}")
+
+    def _decide_edition(self, accept: bool) -> None:
+        from ..catalogue.editions import confirmation_hits, default_editions
+
+        edition_id = self._selected(self.editions_table, self._edition_ids)
+        if not edition_id:
+            self.report(ProfileOSError("בחרו מהדורה מהרשימה"), "לא נבחרה מהדורה")
+            return
+        book = self.checked_book(default_editions(), "מהדורות הקטלוג")
+        edition = book.get(edition_id)
+        if edition is None:
+            return
+        diff = book.diff(edition)
+        question = (
+            f"לאשר את {edition.source} כקטלוג הנוכחי של {edition.label}?\n\n{diff.summary()}"
+            if accept else
+            f"לדחות את {edition.source}?\nהמהדורה תישמר ברשימה, אבל לא תשמש להשוואה."
+        )
+        name, ok = QInputDialog.getText(
+            self, "אישור מהדורה" if accept else "דחיית מהדורה",
+            question + "\n\nמי מחליט?",
+        )
+        if not ok:
+            return
+        try:
+            if accept:
+                book.accept(edition_id, by=name)
+            else:
+                book.reject(edition_id, by=name)
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "ההחלטה לא נשמרה")
+            return
+        self._refresh_updates()
+        self._refresh_systems()
+        if accept and edition.system_id:
+            from ..systems import default_confirmations
+
+            confirmation = default_confirmations().get(edition.system_id)
+            if confirmation is not None:
+                hits = confirmation_hits(diff, confirmation)
+                QMessageBox.warning(
+                    self, "נתוני החיתוך צריכים קריאה מחדש",
+                    f"נתוני החיתוך של {edition.label} נקראו מ״{confirmation.source}״.\n"
+                    "ניכויי חיתוך וזיגוג נמצאים בטבלאות של הקטלוג, ויכולים להשתנות גם "
+                    "כשהפרופילים עצמם לא השתנו.\n"
+                    + ("\nהשתנו פרופילים שהנתונים נשענים עליהם:\n"
+                       + "\n".join(f"• {hit.describe()}" for hit in hits) + "\n"
+                       if hits else "")
+                    + "\nבדקו את טבלאות החיתוך והזיגוג בקטלוג החדש והזינו את נתוני "
+                      "היצרן מחדש (לשונית מערכות ← ״הזן נתוני יצרן״), עם המהדורה "
+                      "שממנה נקראו.",
+                )
+        self.status("המהדורה אושרה" if accept else "המהדורה נדחתה")
+
+    def accept_edition(self) -> None:
+        self._decide_edition(True)
+
+    def reject_edition(self) -> None:
+        self._decide_edition(False)
+
+
+    def _ingest_tab(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, METRICS.space(3), 0, 0)
+        layout.setSpacing(METRICS.space(3))
+
+        sources = Card("מקורות")
+        grid = FieldGrid()
+
+        self.drawings_label = QLabel("לא נבחרה תיקייה")
+        self.drawings_label.setObjectName("FieldValue")
+        pick_drawings = QPushButton("בחירת תיקיית DXF…")
+        pick_drawings.clicked.connect(self._pick_drawings)
+        drawings_row = QHBoxLayout()
+        drawings_row.addWidget(pick_drawings)
+        drawings_row.addWidget(self.drawings_label, 1)
+
+        self.table_label = QLabel("לא נבחרה טבלה")
+        self.table_label.setObjectName("FieldValue")
+        pick_table = QPushButton("בחירת קטלוג…")
+        pick_table.clicked.connect(self._pick_table)
+        table_row = QHBoxLayout()
+        table_row.addWidget(pick_table)
+        table_row.addWidget(self.table_label, 1)
+
+        self.series = QComboBox()
+        self.series.setEditable(True)
+        self.series.addItems(["", "MB-70", "4300", "CW-50"])
+
+        sources.add_layout(drawings_row)
+        sources.add_layout(table_row)
+        series_row = QHBoxLayout()
+        caption = QLabel("סדרת מערכת")
+        caption.setObjectName("FieldLabel")
+        series_row.addWidget(caption)
+        series_row.addWidget(self.series)
+        series_row.addStretch(1)
+        sources.add_layout(series_row)
+        sources.add(grid)
+        layout.addWidget(sources)
+
+        note = QLabel(
+            "כל שרטוט נמדד על ידי מנועי הגאומטריה והחוזק ומושווה מול הטבלה "
+            "שהיצרן פרסם. הסכמה היא ראיה; אי-הסכמה מדווחת ולא מוכרעת, "
+            "והפריט נשאר מחוץ לספרייה עד שמישהו מחליט איזה נתון נכון."
+        )
+        note.setObjectName("Hint")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+
+        splitter = QSplitter(Qt.Orientation.Vertical)
+        self.entries = DataTable(
+            ["פריט", "שם", "סטטוס", "נבדקו", "סתירות", "שרטוט"],
+            empty_text="בחר מקורות ולחץ ״קליטה״ כדי לבנות את הספרייה",
+        )
+        splitter.addWidget(self.entries)
+        self.detail = QPlainTextEdit()
+        self.detail.setReadOnly(True)
+        self.detail.setObjectName("Mono")
+        splitter.addWidget(self.detail)
+        splitter.setStretchFactor(0, 2)
+        splitter.setStretchFactor(1, 1)
+        layout.addWidget(splitter, 1)
+
+        self.entries.itemSelectionChanged.connect(self._show_detail)
+
+        self._drawings: Path | None = None
+        self._table: Path | None = None
+        return page
+
+    # -- systems ------------------------------------------------------------- #
+    def _systems_tab(self) -> QWidget:
+        """The series this shop works with, and what each may be used for.
+
+        This is the screen that turns a directory into a library. A series
+        starts unclassified — the software will not guess whether קליל 7000 is
+        casement or sliding, because the wrong guess picks the wrong hardware.
+        Classifying it here takes seconds, is recorded with who decided, and
+        survives a restart. Cutting still waits for the supplier's own figures,
+        which arrive through ingestion on the tab beside this one.
+        """
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, METRICS.space(3), 0, 0)
+        layout.setSpacing(METRICS.space(3))
+
+        controls = QHBoxLayout()
+        controls.setSpacing(METRICS.space(3))
+        self.family_combo = QComboBox()
+        from ..systems import SystemFamily
+
+        for family in SystemFamily:
+            self.family_combo.addItem(family.label("he"), family.value)
+
+        self.decided_by = QLineEdit()
+        self.decided_by.setPlaceholderText("מי מחליט ולפי מה — למשל: דאדי, קטלוג קליל 2026")
+
+        classify = QPushButton("סווג את הסדרה שנבחרה")
+        classify.setObjectName("Primary")
+        classify.clicked.connect(self.classify_system)
+
+        for label, widget in (("משפחה", self.family_combo), ("מקור", self.decided_by)):
+            caption = QLabel(label)
+            caption.setObjectName("FieldLabel")
+            controls.addWidget(caption)
+            controls.addWidget(widget, 1 if widget is self.decided_by else 0)
+        controls.addWidget(classify)
+
+        # And the button that actually opens the saw: eleven numbers off the
+        # supplier's catalogue, entered once.
+        confirm = QPushButton("הזן נתוני יצרן…")
+        confirm.clicked.connect(self.confirm_system)
+        controls.addWidget(confirm)
+        layout.addLayout(controls)
+
+        self.systems_table = DataTable(
+            ["סדרה", "יצרן", "שם", "משפחה", "להצעה", "לחיתוך", "מקור", "קטלוג מאושר"],
+            empty_text="ספריית המערכות ריקה",
+        )
+        layout.addWidget(self.systems_table, 1)
+
+        self.systems_status = QLabel()
+        self.systems_status.setObjectName("Hint")
+        self.systems_status.setWordWrap(True)
+        layout.addWidget(self.systems_status)
+
+        note = QLabel(
+            "סדרה שסווגה אפשר לתמחר לפיה — על ערכי משפחה טיפוסיים, לא על נתוני "
+            "היצרן. חיתוך נפתח רק אחרי שהוזנו נתוני היצרן: ⁦11⁩ מספרים "
+            "מהקטלוג, פעם אחת לסדרה, בכפתור ״הזן נתוני יצרן״. "
+            "עד אז כל דף חיתוך נושא ״לא לייצור״, וזה בכוונה — "
+            "מוט שנחתך לפי ניחוש הוא מוט שנזרק."
+        )
+        note.setObjectName("Hint")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        return page
+
+    def _selected_system(self) -> str:
+        rows = self.systems_table.selectionModel()
+        if rows is None or not rows.selectedRows():
+            return ""
+        index = rows.selectedRows()[0].row()
+        return self._system_ids[index] if index < len(self._system_ids) else ""
+
+    def confirm_system(self) -> None:
+        """Enter the supplier's own figures, which is what unlocks cutting."""
+        from .dialogs import ConfirmSystemDialog
+
+        entry_id = self._selected_system()
+        if not entry_id:
+            self.report(ProfileOSError("בחר סדרה מהרשימה"), "לא נבחרה סדרה")
+            return
+
+        from ..systems import DIRECTORY, Confirmation, default_confirmations
+
+        entry = DIRECTORY.get(entry_id)
+        book = default_confirmations()
+        try:
+            from ..catalogue.editions import default_editions
+
+            editions = list(reversed(default_editions().accepted(entry_id)))
+        except Exception:  # noqa: BLE001 - the figures can still be entered
+            editions = []
+        dialog = ConfirmSystemDialog(
+            entry.display if entry else entry_id,
+            existing=book.get(entry_id),
+            editions=editions,
+            parent=self,
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        values = dialog.values()
+        confirmation = Confirmation(
+            entry_id=entry_id,
+            source=values["source"],
+            entered_by=values["entered_by"],
+            values=values["figures"],
+            profiles=values["profiles"],
+            edition_id=values["edition_id"],
+        )
+        try:
+            book.record(confirmation)
+        except Exception as exc:  # noqa: BLE001 - the reason is the answer
+            self.report(exc, "הנתונים לא התקבלו")
+            return
+
+        self.refresh()
+        self.status(f"{entry.display if entry else entry_id} — ניתן לחיתוך")
+
+    def classify_system(self) -> None:
+        from ..systems import DIRECTORY, SystemFamily, default_decisions
+
+        entry_id = self._selected_system()
+        if not entry_id:
+            self.report(ProfileOSError("בחר סדרה מהרשימה"), "לא נבחרה סדרה")
+            return
+        source = self.decided_by.text().strip()
+        family = SystemFamily(self.family_combo.currentData())
+        try:
+            default_decisions().record(entry_id, family.value, source=source)
+            DIRECTORY.classify(entry_id, family, source=source)
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "לא ניתן לסווג את הסדרה")
+            return
+        self._refresh_systems()
+        self.status(f"{entry_id} סווגה כ{family.label('he')}")
+
+    def _refresh_systems(self) -> None:
+        from ..systems import DIRECTORY
+
+        entries = sorted(DIRECTORY, key=lambda e: (e.manufacturer, e.series))
+        self._system_ids = [entry.id for entry in entries]
+        try:
+            from ..catalogue.editions import default_editions
+
+            editions = default_editions()
+        except Exception:  # noqa: BLE001 - the directory still shows without them
+            editions = None
+
+        def catalogue(entry_id: str) -> str:
+            accepted = editions.accepted(entry_id) if editions is not None else []
+            if not accepted:
+                return "—"
+            latest = accepted[-1]
+            return f"{latest.source} ({_short_date(latest.decided_at or latest.received_on)})"
+
+        colours: dict[tuple[int, int], str] = {}
+        rows = []
+        quotable = cuttable = 0
+        for index, entry in enumerate(entries):
+            readiness = DIRECTORY.readiness(entry.id)
+            quotable += bool(readiness.may_quote)
+            cuttable += bool(readiness.may_cut)
+            rows.append([
+                entry.series, entry.manufacturer,
+                entry.hebrew or entry.display,
+                entry.family.label("he") if entry.family else "לא סווגה",
+                "כן" if readiness.may_quote else "לא",
+                "כן" if readiness.may_cut else "לא",
+                entry.source or "—",
+                catalogue(entry.id),
+            ])
+            colours[(index, 4)] = (
+                self.colours.success if readiness.may_quote else self.colours.text_faint
+            )
+            # "Not yet" is the usual state, not an alarm: said quietly.
+            colours[(index, 5)] = (
+                self.colours.success if readiness.may_cut else self.colours.text_muted
+            )
+        self.systems_table.set_rows(rows, colours=colours)
+        # A long source is cut off in its column: the whole of it on hover.
+        for row_index, row in enumerate(rows):
+            item = self.systems_table.item(row_index, 6)
+            if item is not None:
+                item.setToolTip(str(row[6]))
+        self.systems_status.setText(
+            f"⁦{len(entries)}⁩ סדרות · ⁦{quotable}⁩ ניתנות לתמחור · "
+            f"⁦{cuttable}⁩ ניתנות לחיתוך"
+            + ("" if cuttable else " — אף סדרה עדיין ללא נתוני היצרן עצמו")
+        )
+
+    def _pick_drawings(self) -> None:
+        folder = QFileDialog.getExistingDirectory(self, "תיקיית DXF של היצרן", str(documents_dir()))
+        if folder:
+            self._drawings = Path(folder)
+            self.drawings_label.setText(str(self._drawings))
+            self._from_finding = ""  # chosen by hand: not the file from the list
+
+    def _pick_table(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "קטלוג יצרן", str(documents_dir()), "קטלוגים (*.pdf *.csv *.tsv *.txt)"
+        )
+        if path:
+            self._table = Path(path)
+            self.table_label.setText(self._table.name)
+            self._from_finding = ""
+
+    def run(self) -> None:
+        from ..catalogue import ingest
+
+        if self._drawings is None and self._table is None:
+            self.report(
+                ProfileOSError("בחר תיקיית שרטוטים, טבלת קטלוג, או שניהם"),
+                "אין מה לקלוט",
+            )
+            return
+
+        try:
+            report = ingest(
+                table=self._table,
+                drawings=self._drawings,
+                system_series=self.series.currentText() or "unknown",
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "הקליטה נכשלה")
+            return
+
+        self.session.set_catalogue(report)
+        stats = report.summary()
+        self.stats.update_many({
+            "articles": (str(stats["entries"]), ""),
+            "geometry": (str(stats["with_geometry"]), "נמדדו מ-DXF"),
+            "verified": (str(stats["verified"]), "הטבלה מסכימה"),
+            "conflicts": (str(stats["conflicts"]), "הטבלה חולקת"),
+            "unmatched": (
+                str(stats["unmatched_drawings"] + stats["unmatched_rows"]),
+                "בלי מקבילה",
+            ),
+        })
+
+        colours: dict[tuple[int, int], str] = {}
+        rows = []
+        tint = {
+            "verified": self.colours.success,
+            "conflict": self.colours.danger,
+            "unverified": self.colours.warning,
+        }
+        status_hebrew = {
+            "verified": "מאומת", "conflict": "סתירה", "unverified": "לא מאומת",
+        }
+        for index, entry in enumerate(report.entries):
+            summary = entry.summary()
+            rows.append([
+                entry.profile_id, (entry.name or "")[:40],
+                status_hebrew.get(entry.status, entry.status),
+                summary["checked"], summary["conflicts"] or "—",
+                Path(entry.dxf_path).name if entry.dxf_path else "—",
+            ])
+            if entry.status in tint:
+                colours[(index, 2)] = tint[entry.status]
+        self.entries.set_rows(rows, numeric_columns=(3, 4), colours=colours)
+
+        for message in report.errors[:5]:
+            self.status(message)
+        self.status(
+            f"{stats['entries']} פריטים, {stats['verified']} מאומתים, "
+            f"{stats['conflicts']} בסתירה"
+        )
+
+    def _show_detail(self) -> None:
+        report = self.session.catalogue_report
+        rows = self.entries.selectionModel()
+        if report is None or rows is None or not rows.selectedRows():
+            return
+        index = rows.selectedRows()[0].row()
+        if index >= len(report.entries):
+            return
+        entry = report.entries[index]
+
+        lines = [f"{entry.profile_id}  —  {entry.name or 'ללא שם'}", ""]
+        if entry.dxf_path:
+            lines.append(f"שרטוט : {entry.dxf_path}")
+        if entry.pdf_page:
+            lines.append(f"עמוד  : {entry.pdf_page}")
+        status_hebrew = {
+            "verified": "מאומת", "conflict": "סתירה", "unverified": "לא מאומת",
+        }
+        lines.append(f"סטטוס : {status_hebrew.get(entry.status, entry.status)}")
+        lines.append("")
+        if entry.checks:
+            lines.append("מפורסם מול נמדד")
+            for check in entry.checks:
+                mark = {"agree": "תקין", "disagree": "סתירה", "unchecked": "  -"}[
+                    str(check.status)
+                ]
+                lines.append(f"  {mark}  {check.describe()}")
+        else:
+            lines.append("לא הושוו נתונים: רק מקור אחד סיפק מספרים")
+        if entry.warnings:
+            lines.append("")
+            lines.append("אזהרות")
+            lines.extend(f"  - {warning}" for warning in entry.warnings)
+        self.detail.setPlainText("\n".join(lines))
+
+    def refresh(self) -> None:
+        self._refresh_systems()
+        self._refresh_updates()
+        self._refresh_price_lists()
+
+    def export_plugin(self) -> None:
+        from ..catalogue import to_plugin
+
+        report = self.session.catalogue_report
+        if report is None:
+            self.report(ProfileOSError("קלוט קטלוג קודם"), "אין מה לשמור")
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "שמירת ספריית פרופילים", suggested_path("profile-library.json"), "JSON (*.json)"
+        )
+        if not path:
+            return
+        from ..core.storage import atomic_write_text
+
+        target = Path(path)
+        payload = to_plugin(
+            report,
+            plugin_id=target.stem,
+            name=f"ספריית פרופילים — {self.series.currentText() or 'לא ידוע'}",
+        )
+        try:
+            atomic_write_text(target, json.dumps(payload, indent=2, ensure_ascii=False))
+        except OSError as exc:
+            self.report(exc, "הספרייה לא נשמרה")
+            return
+        self.status(
+            f"נשמרו {len(payload['profiles'])} פרופילים אל {target}; "
+            f"{len(payload['excluded_for_conflict'])} הושהו בגלל סתירה"
+        )
+
+
+# --------------------------------------------------------------------------- #
+# System
+# --------------------------------------------------------------------------- #
+
+class SystemPage(Page):
+    """Updates, licence, brand, plugins and the capability comparison."""
+
+    # -- the program's own updates --------------------------------------- #
+    def _refresh_program_update(self) -> None:
+        from ..core import selfupdate
+
+        state = selfupdate.status()
+        current = state.installed
+        if current == "dev":
+            commit = selfupdate.installed().get("commit", "")
+            self.program_version.setText(
+                f"גרסה לפי git: ⁦{commit}⁩" if commit else "גרסת פיתוח (לא גרסה שפורסמה)"
+            )
+        else:
+            self.program_version.setText(f"גרסה מותקנת: ⁦{current}⁩")
+        text = state.describe()
+        if state.checked_at:
+            from datetime import datetime
+
+            text += f" · נבדק ⁦{datetime.fromtimestamp(state.checked_at):%d/%m %H:%M}⁩"
+        last = state.last or {}
+        if last.get("outcome") == "rolled_back":
+            text += f"\nגרסה ⁦{last.get('version')}⁩ לא נפתחה והוחזרה הגרסה הקודמת — היא לא תנוסה שוב."
+        elif not state.ready and state.problem() and state.problem() != state.error:
+            text += f"\n{state.problem()}"
+        self.program_state.setText(text)
+        # A restart that the launcher would refuse (another window open)
+        # only closes the program for nothing.
+        waiting = (last.get("outcome") == "waiting" and last.get("reason") == "running"
+                   and last.get("version") == state.ready)
+        self.program_restart.setEnabled(bool(state.ready))
+        self.program_restart.setToolTip(
+            "סגרו קודם את שאר חלונות ProfileOS ואת טרמינל הטלפון" if waiting
+            else "" if selfupdate.launched_by_launcher()
+            else "התוכנה לא הופעלה דרך ProfileOS.bat — סגרו ופתחו אותה מחדש כדי להתקין"
+        )
+        self.program_check.setEnabled(state.managed)
+
+    def check_program_update(self) -> None:
+        from ..core import selfupdate
+        from .background import run_in_background
+
+        if getattr(self, "_checking_program", False):
+            return
+        self._checking_program = True
+        self.program_check.setEnabled(False)
+        self.program_state.setText("בודק אם יש גרסה חדשה…")
+
+        def done(_state: Any, error: BaseException | None) -> None:
+            self._checking_program = False
+            if error is not None:
+                self.report(ProfileOSError(str(error)), "בדיקת העדכון נכשלה")
+            self._refresh_program_update()
+
+        run_in_background(selfupdate.check_and_stage, done)
+
+    def restart_for_update(self) -> None:
+        from ..core import selfupdate
+
+        if not selfupdate.status().ready:
+            return
+        if not selfupdate.launched_by_launcher():
+            QMessageBox.information(
+                self, "התקנת העדכון",
+                "העדכון מוכן ויותקן כשהתוכנה תיפתח מחדש דרך הסמל שלה (ProfileOS.bat).\n"
+                "סגרו את התוכנה ופתחו אותה שוב.",
+            )
+            return
+        window = self.window()
+        if hasattr(window, "restart_for_update"):
+            window.restart_for_update()
+
+    def show_whats_new(self, since: str = "") -> None:
+        from ..core import selfupdate
+
+        entries = selfupdate.whats_new(since)[:6]
+        if not entries:
+            QMessageBox.information(self, "מה חדש", "אין חידושים מאז הגרסה הקודמת.")
+            return
+        lines = []
+        for entry in entries:
+            lines.append(f"{entry.get('title', '')}")
+            lines += [f"  • {item}" for item in entry.get("items", [])]
+            lines.append("")
+        box = QMessageBox(self)
+        box.setWindowTitle("מה חדש בתוכנה")
+        box.setText("\n".join(lines).strip())
+        box.exec()
+
+    title = "System"
+    hebrew = "מערכת"
+    subtitle = "עדכונים, רישוי, תוספים והיקף התוכנה"
+
+    def build(self) -> None:
+        check = QPushButton("בדיקת עדכונים")
+        check.setObjectName("Primary")
+        check.clicked.connect(self.check_updates)
+        self.header.add_action(check)
+
+        tabs = QTabWidget()
+        tabs.addTab(self._readiness_tab(), "מצב ההקמה")
+        tabs.addTab(self._updates_tab(), "עדכונים")
+        tabs.addTab(self._licence_tab(), "רישיון")
+        tabs.addTab(self._brand_tab(), "מפעיל")
+        tabs.addTab(self._phones_tab(), "טלפונים")
+        tabs.addTab(self._links_tab(), "חיבורים")
+        tabs.addTab(self._plugins_tab(), "תוספים")
+        tabs.addTab(self._backup_tab(), "גיבוי ושחזור")
+        tabs.addTab(self._audit_tab(), "יומן שינויים")
+
+        # The comparison verifies every capability claim, which means importing
+        # every engine in the suite — OR-Tools, sectionproperties, FastAPI and
+        # the rest. Doing that while the window is still being built costs the
+        # user twenty seconds before they see anything, to populate a tab most
+        # sessions never open. It is filled the first time it is looked at.
+        self._compare_page = QWidget()
+        self._compare_layout = QVBoxLayout(self._compare_page)
+        self._compare_layout.setContentsMargins(0, METRICS.space(3), 0, 0)
+        self._compare_layout.setSpacing(METRICS.space(3))
+        self._compare_built = False
+        self._compare_index = tabs.addTab(self._compare_page, "השוואה")
+        tabs.currentChanged.connect(self._tab_changed)
+
+        self.tabs = tabs
+        self.body.addWidget(tabs, 1)
+
+    def _tab_changed(self, index: int) -> None:
+        if index == self._compare_index:
+            self._build_comparison()
+
+    # -- updates ------------------------------------------------------------- #
+    def refresh(self) -> None:
+        """The setup list is re-read every time the page is opened.
+
+        It is the one panel whose answer changes because of work done on
+        other screens, so a cached copy of it would be wrong exactly when it
+        matters.
+        """
+        self.show_setup()
+
+    def _readiness_tab(self) -> QWidget:
+        """The full setup list — the front page shows only the next few."""
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, METRICS.space(3), 0, 0)
+        layout.setSpacing(METRICS.space(3))
+
+        self.setup_headline = QLabel("")
+        self.setup_headline.setObjectName("StatLabel")
+        self.setup_headline.setWordWrap(True)
+        layout.addWidget(self.setup_headline)
+
+        self.setup_table = DataTable(
+            ["", "מה", "מצב", "מה יש כרגע", "מה זה חוסם", "איך סוגרים"],
+            empty_text="אין בדיקות",
+        )
+        # The two columns that say what to do are sentences: they wrap
+        # instead of ending in "…" exactly where the instruction was.
+        self.setup_table.setWordWrap(True)
+        self.setup_table.stretch(5)
+        layout.addWidget(self.setup_table, 1)
+
+        note = QLabel(
+            "אף תוכנה בענף אינה שלמה עד שהעובדות של המפעל בתוכה: אילו סדרות "
+            "קונים, מה הקיזוזים של הספק, מה הצַבָּע גובה, איזו מכונה על הרצפה. "
+            "ההבדל כאן הוא שזה נאמר במפורש במקום שמסך ייראה גמור ויתמחר על "
+            "ערכי ברירת מחדל."
+        )
+        note.setObjectName("Hint")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        return page
+
+    def show_setup(self) -> None:
+        from ..readiness import State, readiness
+
+        try:
+            report = readiness()
+        except Exception as exc:  # noqa: BLE001
+            self.setup_table.set_rows([])
+            self.setup_headline.setText(str(exc))
+            return
+
+        tone = {
+            State.ATTENTION: self.colours.danger,
+            State.EMPTY: self.colours.warning,
+            State.PARTIAL: self.colours.info,
+            State.READY: self.colours.success,
+        }
+        rows: list[list[Any]] = []
+        colours: dict[tuple[int, int], str] = {}
+        for index, check in enumerate(report):
+            rows.append([
+                "●", check.hebrew, check.state.hebrew, check.detail,
+                check.blocks or "—", check.fix or "—",
+            ])
+            colours[(index, 0)] = tone[check.state]
+        self.setup_table.set_rows(rows, colours=colours)
+        self.setup_table.resizeRowsToContents()
+        self.setup_headline.setText(report.verdict())
+        self.setup_headline.setStyleSheet(
+            f"color: {self.colours.success if report.may_cut else self.colours.warning};"
+        )
+
+    def _updates_tab(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, METRICS.space(3), 0, 0)
+        layout.setSpacing(METRICS.space(3))
+
+        # -- the program itself ------------------------------------------- #
+        program = Card("עדכון התוכנה")
+        self.program_version = QLabel("")
+        self.program_version.setObjectName("HomeNext")
+        self.program_state = QLabel("")
+        self.program_state.setObjectName("Hint")
+        self.program_state.setWordWrap(True)
+        program.add(self.program_version)
+        program.add(self.program_state)
+        buttons = QHBoxLayout()
+        buttons.setSpacing(METRICS.space(2))
+        self.program_check = QPushButton("בדיקה עכשיו")
+        self.program_check.clicked.connect(self.check_program_update)
+        self.program_restart = QPushButton("התקנה והפעלה מחדש")
+        self.program_restart.setObjectName("Primary")
+        self.program_restart.clicked.connect(self.restart_for_update)
+        news = QPushButton("מה חדש")
+        news.clicked.connect(lambda: self.show_whats_new())
+        for button in (self.program_restart, self.program_check, news):
+            buttons.addWidget(button)
+        buttons.addStretch(1)
+        program.add_layout(buttons)
+        explain = QLabel(
+            "כל שיפור עובר את כל הבדיקות לפני שהוא מתפרסם. התוכנה מורידה גרסה "
+            "חדשה ברקע, מוודאת שהיא שלמה ושהיא נפתחת, ומתקינה אותה בהפעלה הבאה — "
+            "אחרי גיבוי של הנתונים. אם הגרסה החדשה לא נפתחת, חוזרים לקודמת מעצמם."
+        )
+        explain.setObjectName("Hint")
+        explain.setWordWrap(True)
+        program.add(explain)
+        layout.addWidget(program)
+        self._refresh_program_update()
+
+        note = QLabel(
+            "עדכוני תוכן הם מניפסטים חתומים. כל חבילה מורדת, החתימה שלה "
+            "נבדקת והתוכן מאומת לפני שמשהו מותקן; החבילות מותקנות באופן "
+            "אטומי ומוחזרות במלואן אם חלק כלשהו נכשל. מערכות פרופיל, כללים "
+            "ומחירונים נכנסים לתוקף בלי הפעלה מחדש."
+        )
+        note.setObjectName("Hint")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+
+        source_row = QHBoxLayout()
+        source_row.setSpacing(METRICS.space(3))
+        self.update_source = QLineEdit()
+        self.update_source.setPlaceholderText("https://updates.example.com/ או תיקייה")
+        self.update_key_label = QLabel("לא נבחר מפתח")
+        self.update_key_label.setObjectName("FieldValue")
+        pick_key = QPushButton("מפתח מנפיק…")
+        pick_key.clicked.connect(self._pick_update_key)
+        self.update_channel = QComboBox()
+        self.update_channel.addItems(["stable", "beta", "canary"])
+
+        for label, widget in [("מקור", self.update_source)]:
+            caption = QLabel(label)
+            caption.setObjectName("FieldLabel")
+            source_row.addWidget(caption)
+            source_row.addWidget(widget, 1)
+        source_row.addWidget(pick_key)
+        source_row.addWidget(self.update_key_label)
+        channel_caption = QLabel("ערוץ")
+        channel_caption.setObjectName("FieldLabel")
+        source_row.addWidget(channel_caption)
+        source_row.addWidget(self.update_channel)
+        layout.addLayout(source_row)
+
+        key_note = QLabel(
+            "בלי המפתח הציבורי של המנפיק אי אפשר להתקין דבר: מניפסט לא חתום "
+            "נדחה במקום להיות מהימן — וזו כל מטרת המנגנון."
+        )
+        key_note.setObjectName("Hint")
+        key_note.setWordWrap(True)
+        layout.addWidget(key_note)
+
+        self.update_table = DataTable(
+            ["חבילה", "גרסה", "סוג", "גודל", "תיאור"],
+            empty_text="לחץ ״בדיקת עדכונים״ כדי לראות חבילות זמינות",
+        )
+        layout.addWidget(self.update_table, 1)
+
+        self.apply_button = QPushButton("החלת עדכונים")
+        self.apply_button.setEnabled(False)
+        self.apply_button.clicked.connect(self.apply_updates)
+        layout.addWidget(self.apply_button)
+
+        installed_title = QLabel("תוכן מותקן")
+        installed_title.setObjectName("CardTitle")
+        layout.addWidget(installed_title)
+        self.installed_table = DataTable(
+            ["חבילה", "גרסה", "סוג", "הותקן"],
+            empty_text="עדיין לא הותקן תוכן",
+        )
+        layout.addWidget(self.installed_table, 1)
+
+        self._update_key: Path | None = None
+        self._update_plan: Any = None
+        self._refresh_installed()
+        return page
+
+    def _pick_update_key(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "מפתח ציבורי של המנפיק", str(documents_dir()), "מפתחות PEM (*.pem *.pub);;כל הקבצים (*)"
+        )
+        if path:
+            self._update_key = Path(path)
+            self.update_key_label.setText(self._update_key.name)
+
+    def _engine(self, *, need_key: bool) -> Any:
+        """Build an update engine, or explain what is missing.
+
+        Reading the installed state does not need a key; fetching a manifest
+        does, and refusing to build the engine without one is better than
+        building it with a throwaway key that would reject every signature
+        with a misleading error.
+        """
+        from ..core.config import get_settings
+        from ..core.hotreload import PluginLoader
+        from ..security.keys import SigningKey, VerifyKey
+        from ..updates import DirectorySource, UpdateChannel, UpdateEngine, HttpSource
+
+        settings = get_settings()
+        settings.ensure_directories()
+
+        if need_key:
+            if self._update_key is None or not self._update_key.is_file():
+                raise ProfileOSError(
+                    "בחר את המפתח הציבורי של המנפיק לפני בדיקת עדכונים"
+                )
+            verify_key = VerifyKey.from_pem(self._update_key.read_bytes())
+        elif self._update_key is not None and self._update_key.is_file():
+            verify_key = VerifyKey.from_pem(self._update_key.read_bytes())
+        else:
+            # Only ever used for the read-only installed listing below.
+            verify_key = SigningKey.generate().public_key()
+
+        raw = self.update_source.text().strip()
+        if raw.startswith(("http://", "https://")):
+            source: Any = HttpSource(raw)
+        else:
+            source = DirectorySource(raw or settings.data_dir)
+
+        return UpdateEngine(
+            source,
+            verify_key,
+            settings,
+            channel=UpdateChannel(self.update_channel.currentText()),
+            loader=PluginLoader(settings, strict=False),
+        )
+
+    def _refresh_installed(self) -> None:
+        try:
+            engine = self._engine(need_key=False)
+            installed = engine.installed()
+        except Exception as exc:  # noqa: BLE001
+            self.installed_table.set_rows([["שגיאה", "", "", str(exc)]])
+            return
+        self.installed_table.set_rows(
+            [
+                [p.package_id, p.version, p.kind, p.installed_at[:19]]
+                for p in installed
+            ]
+        )
+
+    def check_updates(self) -> None:
+        try:
+            engine = self._engine(need_key=True)
+            plan = engine.check()
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "בדיקת העדכונים נכשלה")
+            return
+
+        self._update_plan = plan
+        self.update_table.set_rows(
+            [
+                [
+                    package.package_id,
+                    package.version,
+                    package.kind.hebrew,
+                    f"{package.size / 1024:.1f} kB",
+                    package.description or "",
+                ]
+                for package in plan.packages
+            ],
+            numeric_columns=(3,),
+        )
+        self.apply_button.setEnabled(plan.has_updates)
+        if plan.skipped:
+            for package_id, reason in plan.skipped[:3]:
+                self.status(f"דולג {package_id}: {reason}")
+        self.status(
+            f"{len(plan.packages)} עדכונים, ⁦{plan.total_size / 1024:.0f} kB⁩"
+            if plan.has_updates
+            else "הכול מעודכן"
+        )
+
+    def apply_updates(self) -> None:
+        if self._update_plan is None or not self._update_plan.has_updates:
+            self.report(ProfileOSError("בדוק עדכונים קודם"), "אין מה להחיל")
+            return
+        try:
+            engine = self._engine(need_key=True)
+            result = engine.apply(self._update_plan)
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "העדכון נכשל והוחזר לאחור")
+            return
+
+        if result.ok:
+            self.status(
+                f"הוחלו {len(result.applied)} עדכונים תוך "
+                f"⁦{result.duration_s:.2f} ש׳⁩, {result.reloaded} נטענו חיים"
+            )
+        else:
+            detail = "; ".join(f"{pid}: {why}" for pid, why in result.failed)
+            self.report(
+                ProfileOSError(
+                    f"העדכון נכשל והוחזר לאחור — {detail}"
+                    if result.rolled_back
+                    else f"העדכון נכשל חלקית — {detail}"
+                ),
+                "העדכון נכשל",
+            )
+        for warning in result.warnings[:3]:
+            self.status(warning)
+        self._update_plan = None
+        self.apply_button.setEnabled(False)
+        self.update_table.clear_rows()
+        self._refresh_installed()
+
+    # -- licence -------------------------------------------------------------- #
+    # -- phones ---------------------------------------------------------------- #
+    def _phones_tab(self) -> QWidget:
+        """The phones and tablets: turn their way in on, pair one, cut one off.
+
+        A fitter measuring on site and the tablet by the saw talk to this
+        window over the shop's own network. Nothing is put on the internet,
+        and a phone gets in only with a code shown here, on this screen.
+        """
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, METRICS.space(3), 0, 0)
+        layout.setSpacing(METRICS.space(3))
+
+        access = Card("גישה מהטלפון")
+        row = QHBoxLayout()
+        self.phone_switch = QPushButton("")
+        self.phone_switch.setObjectName("Primary")
+        self.phone_switch.clicked.connect(self.toggle_phone_access)
+        row.addWidget(self.phone_switch)
+        self.phone_state = QLabel("")
+        self.phone_state.setObjectName("FieldValue")
+        self.phone_state.setWordWrap(True)
+        self.phone_state.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        row.addWidget(self.phone_state, 1)
+        access.add_layout(row)
+        hint = QLabel(
+            "הטלפון צריך להיות מחובר לאותה רשת Wi‑Fi כמו המחשב הזה. בפעם הראשונה "
+            "Windows עשוי לשאול אם לאפשר גישה ברשת — אשרו ״רשת פרטית״."
+        )
+        hint.setObjectName("Hint")
+        hint.setWordWrap(True)
+        access.add(hint)
+        layout.addWidget(access)
+
+        pair = Card("חיבור טלפון חדש")
+        row = QHBoxLayout()
+        caption = QLabel("של מי")
+        caption.setObjectName("FieldLabel")
+        row.addWidget(caption)
+        self.phone_name = QLineEdit()
+        self.phone_name.setPlaceholderText("למשל: הטלפון של יוסי")
+        row.addWidget(self.phone_name, 1)
+        self.phone_measure = QCheckBox("מדידות")
+        self.phone_measure.setChecked(True)
+        self.phone_floor = QCheckBox("רצפת ייצור")
+        self.phone_floor.setChecked(True)
+        self.phone_drawings = QCheckBox("שרטוטים")
+        self.phone_drawings.setChecked(True)
+        for box in (self.phone_measure, self.phone_floor, self.phone_drawings):
+            row.addWidget(box)
+        issue = QPushButton("קוד חיבור")
+        issue.clicked.connect(self.issue_phone_code)
+        row.addWidget(issue)
+        pair.add_layout(row)
+        shown = QHBoxLayout()
+        shown.setSpacing(METRICS.space(4))
+        self.phone_qr = QLabel("")
+        shown.addWidget(self.phone_qr)
+        told = QVBoxLayout()
+        self.phone_digits = QLabel("")
+        self.phone_digits.setObjectName("HomeGreeting")
+        # Digits alone read as left-to-right text; the code sits where the
+        # Hebrew line under it starts.
+        self.phone_digits.setAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignAbsolute)
+        self.phone_digits.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        told.addWidget(self.phone_digits)
+        self.phone_code = QLabel("")
+        self.phone_code.setObjectName("Hint")
+        self.phone_code.setWordWrap(True)
+        told.addWidget(self.phone_code)
+        told.addStretch(1)
+        shown.addLayout(told, 1)
+        pair.add_layout(shown)
+        layout.addWidget(pair)
+
+        self.phone_devices = DataTable(
+            ["מכשיר", "מותר", "חובר", "נראה לאחרונה", "מצב"],
+            empty_text="עוד לא חובר טלפון — צרו קוד חיבור למעלה",
+        )
+        self.phone_devices.stretch(0)
+        layout.addWidget(self.phone_devices, 1)
+        row = QHBoxLayout()
+        revoke = QPushButton("ניתוק המכשיר הנבחר")
+        revoke.setToolTip("טלפון שאבד או עובד שעזב — המכשיר מפסיק לעבוד מיד")
+        revoke.clicked.connect(self.revoke_phone)
+        row.addWidget(revoke)
+        row.addStretch(1)
+        layout.addLayout(row)
+
+        from PySide6.QtCore import QTimer
+
+        self._code_timer = QTimer(page)
+        self._code_timer.setInterval(1000)
+        self._code_timer.timeout.connect(self._tick_code)
+        self._issued = None
+        self._show_phone_access()
+        self.show_phones()
+        return page
+
+    # -- connections ------------------------------------------------------------ #
+    def _links_tab(self) -> QWidget:
+        """Services the program issues documents through — the shop's own key."""
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, METRICS.space(3), 0, 0)
+        layout.setSpacing(METRICS.space(3))
+        card = Card("חשבונית ירוקה (Morning) — הפקת חשבוניות מהפרויקט")
+        grid = FieldGrid()
+        self.morning_id = QLineEdit()
+        self.morning_id.setPlaceholderText("מזהה המפתח (API Key ID)")
+        self.morning_secret = QLineEdit()
+        self.morning_secret.setEchoMode(QLineEdit.EchoMode.Password)
+        self.morning_secret.setPlaceholderText("הסוד (Secret) — נשמר רק במחשב הזה")
+        self.morning_sandbox = QCheckBox("חשבון ניסיון (Sandbox) — מסמכים לא אמיתיים")
+        grid.add("מזהה", self.morning_id)
+        grid.add("סוד", self.morning_secret)
+        grid.add_span(self.morning_sandbox)
+        card.add(grid)
+        row = QHBoxLayout()
+        save = QPushButton("שמירה")
+        save.setObjectName("Primary")
+        save.clicked.connect(self.save_morning)
+        row.addWidget(save)
+        test = QPushButton("בדיקת חיבור")
+        test.clicked.connect(self.test_morning)
+        row.addWidget(test)
+        self.morning_state = QLabel("")
+        self.morning_state.setObjectName("Hint")
+        self.morning_state.setWordWrap(True)
+        row.addWidget(self.morning_state, 1)
+        card.add_layout(row)
+        hint = QLabel(
+            "את המפתח יוצרים ב־Morning: הגדרות ← כלים למפתחים ← מפתחות API. "
+            "אחרי שמירה, בחשבון כל פרויקט ← חשבוניות ← ״הפקה ב־Morning…״. "
+            "שום מסמך לא מופק בלי אישור שלכם."
+        )
+        hint.setObjectName("Hint")
+        hint.setWordWrap(True)
+        card.add(hint)
+        layout.addWidget(card)
+        layout.addStretch(1)
+        try:
+            from ..erp.morning import load_account
+
+            account = load_account()
+            self.morning_id.setText(account.key_id)
+            self.morning_secret.setText(account.secret)
+            self.morning_sandbox.setChecked(account.sandbox)
+            self.morning_state.setText("מפתח שמור" if account.ready else "עוד לא הוזן מפתח")
+        except Exception as exc:  # noqa: BLE001
+            self.morning_state.setText(f"קובץ המפתח לא נקרא: {exc}")
+        return page
+
+    def _morning_account(self) -> Any:
+        from ..erp.morning import MorningAccount
+
+        return MorningAccount(key_id=self.morning_id.text().strip(),
+                              secret=self.morning_secret.text().strip(),
+                              sandbox=self.morning_sandbox.isChecked())
+
+    def save_morning(self) -> None:
+        from ..erp.morning import save_account
+
+        try:
+            save_account(self._morning_account())
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "המפתח לא נשמר")
+            return
+        self.morning_state.setText("המפתח נשמר")
+
+    def test_morning(self) -> bool:
+        """A token from Morning: the key works. Nothing is issued."""
+        from PySide6.QtWidgets import QApplication
+
+        from ..erp.morning import MorningClient
+
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            MorningClient(self._morning_account()).token()
+        except Exception as exc:  # noqa: BLE001
+            QApplication.restoreOverrideCursor()
+            self.morning_state.setText(f"החיבור לא הצליח: {exc}")
+            self.morning_state.setStyleSheet(f"color: {self.colours.danger};")
+            return False
+        QApplication.restoreOverrideCursor()
+        self.morning_state.setText("המפתח אושר ב־Morning — אפשר להפיק מסמכים מהפרויקטים")
+        self.morning_state.setStyleSheet(f"color: {self.colours.success};")
+        return True
+
+    def _registry(self) -> Any:
+        from ..mobile.pairing import DeviceRegistry, default_registry_path
+
+        return DeviceRegistry.load(default_registry_path())
+
+    def _show_phone_access(self) -> None:
+        from ..mobile.host import HOST
+
+        if HOST.running:
+            self.phone_switch.setText("הפסקת הגישה")
+            urls = HOST.urls()
+            self.phone_state.setText(
+                "פועל. בטלפון פותחים: " + " או ".join(f"⁦{url}⁩" for url in urls)
+            )
+        else:
+            self.phone_switch.setText("הפעלת גישה מהטלפון")
+            self.phone_state.setText(
+                "כבוי — טלפונים לא יכולים להתחבר" + (f" ({HOST.problem})" if HOST.problem else "")
+            )
+
+    def toggle_phone_access(self) -> None:
+        from ..core.config import get_settings, save_settings
+        from ..mobile.host import HOST
+
+        settings = get_settings()
+        try:
+            if HOST.running:
+                HOST.stop()
+                settings.phone_access = False
+            else:
+                HOST.start(settings.phone_port)
+                settings.phone_access = True
+            save_settings(settings)
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "הגישה מהטלפון לא הופעלה")
+        self._show_phone_access()
+
+    def issue_phone_code(self) -> None:
+        from ..mobile.host import HOST
+
+        scopes = [scope for scope, box in (
+            ("measure", self.phone_measure), ("jobs", self.phone_floor),
+            ("drawings", self.phone_drawings)) if box.isChecked()]
+        if not scopes:
+            self.report(ProfileOSError("סמנו לפחות דבר אחד שהמכשיר יוכל לעשות"), "אין הרשאות")
+            return
+        if not HOST.running:
+            self.toggle_phone_access()
+            if not HOST.running:
+                return
+        try:
+            self._issued = self._registry().issue_code(self.phone_name.text(), scopes=scopes)
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "לא נוצר קוד")
+            return
+        url = (HOST.urls() or [""])[0]
+        self.phone_qr.clear()
+        try:
+            import io
+
+            import segno
+            from PySide6.QtGui import QPixmap
+
+            buffer = io.BytesIO()
+            segno.make(url, error="m").save(buffer, kind="png", scale=5, border=2)
+            pixmap = QPixmap()
+            pixmap.loadFromData(buffer.getvalue(), "PNG")
+            self.phone_qr.setPixmap(pixmap)
+        except Exception:  # noqa: BLE001 - the address is written out anyway
+            pass
+        self._tick_code()
+        self._code_timer.start()
+
+    def _tick_code(self) -> None:
+        from ..mobile.host import HOST
+
+        code = self._issued
+        if code is None or not code.valid:
+            self._code_timer.stop()
+            self.phone_digits.setText("")
+            self.phone_code.setText("הקוד פג — צרו חדש" if code is not None else "")
+            self.phone_qr.clear()
+            self._issued = None
+            self.show_phones()
+            return
+        url = (HOST.urls() or [""])[0]
+        self.phone_digits.setText(f"⁦{code.code[:3]} {code.code[3:]}⁩")
+        self.phone_code.setText(
+            f"סרקו את הריבוע במצלמת הטלפון (או פתחו ⁦{url}⁩), והקלידו את הקוד. "
+            f"תקף עוד ⁦{code.seconds_left // 60}:{code.seconds_left % 60:02d}⁩ דקות, פעם אחת."
+        )
+
+    def show_phones(self) -> None:
+        names = {"measure": "מדידות", "jobs": "רצפת ייצור", "drawings": "שרטוטים"}
+        try:
+            registry = self._registry()
+        except Exception as exc:  # noqa: BLE001
+            self.phone_devices.set_rows([[f"רשימת המכשירים לא נקראה: {exc}", "", "", "", ""]])
+            return
+        rows = []
+        self._device_ids: list[str] = []
+        for device in sorted(registry.devices.values(), key=lambda d: d.paired_at, reverse=True):
+            state = "מנותק" if device.revoked else ("פג תוקף" if device.expired else "פעיל")
+            rows.append([
+                device.name, ", ".join(names.get(s, s) for s in device.scopes),
+                device.paired_at.astimezone().strftime("%d/%m/%Y"),
+                device.last_seen.astimezone().strftime("%d/%m/%Y %H:%M"), state,
+            ])
+            self._device_ids.append(device.device_id)
+        self.phone_devices.set_rows(rows)
+
+    def revoke_phone(self) -> None:
+        row = self.phone_devices.currentRow()
+        ids = getattr(self, "_device_ids", [])
+        if row < 0 or row >= len(ids):
+            self.report(ProfileOSError("בחרו מכשיר מהרשימה"), "לא נבחר מכשיר")
+            return
+        try:
+            device = self._registry().revoke(ids[row])
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "המכשיר לא נותק")
+            return
+        self.status(f"{device.name} נותק — הוא לא יכול יותר להתחבר")
+        self.show_phones()
+
+    def _licence_tab(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, METRICS.space(3), 0, 0)
+        layout.setSpacing(METRICS.space(3))
+
+        grid = FieldGrid()
+        try:
+            from ..security.hwid import current_fingerprint
+
+            fingerprint = current_fingerprint()
+            for label, text in [
+                ("טביעת אצבע של המחשב", fingerprint.short),
+                ("מאפיינים שנרשמו", str(len(fingerprint.traits))),
+                (
+                    "מאפיינים",
+                    ", ".join(trait.name for trait in fingerprint.traits) or "אין",
+                ),
+            ]:
+                value = QLabel(text)
+                value.setObjectName("FieldValue")
+                value.setWordWrap(True)
+                grid.add(label, value)
+        except Exception as exc:  # noqa: BLE001
+            value = QLabel(f"לא זמין: {exc}")
+            value.setObjectName("FieldValue")
+            grid.add("טביעת אצבע של המחשב", value)
+        layout.addWidget(grid)
+
+        note = QLabel(
+            "הרישיון נחתם לטביעת האצבע של המחשב הזה ב-AES-256-GCM ומאומת "
+            "כולו במנותק מהרשת. טביעת האצבע היא סט משוקלל של מאפיינים ולא "
+            "מספר סידורי אחד, כך שהחלפת דיסק לא מבטלת את הרישיון, ורק "
+            "תקצירי מאפיינים נשמרים — קובץ הרישיון לעולם לא נושא כתובת MAC "
+            "או מספר סידורי גלויים. אחרי פקיעה התוכנה עוברת לקריאה בלבד "
+            "לתקופת החסד במקום לנעול את המפעל באמצע עבודה."
+        )
+        note.setObjectName("Hint")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        layout.addStretch(1)
+        return page
+
+    # -- brand ---------------------------------------------------------------- #
+    #: Field order on the operator tab, and where each value comes from.
+    _BRAND_FIELDS: tuple[tuple[str, str], ...] = (
+        ("שם", "display_name"),
+        ("שם משפטי", "legal_name"),
+        ("כתובת", "address_line"),
+        ("עיר", "city"),
+        ("מיקוד", "postcode"),
+        ("מדינה", "country"),
+        ("טלפון", "phone"),
+        ("פקס", "fax"),
+        ("דוא\"ל", "email"),
+        ("אתר", "website"),
+    )
+
+    def _calibration(self) -> Any:
+        from ..erp.timesheets import default_timebook
+        from ..projects import default_store
+        from ..quoting.labour_learning import calibrate
+
+        return calibrate(default_store().all(), default_timebook())
+
+    def show_pace(self) -> None:
+        from ..core.config import get_settings
+
+        try:
+            calibration = self._calibration()
+        except Exception as exc:  # noqa: BLE001
+            self.pace.setText(f"שעות העבודה הרשומות לא נקראו: {exc}")
+            self.apply_pace.setVisible(False)
+            return
+        current = get_settings().labour_factor
+        text = calibration.describe()
+        if current != 1.0:
+            text += f" כרגע ההצעות מחושבות לפי ⁦{current:.2f}⁩ מהנורמה."
+        self.pace.setText(text)
+        offer = calibration.enough and abs(calibration.factor - current) >= 0.05
+        self.apply_pace.setVisible(offer)
+        if offer:
+            self.apply_pace.setText(f"לתמחר מעכשיו לפי ⁦{calibration.factor:.2f}⁩ מהנורמה")
+
+    def apply_labour_factor(self) -> None:
+        """The owner's decision: quotations from now on at the shop's own pace."""
+        from datetime import date
+
+        from ..core.config import get_settings, save_settings
+
+        calibration = self._calibration()
+        if not calibration.enough:
+            return
+        settings = get_settings()
+        settings.labour_factor = calibration.factor
+        settings.labour_factor_basis = (
+            f"⁦{len(calibration.jobs)}⁩ עבודות, ⁦{date.today():%d/%m/%Y}⁩")
+        try:
+            save_settings(settings)
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "המקדם לא נשמר")
+            return
+        self.show_pace()
+        self.status(f"הצעות חדשות יחושבו לפי ⁦{calibration.factor:.2f}⁩ מהנורמה")
+
+    def save_rates(self) -> None:
+        from ..core.config import get_settings, save_settings
+
+        settings = get_settings()
+        settings.estimate_rates = {
+            key: round(box.value(), 2) for key, box in self._rate_fields.items() if box.value() > 0
+        }
+        try:
+            save_settings(settings)
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "התעריפים לא נשמרו")
+            return
+        count = len(settings.estimate_rates)
+        self.status(f"נשמרו ⁦{count}⁩ תעריפים" if count
+                    else "אין תעריפים — שורה בלי מחירון תישאר בלי מחיר")
+
+    def save_certificates(self) -> None:
+        from datetime import datetime
+
+        from ..core.config import get_settings, save_settings
+
+        settings = get_settings()
+        # Every date is read first; nothing changes unless all of them are good.
+        values: dict[str, str] = {}
+        for field_name, edit in self._cert_fields.items():
+            text = edit.text().strip()
+            if not text:
+                values[field_name] = ""
+                continue
+            value = None
+            for pattern in ("%d/%m/%Y", "%d.%m.%Y", "%Y-%m-%d", "%d/%m/%y"):
+                try:
+                    value = datetime.strptime(text, pattern).date()
+                    break
+                except ValueError:
+                    continue
+            if value is None:
+                self.report(ProfileOSError(f"״{text}״ אינו תאריך — כתבו למשל 31/03/2027"),
+                            "התאריכים לא נשמרו")
+                return
+            values[field_name] = value.isoformat()
+        for field_name, value in values.items():
+            setattr(settings, field_name, value)
+        for field_name, edit in getattr(self, "_contact_fields", {}).items():
+            setattr(settings, field_name, edit.text().strip())
+        try:
+            save_settings(settings)
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "התאריכים לא נשמרו")
+            return
+        self.status("נשמר — התוכנה תזכיר חודש לפני שאישור פג")
+
+    def _brand_tab(self) -> QWidget:
+        from ..branding import BRANDS, BUILTIN_BRANDS, configured_brand_id
+
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, METRICS.space(3), 0, 0)
+        layout.setSpacing(METRICS.space(3))
+
+        chooser = QHBoxLayout()
+        caption = QLabel("מפעיל")
+        caption.setObjectName("FieldLabel")
+        self.brand_picker = QComboBox()
+        known = dict(BUILTIN_BRANDS)
+        for key in BRANDS.keys():
+            entry = BRANDS.get_or_none(key)
+            if entry is not None:
+                known[key] = entry
+        for key, entry in sorted(known.items()):
+            self.brand_picker.addItem(entry.display_name, key)
+        index = self.brand_picker.findData(configured_brand_id())
+        if index >= 0:
+            self.brand_picker.setCurrentIndex(index)
+        self.brand_picker.currentIndexChanged.connect(self._choose_brand)
+        chooser.addWidget(caption)
+        chooser.addWidget(self.brand_picker)
+        chooser.addStretch(1)
+        layout.addLayout(chooser)
+
+        # Built once, then updated in place. Tearing the tab down and building
+        # it again leaves the old labels on screen until Qt gets round to
+        # deleting them, and the two sets of text overlap.
+        grid = FieldGrid()
+        self._brand_values: dict[str, QLabel] = {}
+        for label, _ in self._BRAND_FIELDS:
+            value = QLabel()
+            value.setObjectName("FieldValue")
+            value.setWordWrap(True)
+            # Hebrew values are laid out right-to-left inside the label, which
+            # is correct, but left to itself the label then parks the text at
+            # the far edge of a wide column, half a screen from its caption.
+            # Pinning the label's own alignment keeps value beside label while
+            # the text inside it still reads in its own direction.
+            # AlignLeft alone is the *leading* edge, which Qt resolves to the
+            # right for a Hebrew paragraph; AlignAbsolute makes it mean left.
+            value.setAlignment(
+                Qt.AlignmentFlag.AlignLeft
+                | Qt.AlignmentFlag.AlignAbsolute
+                | Qt.AlignmentFlag.AlignVCenter
+            )
+            self._brand_values[label] = grid.add(label, value)
+        layout.addWidget(grid)
+
+        self.brand_note = QLabel()
+        self.brand_note.setObjectName("Hint")
+        self.brand_note.setWordWrap(True)
+        layout.addWidget(self.brand_note)
+
+        # The shop's own certificates: lapsed, they cost 20–30% of every
+        # contractor payment. Dates kept in settings; watched a month ahead.
+        certificates = Card("פרטי העסק ואישורים")
+        cert_grid = FieldGrid()
+        from ..core.config import get_settings
+
+        settings = get_settings()
+        self._cert_fields: dict[str, Any] = {}
+        self._contact_fields: dict[str, Any] = {}
+        for field_name, label, hint in (
+            ("owner_phone", "הנייד שלך — לסיכום הבוקר", "050-000-0000"),
+            ("review_link", "קישור לביקורת בגוגל", "https://g.page/r/…/review"),
+            ("payment_note", "שורת תשלום בכל הצעה", "אפשר לשלם עד 12 תשלומים באשראי"),
+        ):
+            edit = QLineEdit(getattr(settings, field_name, "") or "")
+            edit.setPlaceholderText(hint)
+            if field_name != "payment_note":
+                edit.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
+                edit.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignAbsolute)
+            self._contact_fields[field_name] = edit
+            cert_grid.add(label, edit)
+        for field_name, label in (
+            ("withholding_certificate_until", "אישור ניכוי מס במקור — בתוקף עד"),
+            ("books_certificate_until", "אישור ניהול ספרים — בתוקף עד"),
+        ):
+            edit = QLineEdit(getattr(settings, field_name, "") or "")
+            edit.setPlaceholderText("31/03/2027")
+            edit.setText(_iso_to_shop_date(getattr(settings, field_name, "") or ""))
+            self._cert_fields[field_name] = edit
+            cert_grid.add(label, edit)
+        certificates.add(cert_grid)
+        save_certs = QPushButton("שמור")
+        save_certs.clicked.connect(self.save_certificates)
+        certificates.add(save_certs)
+        layout.addWidget(certificates)
+
+        # The only stand-in for a supplier price: rates the shop sets itself.
+        rates_card = Card("תעריפי הערכה של העסק")
+        rates_hint = QLabel(
+            "לשורת חומר שאין לה מחיר באף מחירון ספק. בלי תעריף — השורה נשארת בלי מחיר "
+            "וההצעה אומרת את זה. שורה שתומחרה לפי תעריף מסומנת בהצעה כהערכה."
+        )
+        rates_hint.setObjectName("Hint")
+        rates_hint.setWordWrap(True)
+        rates_card.add(rates_hint)
+        rates_grid = FieldGrid()
+        from ..quoting.rates import RATE_FIELDS
+
+        entered = dict(getattr(settings, "estimate_rates", {}) or {})
+        self._rate_fields: dict[str, QDoubleSpinBox] = {}
+        for key, label, unit in RATE_FIELDS:
+            box = QDoubleSpinBox()
+            box.setRange(0, 100_000)
+            box.setDecimals(2)
+            box.setSuffix(f" {unit}")
+            box.setSpecialValueText("לא הוזן")
+            box.setValue(float(entered.get(key, 0) or 0))
+            self._rate_fields[key] = box
+            rates_grid.add(label, box)
+        rates_card.add(rates_grid)
+        save_rates = QPushButton("שמור תעריפים")
+        save_rates.clicked.connect(self.save_rates)
+        rates_card.add(save_rates)
+        # The pace the shop really works at, learned from its booked hours.
+        self.pace = QLabel("")
+        self.pace.setObjectName("Hint")
+        self.pace.setWordWrap(True)
+        rates_card.add(self.pace)
+        self.apply_pace = QPushButton("")
+        self.apply_pace.clicked.connect(self.apply_labour_factor)
+        rates_card.add(self.apply_pace)
+        self.show_pace()
+        layout.addWidget(rates_card)
+
+        note = QLabel(
+            "הפרטים האלה מופיעים על הצעות מחיר, כרטיסי עבודה ובכותרת של כל "
+            "תוכנית מכונה. מוסיפים מפעיל נוסף, או מתקנים פרטים, באמצעות "
+            "תוסף מותג."
+        )
+        note.setObjectName("Hint")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        layout.addStretch(1)
+
+        self._show_brand()
+        return page
+
+    def _show_brand(self) -> None:
+        from ..branding import active_brand
+
+        brand = active_brand()
+        for label, attribute in self._BRAND_FIELDS:
+            text = getattr(brand, attribute, None)
+            self._brand_values[label].setText(str(text) if text else "לא הוגדר")
+        self.brand_note.setText(brand.notes or "")
+        self.brand_note.setVisible(bool(brand.notes))
+
+    def _choose_brand(self) -> None:
+        from ..branding import set_active_brand
+
+        brand_id = self.brand_picker.currentData()
+        if not brand_id:
+            return
+        try:
+            brand = set_active_brand(brand_id, persist=True)
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "לא ניתן להחליף את המפעיל")
+            return
+        self._show_brand()
+        window = self.window()
+        if hasattr(window, "refresh_brand"):
+            window.refresh_brand()
+        self.status(
+            f"המפעיל הוגדר ל{brand.display_name}; מעכשיו הוא יופיע על מסמכים "
+            "ובכותרות תוכניות המכונה"
+        )
+
+    # -- plugins --------------------------------------------------------------- #
+    def _plugins_tab(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, METRICS.space(3), 0, 0)
+        layout.setSpacing(METRICS.space(3))
+
+        table = DataTable(["רישום", "רשומות", "תוכן"])
+        try:
+            from ..core.registry import registry_report
+
+            rows = []
+            for name, entries in sorted(registry_report().items()):
+                keys = sorted(entry.get("key", "?") for entry in entries)
+                shown = ", ".join(keys[:6])
+                if len(keys) > 6:
+                    shown += f", … ועוד {len(keys) - 6}"
+                rows.append([name, len(entries), shown])
+        except Exception as exc:  # noqa: BLE001
+            rows = [["שגיאה", 0, str(exc)]]
+        table.set_rows(rows, numeric_columns=(1,))
+        layout.addWidget(table, 1)
+
+        note = QLabel(
+            "קוד המקור של תוסף נבדק מול מדיניות AST לפני שהוא מורץ: בלי "
+            "ייבוא מחוץ לרשימה המותרת, בלי גישה לקבצים או לרשת, בלי הרצה "
+            "דינמית. תוספי נתונים מאומתים מול הסכימה שלהם במקום."
+        )
+        note.setObjectName("Hint")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        return page
+
+    # -- backup ---------------------------------------------------------------- #
+    def _backup_tab(self) -> QWidget:
+        """Write a copy of the shop, and read one back.
+
+        The one screen in the suite whose absence costs more than every other
+        screen combined, so it is a button and a list rather than a document
+        somebody is supposed to have read.
+        """
+        self._backup_paths: list[Path] = []
+
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, METRICS.space(3), 0, 0)
+        layout.setSpacing(METRICS.space(3))
+
+        bar = QHBoxLayout()
+        bar.setSpacing(METRICS.space(2))
+        write = QPushButton("גבה עכשיו")
+        write.setObjectName("Primary")
+        write.clicked.connect(self.write_backup)
+        bar.addWidget(write)
+
+        restore = QPushButton("שחזר מגיבוי…")
+        restore.clicked.connect(self.restore_backup)
+        bar.addWidget(restore)
+
+        reveal = QPushButton("בחר תיקיית גיבוי…")
+        reveal.clicked.connect(self.choose_backup_folder)
+        bar.addWidget(reveal)
+
+        mirror = QPushButton("עותק שני (דיסק און קי / ענן)…")
+        mirror.setToolTip(
+            "כל גיבוי יומי מועתק גם לכאן — דיסק חיצוני או תיקייה של "
+            "OneDrive/Google Drive — כדי שמחשב שמת לא ייקח איתו את הגיבויים"
+        )
+        mirror.clicked.connect(self.choose_backup_mirror)
+        bar.addWidget(mirror)
+        bar.addStretch(1)
+        layout.addLayout(bar)
+
+        self.backup_folder_label = QLabel("")
+        self.backup_folder_label.setObjectName("Hint")
+        self.backup_folder_label.setWordWrap(True)
+        layout.addWidget(self.backup_folder_label)
+
+        self.backup_table = DataTable(
+            ["נכתב", "מפעיל", "קבצים", "גודל", "מה בפנים"],
+            empty_text="אין עדיין אף גיבוי — הכול קיים בעותק אחד",
+        )
+        layout.addWidget(self.backup_table, 1)
+
+        note = QLabel(
+            "גיבוי הוא קובץ zip מתוארך אחד עם כל מה שהתוכנה יודעת: תיקי "
+            "עבודה, לקוחות, הסדרות שאושרו, קריאות שירות, פנקס הצ׳קים. "
+            "שחזור לעולם אינו דורס: התיקייה הנוכחית מוזזת הצידה ומיקומה "
+            "נאמר, כך ששחזור של הקובץ הלא נכון מתבטל בהזזת תיקייה אחת "
+            "חזרה. גיבוי נלקח אוטומטית בכל יום, נבדק שהוא נפתח, ונשמרים "
+            "30 האחרונים. גיבוי שיושב רק על אותו מחשב אינו מספיק — הגדירו "
+            "עותק שני בדיסק חיצוני או בתיקיית ענן."
+        )
+        note.setObjectName("Hint")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+
+        self.show_backups()
+        return page
+
+    def _backup_where(self) -> Path:
+        from ..core.backup import default_backup_folder
+
+        return default_backup_folder()
+
+    def show_backups(self) -> None:
+        from ..core.backup import backup_status, list_backups
+        from ..core.config import get_settings
+
+        folder = self._backup_where()
+        mirror = get_settings().backup_mirror
+        lines = [f"תיקיית הגיבוי: {folder}"]
+        if mirror:
+            lines.append(f"עותק שני: {mirror}")
+        else:
+            lines.append("עותק שני: לא הוגדר — מומלץ דיסק חיצוני או תיקיית ענן")
+        state = backup_status()
+        for problem in (state["error"], state["mirror_error"]):
+            if problem:
+                lines.append(f"⚠ {problem}")
+        self.backup_folder_label.setText("\n".join(lines))
+        if not folder.is_dir():
+            self.backup_table.set_rows([])
+            return
+
+        rows: list[list[Any]] = []
+        self._backup_paths = []
+        labels = {
+            "jobs": "תיקים", "customers": "לקוחות",
+            "system_confirmations": "סדרות", "service_calls": "קריאות",
+            "hardware": "פרזול", "price_list": "מחירון", "files": "מסמכים",
+        }
+        for path, manifest in list_backups(folder):
+            self._backup_paths.append(path)
+            inside = " · ".join(
+                f"{labels.get(key, key)} ⁦{count}⁩"
+                for key, count in sorted(manifest.contents.items())
+                if count
+            )
+            rows.append([
+                _short_stamp(manifest.created),
+                manifest.brand or "—",
+                f"⁦{manifest.files}⁩",
+                f"⁦{manifest.bytes / 1_048_576:.1f}⁩ MB",
+                inside or "—",
+            ])
+        self.backup_table.set_rows(rows)
+
+    def choose_backup_folder(self) -> None:
+        chosen = QFileDialog.getExistingDirectory(
+            self, "תיקיית גיבוי", str(self._backup_where())
+        )
+        if not chosen:
+            return
+        self._remember_backup_setting("backup_folder", Path(chosen))
+
+    def choose_backup_mirror(self) -> None:
+        from ..core.config import get_settings
+
+        current = get_settings().backup_mirror
+        chosen = QFileDialog.getExistingDirectory(
+            self, "עותק שני של הגיבוי — דיסק חיצוני או תיקיית ענן",
+            str(current or Path.home()),
+        )
+        if not chosen:
+            return
+        if Path(chosen).resolve() == self._backup_where().resolve():
+            self.status("העותק השני חייב להיות במקום אחר מהגיבוי הראשי")
+            return
+        self._remember_backup_setting("backup_mirror", Path(chosen))
+        from ..core.backup import backup_if_due
+
+        backup_if_due()
+        self.show_backups()
+
+    def _remember_backup_setting(self, name: str, value: Path) -> None:
+        """Kept in settings, so the choice outlives this window."""
+        from ..core.config import get_settings, save_settings
+
+        settings = get_settings()
+        setattr(settings, name, value)
+        try:
+            save_settings(settings)
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "ההגדרה לא נשמרה")
+            return
+        self.status(f"נשמר: {value}")
+        self.show_backups()
+
+    def write_backup(self) -> None:
+        from ..core.backup import prune, read_manifest, write_backup
+
+        try:
+            archive = write_backup(self._backup_where())
+            manifest = read_manifest(archive)
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "הגיבוי נכשל")
+            return
+
+        removed = prune(archive.parent, keep=30)
+        from ..core.backup import copy_to_mirror
+        from ..core.config import get_settings
+
+        mirror = get_settings().backup_mirror
+        message = f"נכתב גיבוי: {manifest.describe()}"
+        if mirror:
+            copied = copy_to_mirror(archive, Path(mirror))
+            message += " · הועתק לעותק השני" if copied else " · העותק השני לא זמין"
+        if removed:
+            message += f" · נמחקו ⁦{len(removed)}⁩ גיבויים ישנים"
+        self.status(message)
+        self.show_backups()
+        self.show_setup()
+
+    def restore_backup(self) -> None:
+        """Show what a restore would replace, and only then do it."""
+        from ..core.backup import plan_restore, restore
+
+        start = str(self._backup_where())
+        chosen, _ = QFileDialog.getOpenFileName(
+            self, "בחרו קובץ גיבוי", start, "גיבויים (*.zip)"
+        )
+        if not chosen:
+            return
+
+        try:
+            plan = plan_restore(Path(chosen))
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "אי אפשר לקרוא את הגיבוי")
+            return
+
+        lines = [plan.describe(), ""]
+        lines += [
+            f"{label}: כרגע ⁦{now}⁩ · בגיבוי ⁦{inside}⁩"
+            for label, now, inside in plan.comparison()
+        ]
+        if plan.warnings:
+            lines += [""] + [f"⚠ {warning}" for warning in plan.warnings]
+        lines += ["", "התיקייה הנוכחית תוזז הצידה ולא תימחק. להמשיך?"]
+
+        box = QMessageBox(self)
+        box.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
+        box.setWindowTitle("שחזור מגיבוי")
+        box.setText("\n".join(lines))
+        box.setStandardButtons(
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        box.setDefaultButton(QMessageBox.StandardButton.No)
+        if box.exec() != QMessageBox.StandardButton.Yes:
+            return
+
+        try:
+            root, aside = restore(Path(chosen))
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "השחזור נכשל")
+            return
+
+        # Every open screen still holds the data from before the restore, and
+        # the next autosave would write it straight back over what was just
+        # restored. So the program closes here, writing nothing, and opens
+        # clean on the restored folder.
+        window = self.window()
+        if hasattr(window, "autosave_enabled"):
+            window.autosave_enabled = False
+            window.auto_backup = False
+            timer = getattr(window, "_autosave_timer", None)
+            if timer is not None:
+                timer.stop()
+        done = QMessageBox(self)
+        done.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
+        done.setIcon(QMessageBox.Icon.Information)
+        done.setWindowTitle("השחזור הושלם")
+        done.setText(
+            "הנתונים שוחזרו מהגיבוי."
+            + (f"\nהנתונים שהיו לפני כן נשמרו בצד ב:\n{aside}" if aside else "")
+            + "\n\nהתוכנה תיסגר עכשיו. פתחו אותה מחדש כדי לעבוד על הנתונים ששוחזרו."
+        )
+        done.exec()
+        from PySide6.QtWidgets import QApplication
+
+        QApplication.quit()
+
+    # -- audit ------------------------------------------------------------------ #
+    def _audit_tab(self) -> QWidget:
+        """What changed, by whom, and whether the record is still intact."""
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, METRICS.space(3), 0, 0)
+        layout.setSpacing(METRICS.space(3))
+
+        bar = QHBoxLayout()
+        bar.setSpacing(METRICS.space(2))
+        check = QPushButton("בדוק שלמות")
+        check.setObjectName("Primary")
+        check.clicked.connect(self.verify_audit)
+        bar.addWidget(check)
+
+        self.audit_filter = QLineEdit()
+        self.audit_filter.setPlaceholderText("סינון: שם עובד, תיק או סדרה")
+        self.audit_filter.textChanged.connect(self.show_audit)
+        bar.addWidget(self.audit_filter, 1)
+        layout.addLayout(bar)
+
+        self.audit_verdict = QLabel("")
+        self.audit_verdict.setObjectName("StatLabel")
+        self.audit_verdict.setWordWrap(True)
+        layout.addWidget(self.audit_verdict)
+
+        self.audit_table = DataTable(
+            ["מתי", "מי", "מה", "על מה", "שדה", "לפני", "אחרי"],
+            empty_text="עדיין לא נרשם שינוי",
+        )
+        layout.addWidget(self.audit_table, 1)
+
+        note = QLabel(
+            "כל רשומה נושאת את טביעת האצבע של הרשומה שלפניה, כך שמחיקה של "
+            "שורה מהאמצע או עריכה של מספר בדיעבד שוברות את השרשרת ו״בדוק "
+            "שלמות״ אומר בדיוק היכן. זה תיעוד ולא הרשאות: הוא אומר מה קרה, "
+            "הוא לא מונע דבר."
+        )
+        note.setObjectName("Hint")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+
+        self.show_audit()
+        return page
+
+    def show_audit(self) -> None:
+        from ..core.audit import audit
+
+        needle = self.audit_filter.text().strip().casefold()
+        try:
+            entries = audit().recent(400)
+        except Exception as exc:  # noqa: BLE001
+            self.audit_table.set_rows([])
+            self.audit_verdict.setText(str(exc))
+            return
+
+        rows: list[list[Any]] = []
+        for entry in entries:
+            haystack = " ".join([
+                entry.person, entry.subject, entry.field_name, entry.note
+            ]).casefold()
+            if needle and needle not in haystack:
+                continue
+            rows.append([
+                entry.at[:16].replace("T", " "),
+                entry.person,
+                entry.action.hebrew,
+                entry.subject,
+                _audit_field(entry.field_name),
+                _audit_value(entry.before),
+                _audit_value(entry.after),
+            ])
+        self.audit_table.set_rows(rows[:200])
+
+    def verify_audit(self) -> None:
+        from ..core.audit import audit
+
+        try:
+            result = audit().verify()
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "לא ניתן לבדוק את היומן")
+            return
+        self.audit_verdict.setText(result.describe())
+        self.audit_verdict.setStyleSheet(
+            f"color: {self.colours.success if result.ok else self.colours.danger};"
+        )
+        self.show_audit()
+
+    # -- comparison ------------------------------------------------------------ #
+    def _build_comparison(self) -> None:
+        if self._compare_built:
+            return
+        self._compare_built = True
+
+        from .. import compare as cmp
+
+        layout = self._compare_layout
+
+        failures = cmp.verify_claims()
+        stats = cmp.summary()
+        header = QLabel(
+            f"{stats['profileos_implemented']} מתוך {stats['capabilities']} "
+            f"יכולות ממומשות, {stats['not_documented_elsewhere']} שאף אחת "
+            f"מ-{stats['packages_compared']} התוכנות שהושוו לא מתעדת, "
+            f"{stats['profileos_gaps']} שאין בחבילה הזאת."
+        )
+        header.setObjectName("Hint")
+        header.setWordWrap(True)
+        layout.addWidget(header)
+        if failures:
+            broken = QLabel(
+                f"{len(failures)} הצהרות יכולת כבר לא מפנות לקוד."
+            )
+            broken.setObjectName("Hint")
+            broken.setWordWrap(True)
+            layout.addWidget(broken)
+
+        headers = ["יכולת", "ProfileOS"] + [p.heading for p in cmp.PACKAGES]
+        table = DataTable(headers)
+        marks = {
+            cmp.Support.FULL: "כן",
+            cmp.Support.PARTIAL: "חלקי",
+            cmp.Support.NOT_DOCUMENTED: "לא",
+            cmp.Support.UNKNOWN: "?",
+        }
+        colours: dict[tuple[int, int], str] = {}
+        rows = []
+        for index, capability in enumerate(cmp.CAPABILITIES):
+            name = capability.name_he + (" *" if capability.differentiator else "")
+            own = cmp.profileos_support(capability)
+            rows.append(
+                [name, marks[own]]
+                + [marks[p.level(capability.id)] for p in cmp.PACKAGES]
+            )
+            colours[(index, 1)] = (
+                self.colours.success
+                if own is cmp.Support.FULL
+                else self.colours.warning
+            )
+        table.set_rows(rows, colours=colours)
+        # Capability names carry the meaning; the support columns are three
+        # characters wide. Stretching all of them equally truncates the only
+        # column a reader actually has to read.
+        table.stretch(0)
+        layout.addWidget(table, 1)
+
+        legend = QLabel(
+            "כן = מתועד, חלקי = חלקי או מודול בתשלום, לא = לא נמצא בחומר "
+            "הפומבי של היצרן, ? = לא נבדק. שום דבר כאן לא נבחן מול התקנה "
+            "של מתחרה, ו\"לא\" לעולם אינו \"לא קיים\".\n\n"
+            + "\n".join(f"• {limit}" for limit in cmp.STANDING_LIMITATIONS_HE)
+        )
+        legend.setObjectName("Hint")
+        legend.setWordWrap(True)
+        layout.addWidget(legend)
+
+
+
+
+
+# --------------------------------------------------------------------------- #
+# Site measurement
+# --------------------------------------------------------------------------- #
+
+class SurveyPage(Page):
+    """The one screen where the software meets a building.
+
+    Everything upstream is arithmetic on numbers somebody typed. This is where
+    the expensive mistakes are made, so it asks for the measurements the trade
+    actually takes — three widths, three heights, both diagonals — rather than
+    one width and one height, which is what makes a non-parallel opening look
+    fine until the frame is welded.
+    """
+
+    title = "Survey"
+    hebrew = "מדידה באתר"
+    subtitle = "שלושה רוחבים, שלושה גבהים, שני אלכסונים — ומידת המסגרת שיוצאת מהם"
+
+    #: Which attribute each editable column writes to.
+    _COLUMNS: tuple[tuple[str, str], ...] = (
+        ("width_head", "רוחב עליון"),
+        ("width_middle", "רוחב אמצע"),
+        ("width_sill", "רוחב תחתון"),
+        ("height_left", "גובה שמאל"),
+        ("height_middle", "גובה אמצע"),
+        ("height_right", "גובה ימין"),
+        ("diagonal_a", "אלכסון א"),
+        ("diagonal_b", "אלכסון ב"),
+    )
+
+    def build(self) -> None:
+        take = QPushButton("פתח גיליון מדידה")
+        take.setObjectName("Primary")
+        take.clicked.connect(self.open_sheet)
+        self.header.add_action(take)
+
+        export = QPushButton("ייצא גיליון ריק...")
+        export.clicked.connect(self.export_sheet)
+        self.header.add_action(export)
+
+        apply_sizes = QPushButton("עדכן פתחים ממדידה")
+        apply_sizes.clicked.connect(self.apply_to_elements)
+        self.header.add_action(apply_sizes)
+
+        against = QPushButton("השוואה להצעה")
+        against.setToolTip("המידות שנמדדו מול מה שהלקוח אישר — וההפרש לפי מחיר ההצעה")
+        against.clicked.connect(self.compare_to_quote)
+        self.header.add_action(against)
+
+        self.stats = StatRow([
+            ("openings", "פתחים"), ("measured", "נמדדו"),
+            ("makeable", "מוכנים לייצור"), ("square", "מחוץ לזווית"),
+            ("clearance", "מרווח התקנה"),
+        ])
+        self.body.addWidget(self.stats)
+
+        entry = Card("רישום מדידה")
+        row = QHBoxLayout()
+        row.setSpacing(METRICS.space(3))
+
+        # On a two-stage job there are two sheets: the wall (which sized the
+        # blind frames) and the blind frames (which size the windows).
+        self.survey_stage = QComboBox()
+        self.survey_stage.addItem("הפתח בקיר", "")
+        self.survey_stage.addItem("המשקוף העיוור", "blind_frame")
+        self.survey_stage.setToolTip("בהתקנה בשני שלבים: החלונות נמדדים מהמשקוף העיוור אחרי הטיח")
+        self.survey_stage.currentIndexChanged.connect(self._stage_changed)
+        self._stage_job = ""
+        row.addWidget(self._caption("מה נמדד"))
+        row.addWidget(self.survey_stage)
+
+        self.survey_opening = QComboBox()
+        row.addWidget(self._caption("פתח"))
+        row.addWidget(self.survey_opening)
+
+        self._boxes: dict[str, QDoubleSpinBox] = {}
+        for key, label in self._COLUMNS:
+            box = QDoubleSpinBox()
+            box.setRange(0.0, 20_000.0)
+            box.setDecimals(1)
+            box.setSingleStep(1.0)
+            box.setMaximumWidth(METRICS.space(22))
+            box.setSpecialValueText("—")
+            self._boxes[key] = box
+            row.addWidget(self._caption(label))
+            row.addWidget(box)
+        row.addStretch(1)
+        entry.add_layout(row)
+
+        second = QHBoxLayout()
+        second.setSpacing(METRICS.space(3))
+        self.survey_by = QComboBox()
+        _people_combo(self.survey_by)
+        second.addWidget(self._caption("מדד"))
+        second.addWidget(self.survey_by)
+
+        self.survey_clearance = QDoubleSpinBox()
+        self.survey_clearance.setRange(0.0, 60.0)
+        self.survey_clearance.setDecimals(1)
+        self.survey_clearance.setSpecialValueText("—")
+        self.survey_clearance.setSuffix(" מ״מ לצד")
+        self.clearance_caption = self._caption("מרווח התקנה")
+        second.addWidget(self.clearance_caption)
+        second.addWidget(self.survey_clearance)
+
+        self.floor_finished = QCheckBox("הרצפה גמורה")
+        second.addWidget(self.floor_finished)
+
+        record = QPushButton("רשום מדידה")
+        record.setObjectName("Primary")
+        record.clicked.connect(self.record_measurement)
+        second.addWidget(record)
+        second.addStretch(1)
+        entry.add_layout(second)
+
+        self.survey_result = QLabel("")
+        self.survey_result.setObjectName("StatLabel")
+        self.survey_result.setWordWrap(True)
+        entry.add(self.survey_result)
+        self.body.addWidget(entry)
+
+        self.survey_table = DataTable(
+            ["סימון", "חדר", "רוחב", "גובה", "אלכסונים", "מסגרת", "מדד", "מצב"],
+            empty_text="פתח גיליון מדידה מתוך תיק עבודה עם רשימת פתחים",
+        )
+        self.body.addWidget(self.survey_table, 1)
+
+        self.survey_problems = QLabel("")
+        self.survey_problems.setObjectName("Hint")
+        self.survey_problems.setWordWrap(True)
+        self.body.addWidget(self.survey_problems)
+
+        note = QLabel(
+            "המסגרת נגזרת מהמידה הקטנה ביותר פחות מרווח ההתקנה משני הצדדים. "
+            "מרווח ההתקנה הוא נתון של הסדרה — בלעדיו לא תוצג מידת מסגרת, "
+            "כי ניחוש כאן הוא החלון שנכנס לפח."
+        )
+        note.setObjectName("Hint")
+        note.setWordWrap(True)
+        self.body.addWidget(note)
+
+        self._survey = None
+
+    def _caption(self, text: str) -> QLabel:
+        label = QLabel(text)
+        label.setObjectName("FieldLabel")
+        return label
+
+    # -- the sheet -------------------------------------------------------------- #
+    def open_sheet(self) -> None:
+        """Open the job's sheet — the one kept from last time, or a new one
+        with a line per opening — with what was measured on the phone."""
+        from ..delivery.survey import SurveyBook, sheet_for_job
+
+        job = getattr(self.session, "job", None)
+        if job is None or getattr(job, "schedule", None) is None:
+            self.report(
+                ProfileOSError(
+                    "פתח תיק עבודה עם רשימת פתחים בעמוד ״פרויקטים״ ואז חזור לכאן"
+                ),
+                "אין ממה לפתוח גיליון",
+            )
+            return
+
+        from ..projects.blindframes import Stage as FrameStage
+        from ..projects.blindframes import is_two_stage, stage as frame_stage
+        from ..projects.blindframes import windows_not_ready
+
+        job = self._fresh_job() or job
+        two_stage = is_two_stage(job)
+        if self._stage_job != job.job_id:
+            # A job seen for the first time here: the sheet its stage calls for.
+            self._stage_job = job.job_id
+            current = frame_stage(job)
+            self.survey_stage.blockSignals(True)
+            self.survey_stage.setCurrentIndex(
+                1 if current is not None and current not in (
+                    FrameStage.TO_INSTALL, FrameStage.PARTLY) else 0)
+            self.survey_stage.blockSignals(False)
+        if not two_stage and self.survey_stage.currentIndex() != 0:
+            self.survey_stage.setCurrentIndex(0)
+        stage_name = str(self.survey_stage.currentData() or "")
+
+        clearance = self.survey_clearance.value() or None
+        source = ""
+        if clearance is None:
+            # The series' own figure, as the shop confirmed it — never a typical one.
+            from ..delivery.survey import series_clearance
+
+            try:
+                found = series_clearance(job, stage_name)
+            except Exception as exc:  # noqa: BLE001
+                self.report(exc, "אישורי הסדרות לא נקראו — הקלידו את מרווח ההתקנה")
+                found = None
+            if found is not None:
+                clearance, source = found
+                self.survey_clearance.setValue(clearance)
+        try:
+            book = self.checked_book(SurveyBook().load(), "גיליונות המדידה")
+            if book.damaged is not None:
+                self._survey = None
+                return
+            self._survey = sheet_for_job(job, book, clearance_per_side=clearance,
+                                         stage=stage_name)
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "גיליון המדידה לא נפתח")
+            return
+        waiting = windows_not_ready(job) if stage_name else []
+        self.survey_opening.clear()
+        for entry in self._survey:
+            self.survey_opening.addItem(entry.reference or "—", entry.reference)
+        filled = self.take_from_phone()
+        self.show_survey()
+        self.status(self._survey.describe()
+                    + (f" · ⁦{len(filled)}⁩ מדידות הגיעו מהטלפון" if filled else "")
+                    + (f" · {'הניכוי' if stage_name else 'מרווח ההתקנה'} לפי {source}"
+                       if source else "")
+                    + (" · שימו לב: " + "; ".join(waiting) if waiting else ""))
+
+    def _stage_changed(self) -> None:
+        """The other sheet asked for: its own clearance, its own lines."""
+        self.survey_clearance.setValue(0.0)
+        self.clearance_caption.setText(
+            "ניכוי ממשקוף עיוור" if self.survey_stage.currentData() else "מרווח התקנה")
+        if self._survey is not None:
+            self.open_sheet()
+
+    def _fresh_job(self) -> Any:
+        """The open job as it is on disk now — the blind frames are recorded
+        from the projects page, not through the copy this page holds."""
+        from ..projects import default_store
+
+        job = getattr(self.session, "job", None)
+        if job is None:
+            return None
+        try:
+            return default_store().load(job.job_id)
+        except Exception:  # noqa: BLE001 - the copy in hand, said nowhere worse
+            return job
+
+    def _wall_sheet_of_two_stage(self) -> bool:
+        """The wall's sheet of a two-stage job sized the blind frames — the
+        windows are not made or priced from it."""
+        from ..projects.blindframes import is_two_stage
+
+        job = self._fresh_job()
+        if (job is not None and self._survey is not None and not self._survey.stage
+                and is_two_stage(job)):
+            self.report(ProfileOSError(
+                "בפרויקט בשני שלבים החלונות נמדדים מהמשקופים העיוורים — "
+                "בחרו ״מה נמדד: המשקוף העיוור״"), "זה גיליון הקיר")
+            return True
+        return False
+
+    def compare_to_quote(self) -> list[Any]:
+        """The measured frames against the sizes the customer agreed to, and
+        what the growth costs at the price that version sold them at."""
+        from ..delivery.remeasure import accepted_revision, compare, not_compared, unbilled
+        from ..projects import default_store
+        from ..quoting.revisions import RevisionBook
+
+        job = getattr(self.session, "job", None)
+        if job is None or self._survey is None:
+            self.report(ProfileOSError("פתחו קודם את גיליון המדידה של הפרויקט"), "אין מה להשוות")
+            return []
+        if self._wall_sheet_of_two_stage():
+            return []
+        try:
+            job = default_store().load(job.job_id)
+            book = RevisionBook().load()
+            if book.damaged is not None:
+                raise book.damaged
+            revision = accepted_revision(job, book.for_job(job.job_id))
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "ההצעה של הפרויקט לא נקראה")
+            return []
+        if revision is None:
+            self.report(ProfileOSError(
+                "לפרויקט אין גרסת הצעה רשומה — ההשוואה היא מול ההצעה שהלקוח קיבל"),
+                "אין הצעה להשוות אליה")
+            return []
+        changes = compare(job, self._survey, revision)
+        left = not_compared(job, self._survey, revision)
+        if left:
+            skipped = "\n".join(f"⁦{marking or '—'}⁩: {why}" for marking, why in left)
+            self.survey_problems.setText(
+                f"⁦{len(left)}⁩ פתחים שנמדדו לא הושוו להצעה:\n{skipped}")
+        if not changes:
+            if left:
+                self.status(f"הפתחים שהושוו תואמים להצעה — ⁦{len(left)}⁩ לא הושוו, "
+                            "ראו מתחת לגיליון")
+            else:
+                self.status(f"כל הפתחים שנמדדו תואמים להצעה (גרסה ⁦{revision.number}⁩)")
+            return []
+        fresh = unbilled(job, changes)
+        grown = sum(change.amount for change in fresh)
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Information)
+        box.setWindowTitle("המידות מול ההצעה")
+        box.setText(
+            f"מול גרסה ⁦{revision.number}⁩ של ההצעה:\n\n"
+            + "\n".join(change.describe() for change in changes)
+        )
+        add = None
+        if fresh and grown > 0:
+            add = box.addButton(f"הוספת תוספת של ⁦{grown:,.0f} ₪⁩ לאישור הלקוח",
+                                QMessageBox.ButtonRole.AcceptRole)
+            box.setInformativeText(
+                "התוספת נכנסת לחשבון הפרויקט כ״לא אושרה״ — נגבית רק אחרי שהלקוח מאשר.")
+        box.addButton("סגור", QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+        if add is not None and box.clickedButton() is add:
+            self._add_growth(job.job_id, fresh)
+        return changes
+
+    def _add_growth(self, job_id: str, changes: list[Any]) -> None:
+        from ..projects import JobLine, LineKind, default_store
+
+        store = default_store()
+        try:
+            job = store.load(job_id)
+            origins = {line.origin for line in job.lines}
+            added = 0
+            for change in changes:
+                values = change.extra_line()
+                if values["origin"] in origins or values["unit_price"] <= 0:
+                    continue
+                job.lines.append(JobLine(kind=LineKind.EXTRA, **values))
+                added += 1
+            store.save(job)
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "התוספת לא נשמרה בפרויקט")
+            return
+        self.status(f"נוספו ⁦{added}⁩ תוספות לחשבון הפרויקט — שלחו ללקוח לאישור")
+
+    def take_from_phone(self) -> list[str]:
+        """What the fitter typed on the phone on site, onto the sheet —
+        nobody copies a number from a phone screen by hand."""
+        from ..mobile.measure import MeasurementStore, default_store_path
+
+        if self._survey is None:
+            return []
+        try:
+            records = MeasurementStore.load(default_store_path()).records
+        except Exception as exc:  # noqa: BLE001
+            self.survey_problems.setText(f"המדידות מהטלפון לא נקראו: {exc}")
+            return []
+        # On a two-stage job the dates say which sheet a phone figure is for.
+        from ..projects.blindframes import phone_records_for
+
+        job = self._fresh_job()
+        if job is not None:
+            records = phone_records_for(job, self._survey.stage, records)
+        filled = self._survey.take_from_phone(records)
+        if filled:
+            self._save_sheet(filled)
+        return filled
+
+    def _save_sheet(self, references: list[str]) -> bool:
+        """Only the openings measured here go to disk, onto the sheet as the
+        other computer left it — and the screen then shows that sheet."""
+        from ..delivery.survey import save_openings
+
+        if self._survey is None:
+            return False
+        try:
+            self._survey = save_openings(self._survey, references)
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "המדידה לא נשמרה")
+            return False
+        return True
+
+    def refresh(self) -> None:
+        """The sheet as it is on disk now, with what came from the phone."""
+        from ..delivery.survey import SurveyBook
+
+        if self._survey is None:
+            return
+        try:
+            book = SurveyBook().load()
+            if book.damaged is None:
+                self._survey = book.get(self._survey.survey_id)
+        except Exception:  # noqa: BLE001 - the screen keeps what it shows
+            _log.exception("Could not re-read the measurement sheet")
+        self.take_from_phone()
+        self.show_survey()
+
+    def record_measurement(self) -> None:
+        from datetime import date as _date
+
+        if self._survey is None:
+            self.report(ProfileOSError("פתח גיליון מדידה קודם"), "אין מה לרשום")
+            return
+
+        reference = self.survey_opening.currentData()
+        try:
+            entry = self._survey.opening(reference or "")
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "לא נמצא הפתח")
+            return
+
+        for key, _label in self._COLUMNS:
+            value = self._boxes[key].value()
+            setattr(entry, key, value if value > 0 else None)
+        entry.measured_by = self.survey_by.currentText()
+        entry.measured_on = _date.today()
+        from datetime import datetime as _datetime
+
+        entry.measured_at = _datetime.now().astimezone().isoformat()
+        entry.floor_is_finished = self.floor_finished.isChecked()
+        clearance = self.survey_clearance.value()
+        if clearance > 0:
+            entry.clearance_per_side = clearance
+
+        saved = self._save_sheet([entry.reference])
+        problems = entry.problems()
+        self.survey_result.setText(
+            entry.describe() + (" · " + " · ".join(problems) if problems else "")
+            + ("" if saved else " · לא נשמר")
+        )
+        self.survey_result.setStyleSheet(
+            f"color: {self.colours.danger if problems else self.colours.success};"
+        )
+        self.show_survey()
+
+    def show_survey(self) -> None:
+        from ..delivery.survey import SQUARE_TOLERANCE_MM
+
+        survey = self._survey
+        if survey is None:
+            return
+
+        rows: list[list[Any]] = []
+        colours: dict[tuple[int, int], str] = {}
+        racked = 0
+        for index, entry in enumerate(survey):
+            frame = entry.frame_size()
+            square = entry.out_of_square
+            if square is not None and square > SQUARE_TOLERANCE_MM:
+                racked += 1
+
+            if not entry.is_measured:
+                state, tone = "לא נמדד", self.colours.warning
+            elif entry.may_be_made:
+                state, tone = "מוכן", self.colours.success
+            else:
+                state, tone = "לבדיקה", self.colours.danger
+            colours[(index, 7)] = tone
+
+            rows.append([
+                entry.reference or "—", entry.room or "—",
+                f"⁦{entry.smallest_width:g}⁩" if entry.smallest_width else "—",
+                f"⁦{entry.smallest_height:g}⁩" if entry.smallest_height else "—",
+                f"⁦{square:g}⁩" if square is not None else "—",
+                f"⁦{frame[0]:g}×{frame[1]:g}⁩" if frame else "—",
+                entry.measured_by or "—",
+                state,
+            ])
+        self.survey_table.set_rows(rows, colours=colours)
+
+        clearances = {
+            entry.clearance_per_side for entry in survey
+            if entry.clearance_per_side
+        }
+        self.stats.update_many({
+            "openings": (f"⁦{len(survey)}⁩", survey.job_name or survey.job_id),
+            "measured": (
+                f"⁦{len(survey.measured)}⁩",
+                f"⁦{survey.progress:.0f}%⁩ מהגיליון",
+            ),
+            "makeable": (f"⁦{len(survey.makeable)}⁩", ""),
+            "square": (
+                f"⁦{racked}⁩",
+                f"מעל ⁦{SQUARE_TOLERANCE_MM:g}⁩ מ״מ" if racked else "הכול בזווית",
+            ),
+            "clearance": (
+                f"⁦{sorted(clearances)[0]:g}⁩ מ״מ" if len(clearances) == 1
+                else ("מעורב" if clearances else "—"),
+                "לצד" if clearances else "חסר נתון סדרה",
+            ),
+        })
+
+        problems = survey.problems()
+        self.survey_problems.setText(
+            " · ".join(problems[:6])
+            + (f" · ועוד ⁦{len(problems) - 6}⁩" if len(problems) > 6 else "")
+        )
+
+    def export_sheet(self) -> None:
+        """Write the blank sheet somebody carries to the site."""
+        import csv
+
+        from ..delivery.survey import Survey
+
+        if self._survey is None:
+            self.report(ProfileOSError("פתח גיליון מדידה קודם"), "אין מה לייצא")
+            return
+
+        path, _ = QFileDialog.getSaveFileName(
+            self, "שמירת גיליון מדידה", suggested_path("measurements.csv"), "CSV (*.csv)"
+        )
+        if not path:
+            return
+        # utf-8-sig so Excel in a Hebrew office opens it without a dialogue.
+        with open(path, "w", newline="", encoding="utf-8-sig") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(Survey.SHEET_HEADERS)
+            writer.writerows(self._survey.sheet_rows())
+        self.status(f"נשמר {path}")
+
+    def apply_to_elements(self) -> None:
+        """Carry the field-measured frame sizes into the job's real cut list.
+
+        The design that opened this sheet was sized to an estimate; what
+        this measured is what an installer will actually meet on the wall.
+        A measurement that never reaches the cut list was pointless to take
+        — so this rebuilds each makeable opening at its measured size and
+        replaces the matching element already on the job, the same way
+        opening the job again would.
+        """
+        if self._survey is None:
+            self.report(ProfileOSError("פתח גיליון מדידה קודם"), "אין מה לעדכן")
+            return
+        if self._wall_sheet_of_two_stage():
+            return
+        if not self._survey.makeable:
+            self.report(
+                ProfileOSError(
+                    "אין עדיין פתח מוכן לייצור — סיים למדוד ואז חזור לכאן"
+                ),
+                "אין מה לעדכן",
+            )
+            return
+
+        from ..elements.builder import ElementBuilder
+
+        # Matched by reference to the opening already on the job's schedule,
+        # so this replaces that element's build (same element_id) instead of
+        # adding a second, disconnected one beside it.
+        job = getattr(self.session, "job", None)
+        schedule = getattr(job, "schedule", None) if job is not None else None
+        original_ids: dict[str, str] = {}
+        ambiguous: set[str] = set()
+        for original in getattr(schedule, "openings", []) or []:
+            key = str(getattr(original, "reference", "") or original.name)
+            if not key:
+                continue
+            if key in original_ids:
+                ambiguous.add(key)
+            original_ids[key] = original.element_id
+        # Two openings sharing a name cannot say which one was measured:
+        # matched to neither, so neither is replaced by the other's size.
+        for key in ambiguous:
+            original_ids.pop(key, None)
+
+        built = 0
+        problems: list[str] = []
+        used: set[str] = set()
+        originals = {opening.element_id: opening
+                     for opening in getattr(schedule, "openings", []) or []}
+        for opening in self._survey.to_openings():
+            key = str(opening.reference or opening.name)
+            if key in original_ids and original_ids[key] not in used:
+                opening.element_id = original_ids[key]
+                used.add(opening.element_id)
+                # The measured size is new; what the opening is stays: its
+                # series, kind, count, glass, finish and its site records.
+                original = originals[opening.element_id]
+                for name in ("kind", "system_id", "quantity", "glass_spec_id", "finish",
+                             "notes"):
+                    setattr(opening, name, getattr(original, name))
+                opening.metadata = dict(original.metadata)
+            elif key in ambiguous:
+                problems.append(f"{key}: יש בפרויקט כמה פתחים בשם הזה — נוסף כפתח חדש, בדקו")
+            try:
+                builder = (
+                    ElementBuilder() if opening.system_id in ("", "generic")
+                    else ElementBuilder.for_system(opening.system_id)
+                )
+                build = builder.build(opening)
+            except Exception as exc:  # noqa: BLE001 - one bad opening, not the batch
+                problems.append(f"{opening.name}: {exc}")
+                continue
+            self.session.add_build(build)
+            built += 1
+
+        if job is not None and built:
+            try:
+                self.session.save_design_to_job()
+            except Exception as exc:  # noqa: BLE001 - the session already has the update
+                _log.exception("Could not save measured sizes onto job %s", job.job_id)
+                self.report(
+                    exc,
+                    "המידות עודכנו במסך אבל לא נשמרו בפרויקט — שמור מ״פרויקטים״",
+                )
+
+        message = f"עודכנו {built} פתחים לפי המדידה בפועל" if built else "לא עודכן פתח"
+        if problems:
+            message += " · " + " · ".join(problems[:3])
+        self.status(message)
+
+
+# --------------------------------------------------------------------------- #
+# Reports
+# --------------------------------------------------------------------------- #
+
+class ReportsPage(Page):
+    """The page the owner opens on a Sunday morning.
+
+    Every other screen answers a question about one job. This one answers
+    questions about the shop, and it is deliberately blunt about how much it
+    knows: a percentage over four quotations says so beside itself rather than
+    printing the same confident figure as one over four hundred.
+    """
+
+    title = "Reports"
+    hebrew = "דוחות"
+    subtitle = "מכירות, אחוזי סגירה, רווחיות לקוח וצבר העבודה"
+
+    def build(self) -> None:
+        refresh = QPushButton("רענן")
+        refresh.setObjectName("Ghost")
+        refresh.clicked.connect(self.refresh)
+        self.header.add_action(refresh)
+
+        chooser = QHBoxLayout()
+        chooser.setSpacing(METRICS.space(2))
+        caption = QLabel("שנה")
+        caption.setObjectName("FieldLabel")
+        self.year_picker = QComboBox()
+        from datetime import date as _date
+
+        this_year = _date.today().year
+        for offset in range(0, 6):
+            self.year_picker.addItem(f"⁦{this_year - offset}⁩", this_year - offset)
+        self.year_picker.currentIndexChanged.connect(self.refresh)
+        chooser.addWidget(caption)
+        chooser.addWidget(self.year_picker)
+        chooser.addStretch(1)
+        self.body.addLayout(chooser)
+
+        self.stats = StatRow([
+            ("won", "הוזמן"), ("rate", "אחוז סגירה"), ("average", "הזמנה ממוצעת"),
+            ("backlog", "צבר פתוח"), ("late", "באיחור"),
+        ])
+        self.body.addWidget(self.stats)
+
+        tabs = QTabWidget()
+        tabs.addTab(self._sales_tab(), "מכירות")
+        tabs.addTab(self._customers_tab(), "לקוחות")
+        tabs.addTab(self._pipeline_tab(), "צבר ואיחורים")
+        tabs.addTab(self._sources_tab(), "מאיפה העבודה מגיעה")
+        self.body.addWidget(tabs, 1)
+        self.tabs = tabs
+
+        self._loaded = False
+
+    # -- tabs ------------------------------------------------------------------ #
+    def _sources_tab(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, METRICS.space(3), 0, 0)
+        layout.setSpacing(METRICS.space(3))
+        self.sources_table = DataTable(
+            ["מקור", "פניות", "הוכרעו", "נסגרו", "אחוז סגירה", "שווי שנסגר", "ממוצע לעבודה"],
+            empty_text="עוד אין פרויקטים עם מקור — ״הגיע דרך״ נשאל בפתיחת פרויקט",
+        )
+        layout.addWidget(self.sources_table, 1)
+        self.lost_table = DataTable(["למה לא נסגר", "פרויקטים", "שווי שהוצע"],
+                                    empty_text="עוד לא נרשמה סיבה לעבודה שלא נסגרה")
+        self.lost_table.setMaximumHeight(METRICS.row_height * 6)
+        layout.addWidget(self.lost_table)
+        note = QLabel(
+            "לאן להשקיע בפרסום: המקור שמביא עבודות שנסגרות, בשווי גבוה. "
+            "אחוז על פחות מ־⁦5⁩ פרויקטים שהוכרעו מסומן ״מעט נתונים״ — עדיין לא מסקנה."
+        )
+        note.setObjectName("Hint")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        return page
+
+    def _sales_tab(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, METRICS.space(3), 0, 0)
+        layout.setSpacing(METRICS.space(3))
+
+        chart_card = Card("הצעות מול הזמנות, לפי חודש")
+        self.months_chart = BarChart(self.colours)
+        chart_card.add(self.months_chart, 1)
+        layout.addWidget(chart_card, 1)
+
+        legend = QLabel(
+            "העמודה החיוורת היא מה שהוצע, המלאה היא מה שנסגר מתוכו. "
+            "תיק נספר בחודש שבו נשלחה ההצעה, לא בחודש שבו נסגר — כי זו "
+            "השאלה שהחודש נמדד בה."
+        )
+        legend.setObjectName("Hint")
+        legend.setWordWrap(True)
+        layout.addWidget(legend)
+
+        self.sales_table = DataTable(
+            ["חודש", "הצעות", "שווי", "הוזמנו", "שווי", "אחוז סגירה"],
+            empty_text="אין תיקי עבודה בשנה הזאת",
+        )
+        layout.addWidget(self.sales_table, 1)
+
+        self.sales_note = QLabel("")
+        self.sales_note.setObjectName("Hint")
+        self.sales_note.setWordWrap(True)
+        layout.addWidget(self.sales_note)
+        return page
+
+    def _customers_tab(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, METRICS.space(3), 0, 0)
+        layout.setSpacing(METRICS.space(3))
+
+        self.customers_table = DataTable(
+            ["לקוח", "תיקים", "נסגרו", "לא נסגרו", "שווי", "אחוז סגירה", "רווחיות"],
+            empty_text="אין עדיין לקוחות",
+        )
+        layout.addWidget(self.customers_table, 1)
+
+        self.customers_note = QLabel(
+            "רווחיות ״—״ פירושה שלא נרשמו שעות או חומרים מול התיקים של "
+            "הלקוח הזה — וזה לא אותו דבר כמו רווחיות אפס."
+        )
+        self.customers_note.setObjectName("Hint")
+        self.customers_note.setWordWrap(True)
+        layout.addWidget(self.customers_note)
+        return page
+
+    def _pipeline_tab(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, METRICS.space(3), 0, 0)
+        layout.setSpacing(METRICS.space(3))
+
+        split = QHBoxLayout()
+        split.setSpacing(METRICS.space(3))
+
+        stage_card = Card("לפי שלב")
+        self.stage_table = DataTable(
+            ["שלב", "תיקים", "שווי"], empty_text="אין עבודה פתוחה"
+        )
+        stage_card.add(self.stage_table, 1)
+        split.addWidget(stage_card, 1)
+
+        late_card = Card("איחורים ומועדים קרובים")
+        self.late_table = DataTable(
+            ["תיק", "שם", "מצב"], empty_text="אין תיק שעבר את מועדו"
+        )
+        late_card.add(self.late_table, 1)
+        split.addWidget(late_card, 1)
+        layout.addLayout(split, 1)
+
+        self.pipeline_note = QLabel("")
+        self.pipeline_note.setObjectName("Hint")
+        self.pipeline_note.setWordWrap(True)
+        layout.addWidget(self.pipeline_note)
+        return page
+
+    # -- filling it ------------------------------------------------------------ #
+    def refresh(self) -> None:
+        from datetime import date as _date
+
+        from .. import reports
+        from ..projects import default_store
+
+        try:
+            jobs = list(default_store().all())
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "לא ניתן לקרוא את תיקי העבודה")
+            return
+
+        chosen = self.year_picker.currentData() or _date.today().year
+        source_rows = reports.by_source(jobs)
+        self.sources_table.set_rows([
+            [
+                row["source"], f"⁦{row['enquiries']}⁩", f"⁦{row['decided']}⁩", f"⁦{row['won']}⁩",
+                ("—" if row["win_rate_pct"] is None else f"⁦{row['win_rate_pct']:.0f}%⁩")
+                + (" · מעט נתונים" if row["thin"] and row["win_rate_pct"] is not None else ""),
+                f"⁦{row['won_value']:,.0f} ₪⁩" if row["won_value"] else "—",
+                f"⁦{row['average']:,.0f} ₪⁩" if row["average"] else "—",
+            ]
+            for row in source_rows
+        ], numeric_columns=(1, 2, 3, 5, 6))
+        self.lost_table.set_rows([
+            [row["reason"], f"⁦{row['count']}⁩",
+             f"⁦{row['value']:,.0f} ₪⁩" if row["value"] else "—"]
+            for row in reports.lost_reasons(jobs)
+        ], numeric_columns=(1, 2))
+        report = reports.sales(jobs, reports.year(chosen))
+        live = reports.pipeline(jobs)
+        months = reports.by_month(jobs, chosen)
+
+        rate = report.win_rate()
+        average = report.average_order()
+        self.stats.update_many({
+            "won": (
+                f"⁦{report.won_value:,.0f} ₪⁩",
+                f"⁦{report.won_count}⁩ תיקים · לפני מע״מ, עם תוספות שאושרו",
+            ),
+            "rate": (
+                f"⁦{rate.value:.0f}%⁩",
+                f"מתוך ⁦{report.decided}⁩ שהוכרעו" if report.decided else "טרם הוכרע",
+            ),
+            "average": (f"⁦{average.value:,.0f} ₪⁩", ""),
+            "backlog": (
+                f"⁦{live.open_value:,.0f} ₪⁩",
+                f"⁦{sum(live.counts.values())}⁩ תיקים",
+            ),
+            "late": (
+                f"⁦{len(live.overdue)}⁩",
+                "תיקים שעברו את מועדם" if live.overdue else "הכול בזמן",
+            ),
+        })
+
+        self.months_chart.set_series(
+            [row["label"][:3] for row in months],
+            [row["quoted_value"] for row in months],
+            [row["won_value"] for row in months],
+        )
+        self.sales_table.set_rows(
+            [
+                [
+                    row["label"], f"⁦{row['quoted']}⁩",
+                    f"⁦{row['quoted_value']:,.0f}⁩",
+                    f"⁦{row['won']}⁩", f"⁦{row['won_value']:,.0f}⁩",
+                    f"⁦{row['win_rate_pct']:.0f}%⁩" if row["quoted"] else "—",
+                ]
+                for row in months
+            ],
+        )
+        self.sales_note.setText(
+            " · ".join(report.warnings())
+            or f"{report.describe()} · {report.value_win_rate().label}: "
+               f"{report.value_win_rate().format()}"
+        )
+
+        customers = reports.by_customer(jobs, costs=self._booked_costs(jobs))
+        colours: dict[tuple[int, int], str] = {}
+        rows: list[list[Any]] = []
+        for index, line in enumerate(customers):
+            margin = "—" if line.margin is None else f"⁦{line.margin:.1f}%⁩"
+            rows.append([
+                line.name or "—", f"⁦{line.jobs}⁩", f"⁦{line.won}⁩",
+                f"⁦{line.lost}⁩", f"⁦{line.value:,.0f} ₪⁩",
+                f"⁦{line.win_rate:.0f}%⁩", margin,
+            ])
+            if line.margin is not None:
+                colours[(index, 6)] = (
+                    self.colours.success if line.margin >= 20
+                    else self.colours.warning if line.margin >= 8
+                    else self.colours.danger
+                )
+        self.customers_table.set_rows(rows, colours=colours)
+
+        self.stage_table.set_rows([list(row) for row in live.rows()])
+        late_rows: list[list[Any]] = []
+        late_colours: dict[tuple[int, int], str] = {}
+        for job_id, name, days in live.overdue[:20]:
+            late_colours[(len(late_rows), 2)] = self.colours.danger
+            late_rows.append([job_id, name, f"⁦{days}⁩ ימי איחור"])
+        for job_id, name, days in live.due_this_week[:20]:
+            late_colours[(len(late_rows), 2)] = self.colours.warning
+            late_rows.append([job_id, name, f"בעוד ⁦{days}⁩ ימים"])
+        self.late_table.set_rows(late_rows, colours=late_colours)
+        self.pipeline_note.setText(
+            live.describe()
+            + (
+                f" · ⁦{live.undated}⁩ תיקים פתוחים בלי מועד אספקה"
+                if live.undated else ""
+            )
+        )
+        self._loaded = True
+
+    def _booked_costs(self, jobs: list[Any]) -> dict[str, float]:
+        """What each job actually cost, where hours were booked against it."""
+        try:
+            from ..erp.timesheets import default_timebook
+
+            book = default_timebook()
+        except Exception:  # noqa: BLE001
+            return {}
+        return {
+            job.job_id: book.cost_of_job(job.job_id)
+            for job in jobs
+            if book.cost_of_job(job.job_id)
+        }
+
+
+# --------------------------------------------------------------------------- #
+# 3D views
+# --------------------------------------------------------------------------- #
+
+class ViewPage(Page):
+    """See the element the way the customer will."""
+
+    title = "3D view"
+    hebrew = "תלת-ממד"
+    subtitle = "מבטי הדמיה ומבטים טכניים של הפתחים"
+
+    def build(self) -> None:
+        from PySide6.QtSvgWidgets import QSvgWidget
+
+        render = QPushButton("הצג")
+        render.setObjectName("Primary")
+        render.clicked.connect(self.render_scene)
+        self.needs_design(render)
+        self.header.add_action(render)
+
+        export = QPushButton("ייצא")
+        export.clicked.connect(self.export_scene)
+        self.header.add_action(export)
+
+        ifc = QPushButton("ייצא IFC...")
+        ifc.clicked.connect(self.export_ifc)
+        self.header.add_action(ifc)
+
+        self.stats = StatRow([
+            ("parts", "חלקים"), ("triangles", "משולשים"),
+            ("metal", "מתכת"), ("size", "מידה"), ("panes", "שמשות"),
+        ])
+        self.body.addWidget(self.stats)
+
+        controls = Card("מבט")
+        row = QHBoxLayout()
+        row.setSpacing(METRICS.space(4))
+
+        self.element = QComboBox()
+        self.view = QComboBox()
+        self.view.addItem("הדמיה", "presentation"); self.view.addItem("חזית", "elevation")
+        self.finish = QComboBox()
+        self.finish.addItem("טבעי", "natural"); self.finish.addItem("ברונזה", "bronze")
+        self.glass = QComboBox()
+        self.glass.addItem("עם זכוכית", "with glass"); self.glass.addItem("מסגרות בלבד", "frames only")
+
+        for label, widget in [("פתח", self.element), ("מבט", self.view),
+                              ("גמר", self.finish), ("זיגוג", self.glass)]:
+            caption = QLabel(label)
+            caption.setObjectName("FieldLabel")
+            row.addWidget(caption)
+            row.addWidget(widget)
+        row.addStretch(1)
+        controls.add_layout(row)
+        self.body.addWidget(controls)
+
+        # The live model where the machine can draw it; the SVG render — which
+        # needs nothing — where it cannot.
+        from .viewer3d import Viewer3D, supported
+
+        self.live = None
+        if supported():
+            self.live = Viewer3D(background=self.colours.surface_sunken)
+            self.live.setMinimumHeight(480)
+            self.body.addWidget(self._live_controls())
+        self.canvas = QSvgWidget()
+        self.canvas.setMinimumHeight(420)
+        self.canvas_stack = canvas_with_empty_state(
+            self, self.live if self.live is not None else self.canvas,
+            "עדיין אין פתח להציג.\nתכנן פתח — והוא יופיע כאן בתלת-ממד.",
+        )
+        self.body.addWidget(self.canvas_stack, 1)
+
+        note = QLabel(
+            "המודל נבנה מאותם חתכי פרופיל ולפי אותם כללי מערכת שמייצרים את "
+            "רשימת החיתוך — מה שמצויר כאן הוא מה שהמפעל יבנה. הייצוא כותב SVG "
+            "להדפסה, glTF לכל כלי תלת-ממד, וצפיין אינטראקטיבי עצמאי."
+        )
+        note.setObjectName("Hint")
+        note.setWordWrap(True)
+        self.body.addWidget(note)
+
+        for widget in (self.view, self.finish, self.glass):
+            widget.currentTextChanged.connect(self._redraw)
+        # A different window is a different model, not a different camera.
+        self.element.currentIndexChanged.connect(
+            lambda _index: self.render_scene() if self.session.builds else None
+        )
+        self._scene = None
+        self._scene_for = ""
+        if self.live is not None:
+            # The SVG pickers belong to the paper render; the live view has
+            # its own controls above it.
+            controls.setVisible(False)
+            # Live: a change to the design shows here without asking.
+            self.session.subscribe(self._session_changed)
+
+    def _live_controls(self) -> QWidget:
+        """View presets, finish, glass, wall, opening — the showroom controls."""
+        from PySide6.QtWidgets import QButtonGroup, QSlider
+
+        from .viewer3d import FINISHES, VIEWS
+
+        card = Card("")
+        row = QHBoxLayout()
+        row.setSpacing(METRICS.space(3))
+
+        caption = QLabel("פתח")
+        caption.setObjectName("FieldLabel")
+        row.addWidget(caption)
+        self.live_element = QComboBox()
+        self.live_element.currentIndexChanged.connect(self._pick_live_element)
+        row.addWidget(self.live_element)
+
+        segment = QFrame()
+        segment.setObjectName("SegmentBar")
+        segment_row = QHBoxLayout(segment)
+        segment_row.setContentsMargins(2, 2, 2, 2)
+        segment_row.setSpacing(2)
+        self._view_group = QButtonGroup(self)
+        self._view_group.setExclusive(True)
+        for index, (key, label) in enumerate(VIEWS):
+            button = QPushButton(label)
+            button.setObjectName("Segment")
+            button.setCheckable(True)
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
+            button.clicked.connect(lambda _c=False, k=key: self.live.set_view(k))
+            self._view_group.addButton(button, index)
+            segment_row.addWidget(button)
+        self._view_group.button(0).setChecked(True)
+        row.addWidget(segment)
+        row.addStretch(1)
+
+        caption = QLabel("גוון")
+        caption.setObjectName("FieldLabel")
+        row.addWidget(caption)
+        self.live_finish = QComboBox()
+        for key, label in FINISHES:
+            self.live_finish.addItem(label, key)
+        self.live_finish.currentIndexChanged.connect(
+            lambda _i: self.live.set_finish(self.live_finish.currentData())
+        )
+        row.addWidget(self.live_finish)
+        card.add_layout(row)
+
+        second = QHBoxLayout()
+        second.setSpacing(METRICS.space(3))
+        caption = QLabel("פתיחת הכנפיים")
+        caption.setObjectName("FieldLabel")
+        second.addWidget(caption)
+        self.live_open = QSlider(Qt.Orientation.Horizontal)
+        self.live_open.setRange(0, 100)
+        self.live_open.setMaximumWidth(METRICS.space(60))
+        self.live_open.valueChanged.connect(lambda value: self.live.set_open(value / 100.0))
+        second.addWidget(self.live_open)
+        toggle_open = QPushButton("פתח / סגור")
+        toggle_open.clicked.connect(
+            lambda: self.live_open.setValue(0 if self.live_open.value() > 50 else 100)
+        )
+        second.addWidget(toggle_open)
+
+        self.live_glass = QCheckBox("זכוכית")
+        self.live_glass.setChecked(True)
+        self.live_glass.toggled.connect(self.live.set_show_glass)
+        second.addWidget(self.live_glass)
+        self.live_wall = QCheckBox("בתוך קיר")
+        self.live_wall.toggled.connect(self.live.set_show_wall)
+        second.addWidget(self.live_wall)
+        self.live_spin = QCheckBox("סיבוב להצגה")
+        self.live_spin.toggled.connect(self.live.set_turntable)
+        second.addWidget(self.live_spin)
+        second.addStretch(1)
+
+        copy = QPushButton("העתק תמונה")
+        copy.setToolTip("להדבקה בוואטסאפ או במייל ללקוח")
+        copy.clicked.connect(self.copy_image)
+        second.addWidget(copy)
+        save = QPushButton("שמור תמונה…")
+        save.clicked.connect(self.save_image)
+        second.addWidget(save)
+        card.add_layout(second)
+
+        hint = QLabel(
+            "גרירה מסובבת · גלגלת מקרבת · גרירה ימנית מזיזה · "
+            "המודל מתעדכן לבד כשמשנים את הפתח"
+        )
+        hint.setObjectName("Hint")
+        card.add(hint)
+        return card
+
+    def _pick_live_element(self, _index: int) -> None:
+        if self.live is None:
+            return
+        wanted = self.live_element.currentData() or ""
+        if wanted and wanted != (self.element.currentData() or ""):
+            index = self.element.findData(wanted)
+            if index >= 0:
+                self.element.setCurrentIndex(index)
+
+    def _session_changed(self, what: str) -> None:
+        if what != "builds" or self.live is None:
+            return
+        # Only while the page is on screen; otherwise refresh() does it on arrival.
+        if self.isVisible():
+            self._scene = None
+            self.refresh()
+
+    def copy_image(self) -> None:
+        from PySide6.QtWidgets import QApplication
+
+        image = self.live.image() if self.live is not None else None
+        if image is None or image.isNull():
+            self.status("אין תמונה להעתיק")
+            return
+        QApplication.clipboard().setImage(image)
+        self.status("התמונה הועתקה — אפשר להדביק אותה בוואטסאפ או במייל")
+
+    def save_image(self) -> None:
+        image = self.live.image() if self.live is not None else None
+        if image is None or image.isNull():
+            self.status("אין תמונה לשמור")
+            return
+        name = (self.element.currentText() or "פתח").replace("/", "-")
+        path, _ = QFileDialog.getSaveFileName(
+            self, "שמירת תמונה", str(Path.home() / f"{name}.png"), "תמונה (*.png *.jpg)"
+        )
+        if not path:
+            return
+        if image.save(path):
+            self.status(f"נשמרה תמונה: {Path(path).name}")
+        else:
+            self.report(ProfileOSError("התמונה לא נשמרה — בדקו את התיקייה"), "שמירה נכשלה")
+
+    def refresh(self) -> None:
+        ids = [build.opening.element_id for build in self.session.builds]
+        current = self.element.currentData() or ""
+        self.element.blockSignals(True)
+        self.element.clear()
+        # The window's own mark is what the shop calls it; the id rides along.
+        for build in self.session.builds:
+            self.element.addItem(build.opening.name or build.opening.element_id,
+                                 build.opening.element_id)
+        if current in ids:
+            self.element.setCurrentIndex(ids.index(current))
+        self.element.blockSignals(False)
+        if self.live is not None:
+            self.live_element.blockSignals(True)
+            self.live_element.clear()
+            for index in range(self.element.count()):
+                self.live_element.addItem(self.element.itemText(index), self.element.itemData(index))
+            self.live_element.setCurrentIndex(self.element.currentIndex())
+            self.live_element.blockSignals(False)
+        self.header.set_subtitle(
+            f"{len(ids)} פתחים מתוכננים" if ids else "תכנן פתח קודם"
+        )
+        # Something to show means show it — a page that waits for "הצג" when
+        # the answer is already known is one click too many.
+        if not ids:
+            self._scene = None
+            self.canvas_stack.setCurrentIndex(0)
+            return
+        self.canvas_stack.setCurrentIndex(1)
+        if self._scene is None or self._scene_for != (self.element.currentData() or ""):
+            self.render_scene()
+
+    def _build_for(self, element_id: str):
+        """The build the picker names — or the first one, if it names nothing.
+
+        The picker is filled by :meth:`refresh`, which runs when the page is
+        navigated to. Reaching the page another way — a keyboard shortcut, a
+        restored layout — leaves it empty while the session plainly has
+        elements in it, and erroring at the user in that state is a bug, not a
+        message worth showing.
+        """
+        for build in self.session.builds:
+            if build.opening.element_id == element_id:
+                return build
+        if self.session.builds and not element_id:
+            self.refresh()
+            return self.session.builds[0]
+        return None
+
+    def render_scene(self) -> None:
+        from ..viz3d import ViewStyle, build_element_scene
+
+        build = self._build_for(self.element.currentData() or "")
+        if build is None:
+            self.report(
+                ProfileOSError("עדיין לא תוכננו פתחים. תכנן פתח בעמוד ״פתח״ ואז חזור לכאן."), "אין מה להציג"
+            )
+            return
+        try:
+            self._scene = build_element_scene(
+                build,
+                style=ViewStyle(show_glass=self.glass.currentData() == "with glass"),
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "לא ניתן לבנות את המודל")
+            return
+        same_element = self._scene_for == build.opening.element_id
+        self._scene_for = build.opening.element_id
+        self.canvas_stack.setCurrentIndex(1)
+        if self.live is not None:
+            self.live.show_scene(self._scene, keep_camera=same_element)
+
+        scene = self._scene
+        size = scene.size
+        panes = sum(1 for mesh in scene.meshes if mesh.material == "glass")
+        self.stats.update_many({
+            "parts": (str(len(scene.meshes)), "גופים"),
+            "triangles": (f"{scene.triangle_count:,}", ""),
+            "metal": (f"{scene.aluminium_volume() * 2.70e-6:.1f} ק\"ג", "לפי 2.70 גרם/סמ\"ק"),
+            "size": (f"{size[0]:.0f}×{size[1]:.0f}", f"עומק {size[2]:.0f} מ\"מ"),
+            "panes": (str(panes), ""),
+        })
+        self._redraw()
+
+    def _redraw(self) -> None:
+        if self._scene is None or self.live is not None:
+            return
+        from ..viz3d import (
+            BRONZE_MATERIALS,
+            DEFAULT_MATERIALS,
+            RenderOptions,
+            elevation_camera,
+            presentation_camera,
+            render_svg,
+        )
+
+        options = RenderOptions(
+            width=1200, height=760,
+            materials=dict(
+                BRONZE_MATERIALS if self.finish.currentData() == "bronze"
+                else DEFAULT_MATERIALS
+            ),
+            background=self.colours.surface_sunken,
+        )
+        camera = (
+            elevation_camera(self._scene)
+            if self.view.currentData() == "elevation"
+            else presentation_camera(self._scene)
+        )
+        try:
+            svg = render_svg(self._scene, camera, options)
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "לא ניתן להציג את המבט")
+            return
+        self.canvas_stack.setCurrentIndex(1)
+        self.canvas.load(svg.encode("utf-8"))
+
+    def export_ifc(self) -> None:
+        """Hand the openings to the architect's own software.
+
+        What goes across is where each opening is and how big it is, not the
+        profile geometry — which is what a coordinating architect wants, and
+        what almost every window IFC export actually contains.
+        """
+        from ..exchange.ifc import LIMITATIONS_HE, IfcOptions, write_ifc
+
+        builds = self.session.builds
+        if not builds:
+            self.report(
+                ProfileOSError(
+                    "אין פתחים בעבודה. תכנן פתחים בעמוד ״פתח״ ואז חזור לכאן."
+                ),
+                "אין מה לייצא",
+            )
+            return
+
+        box = QMessageBox(self)
+        box.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
+        box.setWindowTitle("ייצוא IFC")
+        box.setText(
+            "מה עובר לקובץ:\n\n"
+            + "\n".join(f"• {limit}" for limit in LIMITATIONS_HE)
+            + "\n\nלייצא?"
+        )
+        box.setStandardButtons(
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        box.setDefaultButton(QMessageBox.StandardButton.Yes)
+        if box.exec() != QMessageBox.StandardButton.Yes:
+            return
+
+        path, _ = QFileDialog.getSaveFileName(
+            self, "שמירת מודל IFC", suggested_path("model.ifc"), "IFC (*.ifc)"
+        )
+        if not path:
+            return
+
+        job = getattr(self.session, "job", None)
+        try:
+            target = write_ifc(builds, path, IfcOptions(
+                project_name=str(getattr(job, "name", "") or "ProfileOS"),
+                site_name=str(getattr(job, "site_address", "") or "Site"),
+            ))
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "ייצוא ה-IFC נכשל")
+            return
+        self.status(f"נשמר {target}")
+
+    def export_scene(self) -> None:
+        from ..viz3d import RenderOptions, render_viewer, render_views, write_gltf
+
+        if self._scene is None:
+            self.report(ProfileOSError("הצג את הפתח קודם"), "אין מה לייצא")
+            return
+        folder = QFileDialog.getExistingDirectory(self, "לאן לייצא את המבטים?", str(documents_dir()))
+        if not folder:
+            return
+        target = Path(folder)
+        stem = "".join(
+            c if c.isalnum() or c in "-_" else "_" for c in self.element.currentText()
+        ) or "element"
+        written = 0
+        for name, svg in render_views(self._scene, RenderOptions()).items():
+            (target / f"{stem}-{name}.svg").write_text(svg, encoding="utf-8")
+            written += 1
+        (target / f"{stem}.html").write_text(
+            render_viewer(self._scene), encoding="utf-8"
+        )
+        write_gltf(self._scene, target / f"{stem}.gltf")
+        write_gltf(self._scene, target / f"{stem}.glb")
+        self.status(f"נשמרו {written + 3} קבצים אל {target}")
+
+
+# --------------------------------------------------------------------------- #
+# ERP
+# --------------------------------------------------------------------------- #
+
+class AccountsPage(Page):
+    """Stock, purchasing, the ledger and the shop's capacity."""
+
+    title = "Accounts"
+    hebrew = "הנהלת חשבונות"
+    subtitle = "מלאי, רכש, ספר חשבונות ועומס המפעל"
+
+    def build(self) -> None:
+        audit = QPushButton("ביקורת")
+        audit.setObjectName("Primary")
+        audit.clicked.connect(self.run_audit)
+        self.header.add_action(audit)
+
+        self.stats = StatRow([
+            ("stock", "מלאי"), ("debtors", "חייבים"), ("creditors", "זכאים"),
+            ("result", "תוצאה"), ("entries", "פקודות יומן"),
+        ])
+        self.body.addWidget(self.stats)
+
+        tabs = QTabWidget()
+        tabs.addTab(self._stock_tab(), "מלאי")
+        tabs.addTab(self._stocktake_tab(), "ספירת מלאי")
+        tabs.addTab(self._purchasing_tab(), "רכש")
+        tabs.addTab(self._ledger_tab(), "ספר חשבונות")
+        tabs.addTab(self._planning_tab(), "קיבולת")
+        tabs.addTab(self._currency_tab(), "מטבע חוץ")
+        self.body.addWidget(tabs, 1)
+        self.tabs = tabs
+
+    # -- currency -------------------------------------------------------------- #
+    def _currency_tab(self) -> QWidget:
+        """Rates the shop typed, with the date and where each came from.
+
+        Profiles, hardware and machinery are bought in euros and dollars and
+        sold in shekels. A quotation held for ninety days on a rate somebody
+        remembered is a quotation whose margin is decided by the currency
+        market. Nothing here is fetched from anywhere: a rate exists because
+        somebody entered it and named its source, or it does not exist.
+        """
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, METRICS.space(3), 0, 0)
+        layout.setSpacing(METRICS.space(3))
+
+        from ..erp.currency import CURRENCIES, HOME, STALE_DAYS
+
+        card = Card("רישום שער")
+        row = QHBoxLayout()
+        row.setSpacing(METRICS.space(3))
+
+        self.fx_currency = QComboBox()
+        for code, hebrew in CURRENCIES.items():
+            if code != HOME:
+                self.fx_currency.addItem(f"{hebrew} ({code})", code)
+
+        self.fx_rate = QDoubleSpinBox()
+        self.fx_rate.setRange(0.0001, 999.0)
+        self.fx_rate.setDecimals(4)
+        self.fx_rate.setSuffix(" ₪")
+
+        self.fx_source = QLineEdit()
+        self.fx_source.setPlaceholderText("בנק ישראל / חשבונית הספק / הבנק")
+
+        for label, widget in [
+            ("מטבע", self.fx_currency), ("שקלים ליחידה", self.fx_rate),
+            ("מקור", self.fx_source),
+        ]:
+            caption = QLabel(label)
+            caption.setObjectName("FieldLabel")
+            row.addWidget(caption)
+            row.addWidget(widget, 1 if widget is self.fx_source else 0)
+
+        record = QPushButton("רשום שער")
+        record.setObjectName("Primary")
+        record.clicked.connect(self.record_rate)
+        row.addWidget(record)
+        card.add_layout(row)
+
+        self.fx_result = QLabel("—")
+        self.fx_result.setObjectName("StatLabel")
+        card.add(self.fx_result)
+        layout.addWidget(card)
+
+        self.fx_table = DataTable(
+            ["מטבע", "שער", "תאריך", "גיל", "מקור", "מצב"],
+            empty_text="לא נרשם אף שער",
+        )
+        layout.addWidget(self.fx_table, 1)
+
+        note = QLabel(
+            "שער בלי מקור ובלי תאריך אינו שער אלא זיכרון. שער בן יותר "
+            f"מ-⁦{STALE_DAYS}⁩ ימים מסומן ישן, וכל תמחור שנשען עליו נושא "
+            "אזהרה עד שהוא מתעדכן. הרישום כאן הוא הספר שהמרות עתידיות "
+            "ישענו עליו — הזמנת רכש עצמה עדיין מתומחרת ונרשמת בשקלים, "
+            "ולא ממירה את עצמה לפי השער הזה."
+        )
+        note.setObjectName("Hint")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+
+        self._ratebook = None
+        self.show_rates()
+        return page
+
+    def _rates(self):
+        if self._ratebook is None:
+            from ..erp.currency import default_rates
+
+            self._ratebook = default_rates()
+        book = self.checked_book(self._ratebook, "שערי המטבע")
+        if book.damaged is not None:
+            self._ratebook = None
+        return book
+
+    def record_rate(self) -> None:
+        from datetime import date as _date
+
+        from ..erp.currency import Rate
+
+        try:
+            rate = self._rates().record(Rate(
+                currency=self.fx_currency.currentData(),
+                per_unit=self.fx_rate.value(),
+                on=_date.today(),
+                source=self.fx_source.text().strip(),
+            ))
+        except Exception as exc:  # noqa: BLE001
+            self.fx_result.setText(str(exc))
+            self.fx_result.setStyleSheet(f"color: {self.colours.danger};")
+            return
+
+        self.fx_result.setText(rate.describe())
+        self.fx_result.setStyleSheet(f"color: {self.colours.success};")
+        self.show_rates()
+
+    def show_rates(self) -> None:
+        from ..erp.currency import CURRENCIES
+
+        book = self._rates()
+        rows: list[list[Any]] = []
+        colours: dict[tuple[int, int], str] = {}
+        index = 0
+        for code in book.currencies():
+            for rate in book.history(code)[:6]:
+                if rate.is_stale():
+                    state, tone = "ישן", self.colours.warning
+                elif not rate.is_sourced:
+                    state, tone = "בלי מקור", self.colours.warning
+                else:
+                    state, tone = "תקף", self.colours.success
+                rows.append([
+                    f"{CURRENCIES.get(code, code)} ({code})",
+                    f"⁦{rate.per_unit:.4f} ₪⁩",
+                    rate.on.strftime("%d/%m/%Y"),
+                    f"⁦{rate.age()}⁩ ימים",
+                    rate.source or "—",
+                    state,
+                ])
+                colours[(index, 5)] = tone
+                index += 1
+        self.fx_table.set_rows(rows, colours=colours)
+
+    # -- shared company ------------------------------------------------------- #
+    def _company(self):
+        if self.session.company is None:
+            from ..erp import company_for_brand
+
+            self.session.set_company(company_for_brand())
+        return self.session.company
+
+    # -- stock ---------------------------------------------------------------- #
+    def _stock_tab(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, METRICS.space(3), 0, 0)
+        layout.setSpacing(METRICS.space(3))
+
+        self.stock_table = DataTable(
+            ["פריט", "שם", "במלאי", "משוריין", "בהזמנה",
+             "צפוי", "עלות ליחידה", "שווי", "להזמנה"],
+            empty_text="לחץ ״ביקורת״ כדי לרענן את תמונת המלאי",
+        )
+        layout.addWidget(self.stock_table, 1)
+
+        note = QLabel(
+            "השווי עוקב אחרי התנועה הפיזית: FIFO צורך את המשלוח הישן ביותר "
+            "קודם, כך שהעלות של מוט תלויה מאיזה משלוח הוא הגיע. ניפוק מעבר "
+            "למה שנמצא על המדף נדחה — יתרה שלילית היא קבלת סחורה חסרה, "
+            "לא כמות."
+        )
+        note.setObjectName("Hint")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        return page
+
+    def _refresh_stock(self) -> None:
+        from ..erp import format_money
+
+        company = self._company()
+        colours: dict[tuple[int, int], str] = {}
+        rows = []
+        for index, row in enumerate(company.stock.valuation_report()):
+            rows.append([
+                row["code"], row["name"], f"{row['on_hand']:.1f}",
+                f"{row['allocated']:.1f}", f"{row['on_order']:.1f}",
+                f"{row['projected']:.1f}",
+                format_money(int(row["unit_cost"]), company.currency),
+                format_money(row["value"], company.currency),
+                "כן" if row["below_reorder"] else "",
+            ])
+            if row["below_reorder"]:
+                colours[(index, 8)] = self.colours.warning
+        self.stock_table.set_rows(rows, numeric_columns=(2, 3, 4, 5, 6, 7), colours=colours)
+
+    # -- stocktake --------------------------------------------------------------- #
+    def _stocktake_tab(self) -> QWidget:
+        """Counting the racks, and posting only what was actually counted.
+
+        A stocktake here is a sheet, not a button: it freezes the book, gets
+        filled in against the racks, and only counted lines are ever written
+        back to it — a line nobody reached stays exactly as the book had it,
+        rather than being posted as zero.
+        """
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, METRICS.space(3), 0, 0)
+        layout.setSpacing(METRICS.space(3))
+
+        open_card = Card("פתיחת גיליון ספירה")
+        open_row = QHBoxLayout()
+        open_row.setSpacing(METRICS.space(3))
+        self.count_scope = QLineEdit()
+        self.count_scope.setPlaceholderText("מחסן פרופילים, פרזול...")
+        scope_caption = QLabel("היקף")
+        scope_caption.setObjectName("FieldLabel")
+        open_row.addWidget(scope_caption)
+        open_row.addWidget(self.count_scope, 1)
+        open_btn = QPushButton("פתח גיליון חדש")
+        open_btn.setObjectName("Primary")
+        open_btn.clicked.connect(self.open_stocktake_sheet)
+        open_row.addWidget(open_btn)
+        open_card.add_layout(open_row)
+        layout.addWidget(open_card)
+
+        sheet_card = Card("גיליון פעיל")
+        sheet_row = QHBoxLayout()
+        sheet_row.setSpacing(METRICS.space(3))
+        self.count_sheet = QComboBox()
+        self.count_sheet.currentIndexChanged.connect(self._refresh_stocktake)
+        sheet_caption = QLabel("גיליון")
+        sheet_caption.setObjectName("FieldLabel")
+        sheet_row.addWidget(sheet_caption)
+        sheet_row.addWidget(self.count_sheet, 1)
+        sheet_card.add_layout(sheet_row)
+
+        entry_row = QHBoxLayout()
+        entry_row.setSpacing(METRICS.space(3))
+        self.count_item = QComboBox()
+        self.count_value = QDoubleSpinBox()
+        self.count_value.setRange(0, 1_000_000)
+        self.count_value.setDecimals(1)
+        for label, widget in [("פריט", self.count_item), ("נספר", self.count_value)]:
+            caption = QLabel(label)
+            caption.setObjectName("FieldLabel")
+            entry_row.addWidget(caption)
+            entry_row.addWidget(widget)
+        enter_btn = QPushButton("רשום ספירה")
+        enter_btn.clicked.connect(self.enter_count)
+        entry_row.addWidget(enter_btn)
+        entry_row.addStretch(1)
+        sheet_card.add_layout(entry_row)
+        layout.addWidget(sheet_card)
+
+        self.count_table = DataTable(
+            ["קוד", "פריט", "בספר", "נספר", "הפרש", "שווי הפרש"],
+            empty_text="פתח גיליון כדי להתחיל לספור",
+        )
+        layout.addWidget(self.count_table, 1)
+
+        self.count_summary = QLabel("—")
+        self.count_summary.setObjectName("StatLabel")
+        self.count_summary.setWordWrap(True)
+        layout.addWidget(self.count_summary)
+
+        post_btn = QPushButton("רשום את ההפרשים בספר המלאי")
+        post_btn.setObjectName("Primary")
+        post_btn.clicked.connect(self.post_stocktake)
+        layout.addWidget(post_btn)
+
+        self._stocktake_book = None
+        self._refresh_sheet_list()
+        return page
+
+    def _stocktakes(self) -> Any:
+        if self._stocktake_book is None:
+            from ..erp.stocktake import default_stocktakes
+
+            self._stocktake_book = default_stocktakes()
+        book = self.checked_book(self._stocktake_book, "ספירות המלאי")
+        if book.damaged is not None:
+            self._stocktake_book = None
+        return book
+
+    def open_stocktake_sheet(self) -> None:
+        from ..erp.stocktake import open_stocktake
+
+        company = self._company()
+        try:
+            sheet = open_stocktake(company.stock, scope=self.count_scope.text().strip())
+            self._stocktakes().add(sheet)
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "פתיחת הגיליון נכשלה")
+            return
+        self.count_scope.clear()
+        self._refresh_sheet_list(select=sheet.sheet_id)
+        self.status(f"נפתח {sheet.sheet_id} — {len(sheet)} שורות")
+
+    def _refresh_sheet_list(self, select: str = "") -> None:
+        book = self._stocktakes()
+        self.count_sheet.blockSignals(True)
+        self.count_sheet.clear()
+        for sheet in book:
+            self.count_sheet.addItem(sheet.describe(), sheet.sheet_id)
+        self.count_sheet.blockSignals(False)
+        if select:
+            index = self.count_sheet.findData(select)
+            if index >= 0:
+                self.count_sheet.setCurrentIndex(index)
+        self._refresh_stocktake()
+
+    def _current_sheet(self) -> Any:
+        sheet_id = self.count_sheet.currentData()
+        if not sheet_id:
+            return None
+        try:
+            return self._stocktakes().get(sheet_id)
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _refresh_stocktake(self) -> None:
+        sheet = self._current_sheet()
+        self.count_item.clear()
+        if sheet is None:
+            self.count_table.set_rows([])
+            self.count_summary.setText("—")
+            return
+
+        for line in sheet.lines:
+            label = f"{line.code} — {line.name}" if line.name else line.code
+            self.count_item.addItem(label, line.code)
+
+        colours: dict[tuple[int, int], str] = {}
+        rows = []
+        for index, line in enumerate(sheet.lines):
+            rows.append([
+                line.code, line.name or "—", f"{line.book:g}",
+                f"{line.counted:g}" if line.is_counted else "—",
+                f"{line.difference:+g}" if line.is_counted else "—",
+                f"{line.value_difference:,.0f}" if line.is_counted else "—",
+            ])
+            if line.is_counted and not line.agrees:
+                colours[(index, 4)] = self.colours.warning
+                colours[(index, 5)] = self.colours.warning
+        self.count_table.set_rows(rows, colours=colours)
+
+        warnings = sheet.warnings()
+        text = sheet.describe()
+        if warnings:
+            text += "\n" + "\n".join(f"• {warning}" for warning in warnings)
+        self.count_summary.setText(text)
+
+    def enter_count(self) -> None:
+        sheet = self._current_sheet()
+        if sheet is None:
+            self.report(ProfileOSError("פתח גיליון קודם"), "אין גיליון פעיל")
+            return
+        code = self.count_item.currentData()
+        if not code:
+            self.report(ProfileOSError("אין שורות בגיליון"), "אין מה לספור")
+            return
+        try:
+            sheet.enter(code, self.count_value.value())
+            self._stocktakes().save()
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "רישום הספירה נכשל")
+            return
+        self._refresh_stocktake()
+
+    def post_stocktake(self) -> None:
+        sheet = self._current_sheet()
+        if sheet is None:
+            self.report(ProfileOSError("פתח גיליון קודם"), "אין גיליון פעיל")
+            return
+        if not sheet.counted:
+            self.report(ProfileOSError("לא נספרה אף שורה"), "אין מה לרשום")
+            return
+
+        warnings = sheet.warnings()
+        text = (
+            f"לרשום {len(sheet.counted)} שורות שנספרו, "
+            f"שינוי שווי של ⁦{sheet.net_value:,.0f} ₪⁩?"
+        )
+        if warnings:
+            text += "\n\n" + "\n".join(warnings)
+        box = QMessageBox(self)
+        box.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
+        box.setWindowTitle("רישום ספירה")
+        box.setText(text)
+        box.setStandardButtons(
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        box.setDefaultButton(QMessageBox.StandardButton.No)
+        if box.exec() != QMessageBox.StandardButton.Yes:
+            return
+
+        company = self._company()
+        try:
+            movements = sheet.post(company.stock)
+            self._stocktakes().save()
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "הרישום נכשל")
+            return
+        self._refresh_sheet_list(select=sheet.sheet_id)
+        self._refresh_stock()
+        self.status(f"נרשמו {len(movements)} תנועות, שינוי שווי ⁦{sheet.net_value:,.0f} ₪⁩")
+
+    # -- purchasing ------------------------------------------------------------ #
+    def _purchasing_tab(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, METRICS.space(3), 0, 0)
+        layout.setSpacing(METRICS.space(3))
+
+        plan = QPushButton("תכנון רכש לפתחים שתוכננו")
+        plan.clicked.connect(self.plan_purchases)
+        layout.addWidget(plan)
+
+        self.requirements_table = DataTable(
+            ["פריט", "נדרש", "פנוי", "בהזמנה", "לרכישה", "יחידה"],
+            empty_text="לחץ ״תכנון רכש״ אחרי שתכננת פתחים",
+        )
+        layout.addWidget(self.requirements_table, 1)
+
+        self.orders_table = DataTable(
+            ["הזמנה", "ספק", "שורות", "נטו", "מועד אספקה"],
+            empty_text="הזמנות רכש יופיעו כאן אחרי התכנון",
+        )
+        layout.addWidget(self.orders_table, 1)
+
+        note = QLabel(
+            "הדרישה נטו היא מה שצריך לקנות: הברוטו, פחות מה שפנוי על המדף, "
+            "פחות מה שכבר בהזמנה. ההזמנות מקובצות אחת לכל ספק ומעוגלות "
+            "כלפי מעלה לאורך המלאי, כי ספק לא מוכר 11.4 מטר ממוט של 6 מטר."
+        )
+        note.setObjectName("Hint")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        return page
+
+    def plan_purchases(self) -> None:
+        from ..erp import StockItem
+
+        if not self.session.builds:
+            self.report(
+                ProfileOSError("עדיין לא תוכננו פתחים"), "אין מה לתכנן"
+            )
+            return
+
+        company = self._company()
+        demand: dict[str, float] = {}
+        for build in self.session.builds:
+            quantity = build.opening.quantity
+            for cut in build.cuts:
+                demand[cut.profile_id] = demand.get(cut.profile_id, 0.0) + (
+                    cut.total_length * quantity / 1000.0
+                )
+
+        # The rate a profile was actually bought in at, if it ever was — never
+        # a guessed figure standing in as a real one. An item nobody has yet
+        # received carries a zero rate: an unpriced line on the draft order is
+        # honest; a plausible-looking made-up number is not.
+        prices: dict[str, float] = {}
+        for code, needed in demand.items():
+            if code not in company.stock.items:
+                company.add_item(
+                    StockItem(code, code, supplier_id="unassigned",
+                              reorder_quantity=6.0, lead_time_days=12)
+                )
+            prices[code] = company.stock.items[code].average_cost
+
+        try:
+            rows, orders = company.plan_purchases(demand, prices)
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "לא ניתן לתכנן את הרכש")
+            return
+
+        self.requirements_table.set_rows(
+            [
+                [r.item, f"{r.gross:.1f}", f"{r.free:.1f}", f"{r.on_order:.1f}",
+                 f"{r.net:.1f}", r.unit]
+                for r in rows
+            ],
+            numeric_columns=(1, 2, 3, 4),
+        )
+        from ..erp import format_money
+
+        self.orders_table.set_rows(
+            [
+                [o.order_id, o.supplier_id, str(len(o.lines)),
+                 format_money(o.net, company.currency),
+                 o.promised.isoformat() if o.promised else ""]
+                for o in orders
+            ],
+            numeric_columns=(2, 3),
+        )
+        self.status(
+            f"{sum(1 for r in rows if r.must_order)} פריטים לרכישה "
+            f"ב־{len(orders)} הזמנות"
+        )
+        self._refresh_stock()
+
+    # -- ledger ----------------------------------------------------------------- #
+    def _ledger_tab(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, METRICS.space(3), 0, 0)
+        layout.setSpacing(METRICS.space(3))
+
+        self.trial_table = DataTable(["קוד", "חשבון", "סוג", "חובה", "זכות"], empty_text="אין עדיין תנועות בהנהלת החשבונות")
+        layout.addWidget(self.trial_table, 1)
+
+        self.position_grid = FieldGrid()
+        layout.addWidget(self.position_grid)
+        self._position_values: dict[str, QLabel] = {}
+        for label in ("הכנסות", "הוצאות", "תוצאה", "נכסים", "התחייבויות",
+                      "הון", "הפרש מאזן"):
+            value = QLabel("—")
+            value.setObjectName("FieldValue")
+            value.setAlignment(
+                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignAbsolute
+                | Qt.AlignmentFlag.AlignVCenter
+            )
+            self._position_values[label] = self.position_grid.add(label, value)
+
+        note = QLabel(
+            "הנהלת חשבונות כפולה, באגורות. פקודת יומן שאינה מתאזנת לאפס "
+            "נדחית ברגע הרישום, כך שמאזן הבוחן לא יכול שלא להתאזן — "
+            "והביקורת מוכיחה זאת במקום להניח, ובודקת את חשבונות המלאי "
+            "מול ספר המלאי."
+        )
+        note.setObjectName("Hint")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        return page
+
+    def _refresh_ledger(self) -> None:
+        from ..erp import format_money
+
+        company = self._company()
+        type_hebrew = {
+            "asset": "נכס", "liability": "התחייבות", "equity": "הון",
+            "income": "הכנסה", "expense": "הוצאה",
+        }
+        self.trial_table.set_rows(
+            [
+                [row.account.code, row.account.name,
+                 type_hebrew.get(str(row.account.type), str(row.account.type)),
+                 format_money(row.debits, company.currency) if row.debits else "",
+                 format_money(row.credits, company.currency) if row.credits else ""]
+                for row in company.ledger.trial_balance()
+            ],
+            numeric_columns=(3, 4),
+        )
+        profit = company.ledger.profit_and_loss()
+        sheet = company.ledger.balance_sheet()
+        for label, value in [
+            ("הכנסות", profit["income"]), ("הוצאות", profit["expense"]),
+            ("תוצאה", profit["result"]), ("נכסים", sheet["assets"]),
+            ("התחייבויות", sheet["liabilities"]), ("הון", sheet["equity"]),
+            ("הפרש מאזן", sheet["difference"]),
+        ]:
+            self._position_values[label].setText(format_money(value, company.currency))
+
+    # -- capacity ---------------------------------------------------------------- #
+    def _planning_tab(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, METRICS.space(3), 0, 0)
+        layout.setSpacing(METRICS.space(3))
+
+        run = QPushButton("שיבוץ הפתחים שתוכננו")
+        run.clicked.connect(self.run_schedule)
+        layout.addWidget(run)
+
+        self.schedule_table = DataTable(
+            ["פעולה", "עמדת עבודה", "התחלה", "סיום", "שעות"],
+            empty_text="לחץ ״שיבוץ״ אחרי שתכננת פתחים",
+        )
+        layout.addWidget(self.schedule_table, 1)
+        self.load_table = DataTable(
+            ["קוד", "עמדת עבודה", "שעות", "זמין", "ניצולת"],
+            empty_text="עומס עמדות העבודה יופיע כאן אחרי השיבוץ",
+        )
+        layout.addWidget(self.load_table, 1)
+
+        note = QLabel(
+            "קיבולת סופית: מסור שכבר משוריין לשלוש עבודות דוחה את הרביעית, "
+            "וזה מה שקורה ברצפת הייצור בין אם התוכנית אומרת זאת ובין אם לא. "
+            "שבוע העבודה ראשון–חמישי עם שישי חצי יום, וזמן האספקה של הזכוכית "
+            "רץ במקביל לעבודת המפעל ולא אחריה."
+        )
+        note.setObjectName("Hint")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        return page
+
+    def run_schedule(self) -> None:
+        from ..erp import DEFAULT_WORK_CENTRES, Scheduler, demand_from_builds
+
+        if not self.session.builds:
+            self.report(
+                ProfileOSError("עדיין לא תוכננו פתחים"), "אין מה לשבץ"
+            )
+            return
+        demand = demand_from_builds(self.session.builds, "JOB")
+        plan = Scheduler().schedule([demand])
+        operation_hebrew = {
+            "cutting": "חיתוך", "machining": "עיבוד", "glazing_order": "הזמנת זכוכית",
+            "assembly": "הרכבה", "glazing": "זיגוג", "packing": "אריזה",
+        }
+        self.schedule_table.set_rows(
+            [
+                [operation_hebrew.get(str(op.operation), str(op.operation)),
+                 op.work_centre, op.start.isoformat(),
+                 op.finish.isoformat(), f"{op.hours:.2f}" if op.hours else "—"]
+                for op in sorted(plan.operations, key=lambda o: (o.start, o.operation))
+            ],
+            numeric_columns=(4,),
+        )
+        colours: dict[tuple[int, int], str] = {}
+        rows = plan.utilisation(DEFAULT_WORK_CENTRES)
+        for index, row in enumerate(rows):
+            colours[(index, 4)] = (
+                self.colours.danger if row["utilisation_pct"] > 90
+                else self.colours.warning if row["utilisation_pct"] > 70
+                else self.colours.success
+            )
+        self.load_table.set_rows(
+            [
+                [r["code"], r["name"], f"{r['hours']:.1f}",
+                 f"{r['available']:.1f}", f"{r['utilisation_pct']:.0f}%"]
+                for r in rows
+            ],
+            numeric_columns=(2, 3, 4), colours=colours,
+        )
+        finish = plan.completion[demand.job_id]
+        bottleneck = plan.bottleneck(DEFAULT_WORK_CENTRES)
+        hebrew_days = ["שני", "שלישי", "רביעי", "חמישי", "שישי", "שבת", "ראשון"]
+        self.status(
+            f"סיום {finish.isoformat()} (יום {hebrew_days[finish.weekday()]})"
+            + (f" · צוואר בקבוק: {bottleneck['name']}" if bottleneck else "")
+        )
+
+    # -- audit -------------------------------------------------------------------- #
+    def run_audit(self) -> None:
+        from ..erp import format_money
+
+        company = self._company()
+        try:
+            report = company.audit()
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "הספרים והמדפים לא מסכימים")
+            return
+
+        summary = company.summary()
+        self.stats.update_many({
+            "stock": (format_money(summary["stock_value"], company.currency), ""),
+            "debtors": (format_money(summary["debtors"], company.currency), "חייבים לנו"),
+            "creditors": (format_money(summary["creditors"], company.currency), "אנחנו חייבים"),
+            "result": (format_money(summary["result"], company.currency), "בתקופה הנוכחית"),
+            "entries": (str(report["entries"]), f"{report['movements']} תנועות"),
+        })
+        self._refresh_stock()
+        self._refresh_ledger()
+        self.status(
+            "הספר מאוזן, המלאי הותאם מול היסטוריית התנועות, "
+            "וחשבונות המלאי מסכימים עם ספר המלאי."
+        )
+
+    def refresh(self) -> None:
+        self._refresh_stock()
+        self._refresh_ledger()
+
+
+PAGES: list[type[Page]] = [
+    HomePage, ProjectsPage, ProfilePage, ElementPage, ViewPage, DrawingsPage,
+    NestingPage, GlassPage,
+    MachiningPage, QuotePage, AccountsPage, CollectionPage,
+    ShopFloorPage, DeliveryPage, ServicePage, PlumbingPage,
+    CataloguePage,
+    SystemPage,
+    ReportsPage,
+    SurveyPage,
+]
+
+__all__ = [
+    "Page", "HomePage", "ProjectsPage", "ProfilePage", "ElementPage", "ViewPage",
+    "DrawingsPage", "NestingPage", "GlassPage", "MachiningPage", "QuotePage", "AccountsPage",
+    "ShopFloorPage", "DeliveryPage", "ServicePage", "CollectionPage", "PlumbingPage",
+    "CataloguePage", "SystemPage", "ReportsPage", "SurveyPage", "PAGES",
+]
