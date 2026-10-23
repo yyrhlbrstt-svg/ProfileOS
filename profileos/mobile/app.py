@@ -88,6 +88,8 @@ class HandoverRequest(BaseModel):
     #: What is left to put right, one line each — the punch list.
     snags: list[str] = Field(default_factory=list)
     note: str = ""
+    #: Set by the phone: sent again after a lost answer, it is kept once.
+    client_id: str = ""
 
 
 class AcceptRequest(BaseModel):
@@ -248,10 +250,17 @@ def build_router(state: MobileState | None = None) -> Any:
         order lives only on this server)."""
         if current().work_order is not None:
             return current().work_order, ""
-        for job_id, order in _saved_orders():
-            if order.by_barcode(payload) or order.find(payload):
-                return order, job_id
         saved = _saved_orders()
+        holding = [(job_id, order) for job_id, order in saved
+                   if order.by_barcode(payload) or order.find(payload)]
+        if len(holding) > 1:
+            # A bare piece number ("W1-F1") is in more than one job: moving
+            # the wrong one's piece is worse than asking for the label.
+            raise HTTPException(status_code=409, detail=(
+                f"⁦{payload}⁩ נמצא ב־⁦{len(holding)}⁩ פרויקטים — סרקו את המדבקה שעל "
+                "החלק: בה כתוב גם הפרויקט"))
+        if holding:
+            return holding[0][1], holding[0][0]
         return (saved[0][1], saved[0][0]) if saved else (None, "")
 
     @router.get("/api/jobs")
@@ -406,6 +415,20 @@ def build_router(state: MobileState | None = None) -> Any:
                 status_code=422,
                 detail=_t("mobile.need_reference"),
             )
+        if request.project_id.strip():
+            from ..projects import default_store
+
+            store = default_store()
+            if not store.path_for(request.project_id.strip()).is_file():
+                raise HTTPException(status_code=422,
+                                    detail="הפרויקט לא נמצא במשרד — בחרו אותו מהרשימה")
+            # A job file the office cannot read now is not "no such job":
+            # the phone keeps the measurement and sends it again later.
+            try:
+                store.load(request.project_id.strip())
+            except Exception as exc:  # noqa: BLE001
+                raise HTTPException(status_code=503,
+                                    detail="תיק הפרויקט לא נקרא במשרד — המדידה נשמרת בטלפון") from exc
         record = SiteMeasurement(
             reference=request.reference.strip().upper(),
             project_id=request.project_id,
@@ -514,6 +537,8 @@ def build_router(state: MobileState | None = None) -> Any:
         if len(data) > MAX_BYTES:
             raise HTTPException(status_code=413, detail="הצילום גדול מדי")
         suffix = _Path(photo.filename or "photo.jpg").suffix.lower() or ".jpg"
+        if suffix not in (".jpg", ".jpeg", ".png", ".heic", ".heif", ".webp"):
+            raise HTTPException(status_code=422, detail="אפשר לשלוח מכאן רק צילום")
         with tempfile.TemporaryDirectory() as scratch:
             source = _Path(scratch) / f"site{suffix}"
             source.write_bytes(data)
@@ -668,22 +693,25 @@ def build_router(state: MobileState | None = None) -> Any:
         if len(image) < 200 or len(image) > 2_000_000:
             raise HTTPException(status_code=422, detail="החתימה לא נקראה — חתמו שוב")
         job = _open_job(request.job_id)
+        client_id = request.client_id.strip()[:64]
+        if attachments_for(job.job_id).by_client_id(client_id) is not None:
+            # Sent again after the answer was lost: it was kept the first time.
+            return {"job": job.name, "status": job.status.hebrew,
+                    "installed": job.status is JobStatus.INSTALLED, "snags": 0,
+                    "duplicate": True}
+        if job.status in (JobStatus.ENQUIRY, JobStatus.QUOTED):
+            raise HTTPException(status_code=409, detail=(
+                "הפרויקט עוד לא אושר — אין מה למסור. אם הלקוח אישר, סמנו זכייה במשרד"))
         snags = [line.strip() for line in request.snags if line.strip()][:40]
         try:
-            with tempfile.TemporaryDirectory() as scratch:
-                source = _Path(scratch) / "signature.png"
-                source.write_bytes(image)
-                caption = f"מסירה — נחתם ע״י {signed_by}"
-                if snags:
-                    caption += f" · ⁦{len(snags)}⁩ תיקונים פתוחים"
-                attachments_for(job.job_id).add(
-                    source, kind=AttachmentKind.SIGNED_DELIVERY, caption=caption,
-                    added_by=device.name,
-                )
+            # The job first, the signed note last: the note is what marks the
+            # handover as kept, so a retry after a failure finds nothing half done.
             store = default_store()
             fresh = store.load(job.job_id)
+            open_already = {snag.description for snag in fresh.snags}
             for line in snags:
-                fresh.snags.append(Snag(description=line[:300]))
+                if line[:300] not in open_already:
+                    fresh.snags.append(Snag(description=line[:300]))
             moved = False
             note = f"נמסר — נחתם בטלפון ע״י {signed_by}"
             if fresh.status is JobStatus.WON:
@@ -692,6 +720,16 @@ def build_router(state: MobileState | None = None) -> Any:
                 fresh.advance(JobStatus.INSTALLED, note)
                 moved = True
             store.save(fresh)
+            with tempfile.TemporaryDirectory() as scratch:
+                source = _Path(scratch) / "signature.png"
+                source.write_bytes(image)
+                caption = f"מסירה — נחתם ע״י {signed_by}"
+                if snags:
+                    caption += f" · ⁦{len(snags)}⁩ תיקונים פתוחים"
+                attachments_for(job.job_id).add(
+                    source, kind=AttachmentKind.SIGNED_DELIVERY, caption=caption,
+                    added_by=device.name, client_id=client_id,
+                )
         except Exception as exc:  # noqa: BLE001 - said to the installer in words
             _log.exception("Handover of %s not saved", job.job_id)
             raise HTTPException(

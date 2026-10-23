@@ -388,14 +388,14 @@ def _money(context: dict[str, Any], today: date) -> list[Insight]:
     found: list[Insight] = []
     # A cheque more than six months past its date can no longer be banked
     # (Israeli banks refuse it) — it is a debt to collect again, not money.
-    stale_after = today - timedelta(days=182)
-    stale = [cheque for cheque in cheques.held() if cheque.due < stale_after]
-    bankable = [cheque for cheque in cheques.bankable(today) if cheque.due >= stale_after]
+    stale = cheques.stale(today)
+    bankable = cheques.bankable(today)
     if stale:
         total = sum(cheque.amount for cheque in stale)
+        them = "אותו" if len(stale) == 1 else "אותם"
         found.append(Insight(
             "danger", _count(len(stale), "צ׳ק אחד עבר חצי שנה ולא הופקד", "צ׳קים עברו חצי שנה ולא הופקדו"),
-            f"בסך ⁦{total:,.0f} ₪⁩ — הבנק כבר לא יכבד אותם; צריך לבקש מהלקוח צ׳ק חדש: "
+            f"בסך ⁦{total:,.0f} ₪⁩ — הבנק כבר לא יכבד {them}; צריך לבקש מהלקוח צ׳ק חדש: "
             + _names(stale, lambda c: c.customer or c.number),
             "Collection", "stale:" + ",".join(sorted(c.cheque_id for c in stale)),
         ))
@@ -733,7 +733,7 @@ def _accounts(context: dict[str, Any], today: date) -> list[Insight]:
         found.append(Insight(
             "danger",
             _count(len(unsure), "מסמך מס שלא ידוע אם הופק", "מסמכי מס שלא ידוע אם הופקו"),
-            "Morning לא ענה כשנשלחו — בדקו שם לפני שמפיקים שוב, ורשמו בחשבון הפרויקט: "
+            "לא הגיעה תשובה מ־Morning כשנשלחו — בדקו שם לפני שמפיקים שוב, ורשמו בחשבון הפרויקט: "
             + _names(unsure, lambda job: f"⁦{job.job_id}⁩ {job.document_pending}"),
             "Projects", "pending-doc:" + ",".join(sorted(job.job_id for job in unsure)),
         ))

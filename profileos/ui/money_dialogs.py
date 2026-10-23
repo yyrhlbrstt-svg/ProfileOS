@@ -1608,7 +1608,7 @@ class MorningInvoiceDialog(QDialog):
         self.tax_id = QLineEdit(getattr(customer, "tax_id", ""))
         self.tax_id.setPlaceholderText("ח.פ. / ע.מ. — ללקוח עסקי")
         self.email = QLineEdit(getattr(customer, "email", ""))
-        self.email.setPlaceholderText("Morning ישלח את המסמך לכתובת הזאת")
+        self.email.setPlaceholderText("המסמך יישלח מ־Morning לכתובת הזאת")
         self.phone = QLineEdit(getattr(customer, "phone", ""))
         self.address = QLineEdit(getattr(customer, "address", "") or job.site_address)
         self.city = QLineEdit(getattr(customer, "city", ""))

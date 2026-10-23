@@ -143,6 +143,36 @@ def compare(job: Any, survey: Any, revision: Any) -> list[SizeChange]:
     return changes
 
 
+def not_compared(job: Any, survey: Any, revision: Any) -> list[tuple[str, str]]:
+    """``(marking, why)`` for every measured opening ``compare`` had to leave
+    out, by the same rules — "all match" must never be said about an opening
+    that was not looked at."""
+    if survey is None:
+        return []
+    priced = {line.key: line for line in getattr(revision, "lines", []) if line.key}
+    schedule = getattr(job, "schedule", None)
+    by_marking = {str(opening.reference or opening.name): opening
+                  for opening in getattr(schedule, "openings", []) or []}
+    left: list[tuple[str, str]] = []
+    for entry in survey.openings:
+        if not entry.is_measured:
+            continue
+        problems = entry.problems()
+        opening = by_marking.get(entry.reference)
+        line = priced.get(opening.element_id) if opening is not None else None
+        if problems:
+            left.append((entry.reference, problems[0]))
+        elif entry.frame_size() is None:
+            left.append((entry.reference, "אין מרווח התקנה מהשיטה — מידת המשקוף לא ידועה"))
+        elif opening is None:
+            left.append((entry.reference, "אין פתח בסימון הזה בפרויקט"))
+        elif line is None:
+            left.append((entry.reference, "לא תומחר בשורה משלו בגרסה שאושרה"))
+        elif line.unit_price <= 0:
+            left.append((entry.reference, "המחיר שלו בגרסה שאושרה הוא אפס"))
+    return left
+
+
 def unbilled(job: Any, changes: Iterable[SizeChange]) -> list[SizeChange]:
     """Openings that grew with no extra for them on the job yet."""
     billed = {line.origin for line in getattr(job, "lines", []) if line.origin}
@@ -163,6 +193,7 @@ __all__ = [
     "WORTH_ASKING",
     "accepted_revision",
     "compare",
+    "not_compared",
     "unbilled",
     "worth_asking",
 ]

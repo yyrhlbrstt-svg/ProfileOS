@@ -129,17 +129,29 @@ def test_the_rack_from_the_cutting_page(shop, monkeypatch):
     window.close(); window.deleteLater(); QCoreApplication.processEvents()
 
 
-def test_offcuts_set_aside_for_a_combined_order_can_be_cut_by_its_jobs(shop):
+def test_a_combined_orders_offcuts_are_each_set_aside_for_one_of_its_jobs(shop):
     from profileos.nesting.rack import release
+    from profileos.projects.materials import propose_combined
 
-    add_offcuts([RemnantBar(profile_id="F", length=5_000)])
-    [offcut] = load_rack().all()
-    assert reserve([offcut.remnant_id], job_id="CO-1", jobs=["J-A", "J-B"]) == 1
-    assert rack_for("J-B").for_profile("F") and rack_for("J-A").for_profile("F")
-    assert not rack_for("J-C").for_profile("F")
+    jobs = [_job("J-A"), _job("J-B")]
+    code = _frame_code(jobs[0])
+    add_offcuts([RemnantBar(profile_id=code, length=5_500),
+                 RemnantBar(profile_id=code, length=5_500)])
+    combined = propose_combined(jobs, mass_per_metre=lambda c: None, rack=rack_for(""))
+    assert len(combined.from_rack) == 2
+    # The same need on both jobs: one offcut each, not both to the first.
+    assert sorted(combined.rack_owner.values()) == ["J-A", "J-B"]
+    for remnant_id, owner in combined.rack_owner.items():
+        assert reserve([remnant_id], job_id=owner, batch="CO-1") == 1
+    assert len(rack_for("J-A").for_profile(code)) == 1
+    assert len(rack_for("J-B").for_profile(code)) == 1
+    assert not rack_for("J-C").for_profile(code)
     # Set aside already: a second order cannot count on it.
-    assert reserve([offcut.remnant_id], job_id="J-C") == 0
-    assert release("CO-1") == 1 and rack_for("J-C").for_profile("F")
+    assert reserve([remnant_id], job_id="J-C") == 0
+    # J-B's part cancelled: only J-B's offcut comes back.
+    assert release("J-B", batch="CO-1") == 1
+    assert len(rack_for("J-C").for_profile(code)) == 1
+    assert [o.metadata.get("job_id") for o in load_rack().all() if o.reserved] == ["J-A"]
 
 
 def test_the_same_cut_is_recorded_on_the_rack_once(shop, monkeypatch):

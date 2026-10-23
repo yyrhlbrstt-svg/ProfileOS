@@ -208,7 +208,7 @@ def test_no_answer_after_sending_is_unclear_not_nothing_and_the_job_remembers(sh
     def slow(self, url, body, *, auth, issuing=False):
         if issuing:
             real_post(self, url, body, auth=auth, issuing=issuing)   # Morning got it…
-            raise module.MaybeIssued("Morning לא ענה בזמן — לא ברור אם המסמך הופק")
+            raise module.MaybeIssued("לא הגיעה תשובה מ־Morning בזמן — לא ברור אם המסמך הופק")
         return real_post(self, url, body, auth=auth, issuing=issuing)
 
     monkeypatch.setattr(module.MorningClient, "_post", slow)

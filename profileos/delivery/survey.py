@@ -524,6 +524,7 @@ def survey_for_job(job: Any, *, clearance_per_side: float | None = None) -> Surv
     for opening in getattr(schedule, "openings", []) or []:
         survey.openings.append(OpeningSurvey(
             reference=str(getattr(opening, "reference", "") or opening.name),
+            room=str((getattr(opening, "metadata", None) or {}).get("room", "")),
             clearance_per_side=clearance_per_side,
         ))
     _log.info(

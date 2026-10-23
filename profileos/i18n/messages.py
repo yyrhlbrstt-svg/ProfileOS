@@ -556,6 +556,14 @@ MESSAGES: dict[str, dict[str, str]] = {
         "it": "Nessun segnale — la consegna NON è stata inviata. Riprova finché il cliente è qui.",
         "es": "Sin señal — la entrega NO se envió. Inténtalo de nuevo mientras el cliente esté aquí.",
     },
+    "mobile.approve_offline": {
+        "en": "No signal — the approval was NOT sent. Try again while the customer is here.",
+        "he": "אין קליטה — האישור לא נשלח. נסו שוב כל עוד הלקוח כאן.",
+        "ar": "لا توجد إشارة — لم تُرسل الموافقة. حاول مجدداً ما دام العميل هنا.",
+        "ru": "Нет связи — согласие НЕ отправлено. Повторите, пока клиент рядом.",
+        "it": "Nessun segnale — l'approvazione NON è stata inviata. Riprova finché il cliente è qui.",
+        "es": "Sin señal — la aprobación NO se envió. Inténtalo de nuevo mientras el cliente esté aquí.",
+    },
     "mobile.handed_over": {
         "en": "Handed over and signed", "he": "נמסר ונחתם", "ar": "تم التسليم والتوقيع",
         "ru": "Сдано и подписано", "it": "Consegnato e firmato", "es": "Entregado y firmado",

@@ -384,6 +384,9 @@ class Combined:
     saved_money: float = 0.0
     warnings: list[str] = field(default_factory=list)
     from_rack: list[tuple[str, str, float]] = field(default_factory=list)
+    #: remnant id -> the one job in the order that will cut it: an offcut set
+    #: aside for "all of them" would be cut by whichever job reached the saw first.
+    rack_owner: dict[str, str] = field(default_factory=dict)
 
     @property
     def total(self) -> float:
@@ -427,6 +430,16 @@ def propose_combined(jobs: list[Any], *, defaults: Any = None, strategy: str = "
     _add_profiles(together, items, "הזמנה משותפת", weights=weights, defaults=defaults,
                   strategy=strategy, rack=rack)
     combined.from_rack = list(together.from_rack)
+    # Each offcut to the job that cuts most of that profile still uncovered,
+    # longest offcut first — so no job counts on more than it needs.
+    need = {profile: dict(by_job) for profile, by_job in cut_length.items()}
+    for remnant_id, profile_id, length in sorted(combined.from_rack, key=lambda used: -used[2]):
+        wanting = need.get(profile_id) or {}
+        if not wanting:
+            continue
+        owner = max(wanting, key=lambda job_id: wanting[job_id])
+        combined.rack_owner[remnant_id] = owner
+        wanting[owner] -= length
     combined.warnings += [w for w in together.warnings if w not in combined.warnings]
     combined.lines += together.lines
 

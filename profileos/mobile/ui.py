@@ -738,9 +738,13 @@ async function acceptQuote(){
     document.getElementById("q-sign").style.display = "none";
     say("q-msg", t("mobile.quote_approved") + " · " + data.job + " · " + data.status, true);
   }catch(err){
-    say("q-msg", err.offline ? t("mobile.handover_offline") : err.message, false);
+    say("q-msg", err.offline ? t("mobile.approve_offline") : err.message, false);
   }finally{ button.disabled = false; }
 }
+
+// Kept until the office answers: a handover sent again after a lost answer
+// is recognised there, not recorded twice.
+let HANDOVER_ID = null;
 
 async function handOver(){
   const job = document.getElementById("sjob").value;
@@ -751,12 +755,14 @@ async function handOver(){
     signed_by: document.getElementById("hby").value.trim(),
     signature: document.getElementById("hsign").toDataURL("image/png"),
     snags: document.getElementById("hsnags").value.split(/\\r?\\n/),
+    client_id: HANDOVER_ID || (HANDOVER_ID = newId()),
   };
   // One tap, one signed delivery note: the button waits for the answer.
   const button = document.querySelector("button[onclick='handOver()']");
   button.disabled = true;
   try{
     const data = await api("/api/handover", {method:"POST", body:JSON.stringify(body)});
+    HANDOVER_ID = null;
     clearSignature("hsign");
     document.getElementById("hsnags").value = "";
     say("h-msg", t("mobile.handed_over") + " · " + data.job + " · " + data.status, true);

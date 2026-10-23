@@ -7,6 +7,7 @@ is still on the phone should not be stopped by a form.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Callable
 
 from PySide6.QtCore import Qt
@@ -595,6 +596,111 @@ class PasteOpeningsDialog(QDialog):
             (self.intake.describe() + "\n\n" + "\n".join(lines[:40])) if lines else "")
         self.ok_button.setEnabled(bool(self.intake.read))
         return self.intake
+
+
+class BankImportDialog(QDialog):
+    """The bank's export: which column is which (once), what each line is
+    proposed to be, and a tick for each one to apply. Nothing is applied that
+    is not ticked."""
+
+    def __init__(self, path: Any, headers: list[str], columns: dict[str, str], *,
+                 read: Callable[[dict[str, str]], Any], parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        from PySide6.QtWidgets import QTableWidget, QTableWidgetItem  # noqa: F401
+
+        from ..erp.bankimport import FIELD_HEBREW
+
+        self.setWindowTitle("דף בנק — התאמה לצ׳קים ולפרויקטים")
+        self.setMinimumSize(900, 600)
+        self._read = read
+        self.reading = None
+        #: The columns the shown matches were read with.
+        self.read_with: dict[str, str] = {}
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(*(METRICS.space(5),) * 4)
+        layout.setSpacing(METRICS.space(3))
+        hint = QLabel(f"\u2068{Path(str(path)).name}\u2069 — בחרו פעם אחת איזו עמודה היא מה; "
+                      "הבחירה נשמרת לפעם הבאה. שום דבר לא מסומן בלי ✓ שלכם.")
+        hint.setObjectName("Hint")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+        grid = FieldGrid()
+        self.columns: dict[str, QComboBox] = {}
+        for name, label in FIELD_HEBREW.items():
+            combo = QComboBox()
+            combo.addItem("—", "")
+            for header in headers:
+                combo.addItem(header, header)
+            index = combo.findData(columns.get(name, ""))
+            combo.setCurrentIndex(max(0, index))
+            self.columns[name] = combo
+            grid.add(label, combo)
+        layout.addWidget(grid)
+        read_button = QPushButton("קריאת הדף והתאמה")
+        read_button.setObjectName("Primary")
+        read_button.clicked.connect(self.match)
+        layout.addWidget(read_button)
+        from .widgets import DataTable
+
+        self.table = DataTable(["✓", "שורה בבנק", "מה זה"], empty_text="״קריאת הדף והתאמה״")
+        self.table.stretch(1)          # the bank's line is the sentence to read whole
+        layout.addWidget(self.table, 1)
+        self.summary = QLabel("")
+        self.summary.setObjectName("Hint")
+        self.summary.setWordWrap(True)
+        layout.addWidget(self.summary)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        self.ok_button = buttons.button(QDialogButtonBox.StandardButton.Ok)
+        self.ok_button.setText("החלת המסומנים")
+        self.ok_button.setObjectName("Primary")
+        self.ok_button.setEnabled(False)
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("ביטול")
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def chosen_columns(self) -> dict[str, str]:
+        return {name: str(combo.currentData()) for name, combo in self.columns.items()
+                if combo.currentData()}
+
+    def match(self) -> Any:
+        try:
+            self.reading = self._read(self.chosen_columns())
+        except Exception as exc:  # noqa: BLE001 - said in the window
+            self.reading = None
+            self.table.set_rows([])
+            self.summary.setText(str(exc))
+            self.ok_button.setEnabled(False)
+            return None
+        reading = self.reading
+        self.read_with = self.chosen_columns()
+        self.table.set_rows([["", "\u200f" + m.line.describe(), m.describe()]
+                             for m in reading.matches])
+        for row, found in enumerate(reading.matches):
+            tick = self.table.item(row, 0)
+            tick.setFlags(Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled)
+            tick.setCheckState(Qt.CheckState.Checked if found.sure else Qt.CheckState.Unchecked)
+            # The line opens with a date: aligned as the Hebrew it is read as.
+            self.table.item(row, 1).setTextAlignment(
+                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignAbsolute
+                | Qt.AlignmentFlag.AlignVCenter)
+        parts = [f"⁦{len(reading.lines)}⁩ שורות חדשות", f"⁦{len(reading.matches)}⁩ הותאמו"]
+        if reading.already:
+            parts.append(f"⁦{reading.already}⁩ כבר טופלו בייבוא קודם")
+        text = " · ".join(parts)
+        if reading.unexplained:
+            text += ("\nזיכויים שלא מצאנו להם הסבר (שווה לבדוק — אולי תשלום שלא נרשם): "
+                     + "; ".join(line.describe() for line in reading.unexplained[:6]))
+        self.summary.setText(text)
+        self.ok_button.setEnabled(bool(reading.matches))
+        return reading
+
+    def chosen(self) -> list[Any]:
+        if self.reading is None:
+            return []
+        return [found for row, found in enumerate(self.reading.matches)
+                if self.table.item(row, 0).checkState() == Qt.CheckState.Checked]
 
 
 class RackDialog(QDialog):

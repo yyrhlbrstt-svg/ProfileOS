@@ -44,6 +44,8 @@ def load_rack() -> RemnantInventory:
     an empty rack (the next save would throw the real one away)."""
     try:
         return RemnantInventory(rack_path())
+    except ProfileOSError:
+        raise                                   # already said in Hebrew
     except Exception as exc:  # noqa: BLE001
         raise ProfileOSError(f"מדף השאריות לא נקרא — הקובץ לא נדרס: {exc}") from exc
 
@@ -88,43 +90,51 @@ def used_from_rack(report: Any) -> list[tuple[str, str, float]]:
 
 
 def _owned_by(offcut: RemnantBar, job_id: str) -> bool:
-    """Set aside for this job — on its own, or as one of a combined order's jobs."""
+    """Set aside for this job — by its own order or its part of a combined one.
+    (Older combined orders set an offcut aside for all their jobs.)"""
     return bool(job_id) and (offcut.metadata.get("job_id") == job_id
                              or job_id in (offcut.metadata.get("jobs") or []))
 
 
-def reserve(remnant_ids: Iterable[str], *, job_id: str,
-            jobs: Iterable[str] = ()) -> int:
-    """Set offcuts aside for a job — or a combined order (``job_id`` its
-    number, ``jobs`` the jobs in it, any of which may cut them): no other
-    plan counts on them. Returns how many were set aside."""
+def reserve(remnant_ids: Iterable[str], *, job_id: str, batch: str = "") -> int:
+    """Set offcuts aside for one job — through its own order, or its part of
+    the combined order ``batch``: no other plan counts on them. Returns how
+    many were set aside."""
     wanted = list(remnant_ids)
-    members = list(jobs)
 
     def mark(rack: RemnantInventory) -> int:
         done = 0
         with rack._lock:
             for index, offcut in enumerate(rack._remnants):
                 if offcut.remnant_id in wanted and not offcut.reserved:
+                    metadata = {k: v for k, v in offcut.metadata.items() if k != "jobs"}
+                    metadata.update({"job_id": job_id, "batch": batch})
                     rack._remnants[index] = offcut.model_copy(update={
-                        "reserved": True,
-                        "metadata": {**offcut.metadata, "job_id": job_id, "jobs": members},
-                    })
+                        "reserved": True, "metadata": metadata})
                     done += 1
         return done
 
     return change_rack(mark)
 
 
-def release(owner: str) -> int:
-    """An order cancelled: the offcuts it counted on are free again."""
+def release(job_id: str, *, batch: str = "") -> int:
+    """An order cancelled: the offcuts it counted on for this job are free
+    again — and only those: a combined order's other jobs keep theirs."""
+
+    def ours(offcut: RemnantBar) -> bool:
+        meta = offcut.metadata
+        if batch:
+            return ((meta.get("batch") == batch and meta.get("job_id") == job_id)
+                    or meta.get("job_id") == batch)      # set aside by an older version
+        return meta.get("job_id") == job_id and not meta.get("batch")
 
     def free(rack: RemnantInventory) -> int:
         done = 0
         with rack._lock:
             for index, offcut in enumerate(rack._remnants):
-                if offcut.reserved and offcut.metadata.get("job_id") == owner:
-                    metadata = {k: v for k, v in offcut.metadata.items() if k not in ("job_id", "jobs")}
+                if offcut.reserved and ours(offcut):
+                    metadata = {k: v for k, v in offcut.metadata.items()
+                                if k not in ("job_id", "jobs", "batch")}
                     rack._remnants[index] = offcut.model_copy(
                         update={"reserved": False, "metadata": metadata})
                     done += 1

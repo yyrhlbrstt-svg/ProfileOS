@@ -263,3 +263,26 @@ def test_cheques_to_a_supplier_from_the_collection_page(shop, monkeypatch):
     page.mark_cleared()
     assert default_cheques().get(first.cheque_id).state is ChequeState.CLEARED
     window.close(); window.deleteLater(); QCoreApplication.processEvents()
+
+
+def test_a_cheque_past_six_months_is_not_money_coming_in():
+    today = date(2026, 10, 23)
+    book = ChequeBook()
+    stale = book.add(Cheque(customer="כהן", amount=5_000, due=date(2026, 4, 1),
+                            received=date(2026, 3, 1)))
+    fresh = book.add(Cheque(customer="לוי", amount=2_000, due=date(2026, 10, 1),
+                            received=date(2026, 9, 1)))
+    bounced = book.add(Cheque(customer="דוד", amount=900, due=date(2026, 9, 1)))
+    bounced.state = ChequeState.BOUNCED
+    assert stale.is_stale(today) and not stale.is_bankable(today)
+    assert book.bankable(today) == [fresh] and book.stale(today) == [stale]
+    weeks = book.two_sided(today, opening=0.0)
+    assert sum(row["in"] for row in weeks) == 2_000
+    # The drawer counts only what can still become money.
+    assert len(book.expected(today)) == 1
+
+
+def test_a_cheque_dated_before_it_was_taken_is_no_wait_not_a_negative_one():
+    book = ChequeBook()
+    book.add(Cheque(customer="כהן", amount=1_000, due=date(2026, 1, 1), received=date(2026, 1, 10)))
+    assert book.average_days_out() == 0

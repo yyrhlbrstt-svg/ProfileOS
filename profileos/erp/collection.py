@@ -119,9 +119,18 @@ class Cheque:
         """How long the shop waits for this one, from the day it was taken."""
         return (self.due - self.received).days
 
+    def is_stale(self, today: date | None = None) -> bool:
+        """Held more than six months past its date: Israeli banks no longer
+        honour it — a debt to collect again, not money in the drawer."""
+        return (self.state is ChequeState.HELD and not self.outgoing
+                and add_months(self.due, 6) < (today or date.today()))
+
     def is_bankable(self, today: date | None = None) -> bool:
-        """Whether it can be banked yet — a post-dated cheque cannot."""
-        return self.state is ChequeState.HELD and self.due <= (today or date.today())
+        """Whether it can be banked yet — a post-dated cheque cannot, and
+        one past six months no longer can."""
+        today = today or date.today()
+        return (self.state is ChequeState.HELD and self.due <= today
+                and not self.is_stale(today))
 
     def deposit(self, on: date | None = None) -> "Cheque":
         on = on or date.today()
@@ -286,8 +295,13 @@ class ChequeBook(MergingBook):
     def held(self) -> list[Cheque]:
         return [cheque for cheque in self.incoming() if cheque.state is ChequeState.HELD]
 
-    def expected(self) -> list[Cheque]:
-        return [cheque for cheque in self.incoming() if cheque.state.is_expected]
+    def expected(self, today: date | None = None) -> list[Cheque]:
+        """Still expected to become money — not one past six months."""
+        return [cheque for cheque in self.incoming()
+                if cheque.state.is_expected and not cheque.is_stale(today)]
+
+    def stale(self, today: date | None = None) -> list[Cheque]:
+        return [cheque for cheque in self.held() if cheque.is_stale(today)]
 
     @property
     def in_hand(self) -> float:
@@ -308,7 +322,7 @@ class ChequeBook(MergingBook):
         """What clears, week by week — the only forecast a shop really uses."""
         start = start or date.today()
         buckets: dict[date, float] = defaultdict(float)
-        for cheque in self.expected():
+        for cheque in self.expected(start):
             if cheque.due < start:
                 buckets[start] += cheque.amount
                 continue
@@ -338,7 +352,7 @@ class ChequeBook(MergingBook):
 
         coming: dict[date, float] = defaultdict(float)
         going: dict[date, float] = defaultdict(float)
-        for cheque in self.expected():
+        for cheque in self.expected(start):
             coming[week_of(cheque.due)] += cheque.amount
         for cheque in self.to_pay():
             # Dated before the balance was read: the bank already took it,
@@ -402,11 +416,14 @@ class ChequeBook(MergingBook):
         cheques = self.incoming()
         if not cheques:
             return 0.0
-        return round(sum(cheque.days_out for cheque in cheques) / len(cheques), 1)
+        # A cheque dated before the day it was taken is no wait at all.
+        return round(sum(max(0, cheque.days_out) for cheque in cheques) / len(cheques), 1)
 
     def summary(self) -> dict[str, float]:
         return {
             "count": len(self.incoming()),
+            #: How many make up ``in_hand`` — not the bounced or banked ones.
+            "in_hand_count": len(self.expected()),
             "in_hand": self.in_hand,
             "to_pay": round(sum(cheque.amount for cheque in self.to_pay()), 2),
             "bankable_today": round(

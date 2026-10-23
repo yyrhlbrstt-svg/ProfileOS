@@ -96,3 +96,62 @@ def test_the_count_is_read_however_it_is_written(line, quantity):
 def test_a_line_that_does_not_say_what_it_is_is_not_guessed(line):
     [read] = read_list(line).lines
     assert not read.ok and read.problem
+
+
+@pytest.mark.parametrize("line, size", [
+    ("חלון ציר 1,2x1,4", (1200, 1400)),              # decimal comma, metres
+    ("חלון ציר 1,200x1,400", (1200, 1400)),          # thousands comma, millimetres
+    ("ויטרינה 420x250 ס\"מ", (4200, 2500)),          # the unit said
+    ("הזזה 450/230", (4500, 2300)),                  # a pair in centimetres, read as one
+    ("W5 חלון הזזה 1.80 על 1.20 מטר, 3 יח", (1800, 1200)),
+    ("D1 דלת כניסה 100 על 220", (1000, 2200)),
+])
+def test_sizes_are_read_in_the_unit_they_were_written_in(line, size):
+    [read] = read_list(line).lines
+    assert read.ok, read.problem
+    assert (read.opening.width, read.opening.height) == size
+
+
+def test_a_dash_between_room_and_type_is_not_a_word_of_the_type():
+    [read] = read_list("חדר ילדים - חלון ציר 100*120").lines
+    assert read.ok and "ציר" in read.describe() and "נטוי" not in read.describe()
+    assert read.opening.metadata.get("room") == "חדר ילדים"
+
+
+@pytest.mark.parametrize("line", ["חלון 120x140", "חלון 120/140 - 2 יחידות",
+                                  "W4 סלון חלון ציר 120 140 40"])
+def test_a_plain_window_or_a_stray_number_is_asked_about_not_guessed(line):
+    [read] = read_list(line).lines
+    assert not read.ok and read.problem
+
+
+def test_the_count_after_the_type_is_kept():
+    [read] = read_list("W3 120 140 חלון ציר 2").lines
+    assert read.ok and read.opening.quantity == 2
+
+
+def test_the_room_from_a_pasted_list_reaches_the_measurement_sheet():
+    from types import SimpleNamespace
+
+    from profileos.delivery.survey import survey_for_job
+
+    openings = [line.opening for line in read_list("חדר ילדים - חלון ציר 100*120").lines]
+    job = SimpleNamespace(job_id="J-1", name="x", site_address="",
+                          schedule=SimpleNamespace(openings=openings))
+    assert survey_for_job(job).openings[0].room == "חדר ילדים"
+
+
+@pytest.mark.parametrize("line, size, quantity", [
+    ("W3,120,140,חלון הזזה,2", (1200, 1400), 2),        # a row of comma columns
+    ("חלון הזזה 120,140", (1200, 1400), 1),
+])
+def test_commas_between_columns_are_not_read_as_thousands(line, size, quantity):
+    [read] = read_list(line).lines
+    assert read.ok, read.problem
+    assert (read.opening.width, read.opening.height) == size
+    assert read.opening.quantity == quantity
+
+
+def test_millimetres_said_are_never_rescaled():
+    [read] = read_list('חלון נטוי 600x350 מ"מ').lines
+    assert "600×350" in read.problem or (read.ok and read.opening.height == 350)

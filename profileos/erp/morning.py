@@ -234,18 +234,18 @@ class MorningClient:
                 text = response.read().decode("utf-8") or "{}"
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")
-            raise ProfileOSError(f"Morning סירב: {_said(detail) or exc.reason}") from exc
+            raise ProfileOSError(f"המסמך נדחה ב־Morning: {_said(detail) or exc.reason}") from exc
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
             if issuing and not _never_sent(exc):
                 raise MaybeIssued(
-                    "Morning לא ענה בזמן — לא ברור אם המסמך הופק. בדקו ב־Morning (מסמכים) "
+                    "לא הגיעה תשובה מ־Morning בזמן — לא ברור אם המסמך הופק. בדקו ב־Morning (מסמכים) "
                     "לפני שמנסים שוב, כדי לא להפיק חשבונית כפולה.") from exc
             raise ProfileOSError(
                 "אין חיבור ל־Morning — בדקו את האינטרנט ונסו שוב. שום מסמך לא הופק.") from exc
         try:
             parsed = json.loads(text)
         except ValueError as exc:
-            raise ProfileOSError("Morning ענה תשובה לא מובנת — בדקו שם אם המסמך הופק") from exc
+            raise ProfileOSError("התשובה מ־Morning לא מובנת — בדקו שם אם המסמך הופק") from exc
         return parsed if isinstance(parsed, dict) else {}
 
     def token(self) -> str:
@@ -258,7 +258,7 @@ class MorningClient:
         }, auth=False)
         token = body.get("accessToken")
         if not token:
-            raise ProfileOSError("Morning לא אישר את המפתח — בדקו את מזהה המפתח והסוד")
+            raise ProfileOSError("המפתח לא אושר ב־Morning — בדקו את מזהה המפתח והסוד")
         self._token = str(token)
         try:
             self._expires = float(body.get("expiresAt"))
@@ -276,7 +276,7 @@ class MorningClient:
         document_id = str(body.get("id") or "")
         number = body.get("number")
         if not document_id or number in (None, ""):
-            raise ProfileOSError("Morning לא החזיר מספר מסמך — בדקו שם אם הוא הופק")
+            raise ProfileOSError("לא התקבל מ־Morning מספר מסמך — בדקו שם אם הוא הופק")
         url = body.get("url") or {}
         link = (url.get("he") or url.get("origin") or "") if isinstance(url, dict) else str(url)
         _log.info("Morning issued %s number %s", draft.kind, number)

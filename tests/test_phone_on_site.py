@@ -99,6 +99,56 @@ def test_the_customer_signs_the_handover_on_the_phone(office):
     assert "משה כהן" in signed.caption and "⁦2⁩ תיקונים" in signed.caption
 
 
+def test_a_handover_sent_again_is_kept_once_and_an_unwon_job_is_not_handed_over(office):
+    from fastapi.testclient import TestClient
+
+    from profileos.api.server import app
+    from profileos.projects import JobFile, JobStatus, default_store
+    from profileos.projects.attachments import AttachmentKind, attachments_for
+
+    client = TestClient(app)
+    headers = _headers(client, office)
+    signature = "data:image/png;base64," + base64.b64encode(_png()).decode()
+    body = {"job_id": "J-2026-0005", "signed_by": "משה כהן", "signature": signature,
+            "snags": ["ידית נתקעת"], "client_id": "h-1"}
+    assert client.post("/m/api/handover", headers=headers, json=body).status_code == 200
+    again = client.post("/m/api/handover", headers=headers, json=body)
+    assert again.status_code == 200 and again.json()["duplicate"] is True
+    assert len(attachments_for("J-2026-0005").of_kind(AttachmentKind.SIGNED_DELIVERY)) == 1
+    assert len(default_store().load("J-2026-0005").snags) == 1
+
+    default_store().save(JobFile(job_id="J-2026-0009", name="פנייה", status=JobStatus.ENQUIRY))
+    early = client.post("/m/api/handover", headers=headers, json={
+        **body, "job_id": "J-2026-0009", "client_id": "h-2"})
+    assert early.status_code == 409 and "לא אושר" in early.json()["detail"]
+    assert default_store().load("J-2026-0009").status is JobStatus.ENQUIRY
+
+
+def test_a_measurement_for_a_project_the_office_does_not_have_is_refused(office):
+    from fastapi.testclient import TestClient
+
+    from profileos.api.server import app
+
+    client = TestClient(app)
+    headers = _headers(client, office)
+    answer = client.post("/m/api/measurements", headers=headers, json={
+        "reference": "W1", "widths": [1200, 1200, 1200], "heights": [1400, 1400, 1400],
+        "project_id": "J-NOPE"})
+    assert answer.status_code == 422 and "לא נמצא" in answer.json()["detail"]
+
+
+def test_only_a_photo_is_taken_as_a_photo(office):
+    from fastapi.testclient import TestClient
+
+    from profileos.api.server import app
+
+    client = TestClient(app)
+    headers = _headers(client, office)
+    answer = client.post("/m/api/photos", headers=headers, data={"job_id": "J-2026-0005"},
+                         files={"photo": ("notes.txt", b"hello" * 100, "text/plain")})
+    assert answer.status_code == 422
+
+
 CHROMIUM = Path(os.environ.get("PLAYWRIGHT_BROWSERS_PATH", "/opt/pw-browsers"))
 _executables = sorted(CHROMIUM.glob("chromium-*/chrome-linux/chrome"))
 
@@ -348,3 +398,35 @@ def test_approved_and_signed_at_the_customers_table(office):
         server.should_exit = True
         thread.join(timeout=5)
     assert default_store().load(job_id).status is JobStatus.WON
+
+
+def test_a_piece_number_in_two_jobs_is_not_moved_on_a_guess(office):
+    from fastapi.testclient import TestClient
+
+    from profileos.api.server import app
+    from profileos.mes import ItemKind, ProductionItem, WorkOrder
+    from profileos.mes.store import load_work_order, save_work_order
+    from profileos.projects import JobFile, JobStatus, default_store
+
+    default_store().save(JobFile(job_id="J-2026-0006", name="בית לוי",
+                                 status=JobStatus.IN_PRODUCTION))
+    for job_id in ("J-2026-0005", "J-2026-0006"):
+        order = WorkOrder(work_order_id=f"WO-{job_id}", project_id=job_id, name=job_id)
+        order.add(ProductionItem(item_id="W1-P011", kind=ItemKind.PROFILE_PIECE,
+                                 description="קורה", project_id=job_id,
+                                 barcode=f"POS|{job_id}|W1|W1-P011|CUT"))
+        save_work_order(order, job_id)
+    client = TestClient(app)
+    code = office.registry.issue_code("מסור", scopes=("jobs",))
+    paired = client.post("/m/api/pair", json={"code": code.code}).json()
+    headers = {"X-Device-Id": paired["device_id"], "X-Device-Token": paired["token"]}
+
+    bare = client.post("/m/api/scan", headers=headers, json={"payload": "W1-P011", "stage": "cut"})
+    assert bare.status_code == 409 and "המדבקה" in bare.json()["detail"]
+    assert load_work_order("J-2026-0005").find("W1-P011").stage.value == "planned"
+
+    label = client.post("/m/api/scan", headers=headers,
+                        json={"payload": "POS|J-2026-0006|W1|W1-P011|CUT", "stage": "cut"})
+    assert label.status_code == 200, label.text
+    assert load_work_order("J-2026-0006").find("W1-P011").stage.value == "cut"
+    assert load_work_order("J-2026-0005").find("W1-P011").stage.value == "planned"

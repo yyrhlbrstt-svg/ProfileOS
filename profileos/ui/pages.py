@@ -1742,14 +1742,20 @@ class ProjectsPage(Page):
             self.status(f"{exc} — ההזמנה מחושבת בלי השאריות")
             return None
 
-    def _reserve(self, proposal: Any, owner: str, jobs: list[str] | None = None) -> None:
+    def _reserve(self, proposal: Any, owner: str, batch: str = "") -> None:
+        """The offcuts the order counts on, set aside — a combined order's each
+        for the one job that will cut it (``rack_owner``)."""
         from ..nesting.rack import reserve
 
         used = [remnant_id for remnant_id, _p, _l in getattr(proposal, "from_rack", [])]
         if not used:
             return
+        owners = getattr(proposal, "rack_owner", {}) or {}
+        by_job: dict[str, list[str]] = {}
+        for remnant_id in used:
+            by_job.setdefault(owners.get(remnant_id, owner), []).append(remnant_id)
         try:
-            done = reserve(used, job_id=owner, jobs=jobs or [])
+            done = sum(reserve(ids, job_id=job_id, batch=batch) for job_id, ids in by_job.items())
         except Exception as exc:  # noqa: BLE001
             self.report(exc, "השאריות מהמדף לא סומנו לפרויקט — סמנו אותן ביד")
             return
@@ -1889,7 +1895,10 @@ class ProjectsPage(Page):
         kept = len(saved)
         if not kept:
             return 0
-        self._reserve(combined, batch, jobs=[job.job_id for job in jobs])
+        # Only a job that kept a part can release its offcuts by cancelling it.
+        combined.rack_owner = {remnant_id: owner if owner in saved else saved[0]
+                               for remnant_id, owner in combined.rack_owner.items()}
+        self._reserve(combined, saved[0], batch=batch)
         if dialog.choice == MaterialOrderDialog.SEND:
             message = combined_message(final, brand_name=active_brand().display_name,
                                        jobs=jobs, batch=batch, needed_by=values["needed_by"],
@@ -1963,7 +1972,7 @@ class ProjectsPage(Page):
                 if order.state is MaterialOrderState.RECEIVED and not order.received_on:
                     order.received_on = date.today().isoformat()
                 if order.state is MaterialOrderState.CANCELLED:
-                    released.append(order.batch or job.job_id)
+                    released.append(order.batch)
             for order_id, number, net in dialog.invoices:
                 order = by_id.get(order_id)
                 if order is None:
@@ -1980,8 +1989,8 @@ class ProjectsPage(Page):
             from ..nesting.rack import release
 
             try:
-                for owner in set(released):
-                    release(owner)
+                for batch in set(released):
+                    release(job.job_id, batch=batch)
             except Exception as exc:  # noqa: BLE001
                 self.report(exc, "השאריות של ההזמנה שבוטלה לא שוחררו במדף")
         self.refresh()
@@ -7366,6 +7375,11 @@ class CollectionPage(Page):
         add.clicked.connect(self.new_cheque)
         self.header.add_action(add)
 
+        statement = QPushButton("דף בנק…")
+        statement.setToolTip("ייבוא תנועות מהבנק — התאמה לצ׳קים שהופקדו, לצ׳קים לספקים ולתשלומים")
+        statement.clicked.connect(self.import_bank)
+        self.header.add_action(statement)
+
         pay = QPushButton("צ׳ק לספק")
         pay.setToolTip("צ׳ק שכתבתם לספק או לקבלן — יוצא מהחשבון בתאריך שלו")
         pay.clicked.connect(lambda: self.new_cheque(outgoing=True))
@@ -7401,7 +7415,7 @@ class CollectionPage(Page):
         cheques = Card("צ׳קים")
         self.cheques_table = DataTable(
             ["מספר", "לקוח / ספק", "סכום", "לפירעון", "בנק", "עבודה", "מצב"],
-            empty_text="אין צ׳קים בספר — לחץ ״צ׳ק חדש״",
+            empty_text="אין צ׳קים בספר — לחצו ״קבלת צ׳קים״",
         )
         cheques.add(self.cheques_table, 1)
         splitter.addWidget(cheques)
@@ -7509,6 +7523,92 @@ class CollectionPage(Page):
         except Exception:  # noqa: BLE001 - a cheque can be taken without a job
             return []
         return sorted(jobs, key=lambda job: job.updated or "", reverse=True)
+
+    def import_bank(self, path: Any = None) -> int:
+        """The bank's export, matched to what the shop expects; applied only
+        where ticked. Returns how many lines were applied."""
+        from ..core.config import get_settings, save_settings
+        from ..erp import bankimport
+        from ..migration.reader import read_table
+        from .dialogs import BankImportDialog
+        from .widgets import documents_dir
+
+        if path is None:
+            path, _ = QFileDialog.getOpenFileName(
+                self, "דף בנק", str(documents_dir()), "Excel / CSV (*.xlsx *.csv *.txt)")
+            if not path:
+                return 0
+        try:
+            headers = read_table(Path(path), expected=[
+                w for words in bankimport.FIELDS.values() for w in words]).headers
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "הקובץ לא נקרא")
+            return 0
+        settings = get_settings()
+        columns = dict(settings.bank_columns) or bankimport.guess_columns(headers)
+
+        def read(chosen: dict[str, str]) -> Any:
+            from ..projects import default_store
+
+            lines, _skipped = bankimport.read_statement(Path(path), chosen)
+            return bankimport.match(lines, cheques=list(self.book()),
+                                    jobs=default_store().all(), seen=bankimport.applied_keys())
+
+        dialog = BankImportDialog(path, headers, columns, read=read, parent=self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return 0
+        chosen = dialog.chosen()
+        # The columns the matches were read with — not boxes changed after.
+        settings.bank_columns = dict(dialog.read_with)
+        try:
+            save_settings(settings)
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "בחירת העמודות לא נשמרה — בפעם הבאה תתבקשו לבחור שוב")
+        return self._apply_bank(chosen)
+
+    def _apply_bank(self, chosen: list[Any]) -> int:
+        from ..erp import bankimport
+        from ..projects import Payment, PaymentMethod, default_store
+
+        applied: list[str] = []
+        store = default_store()
+        book = self.book()
+        for found in chosen:
+            line = found.line
+            try:
+                if found.kind in ("clear", "paid_out"):
+                    cheque = book.get(found.target.cheque_id)
+                    if cheque is None:
+                        continue
+                    cheque.clear(line.on)
+                elif found.kind == "bounce":
+                    cheque = book.get(found.target.cheque_id)
+                    if cheque is None:
+                        continue
+                    cheque.bounce(line.on, reason=line.text or "חזר בבנק")
+                elif found.kind == "payment":
+                    job = store.load(found.target.job_id)
+                    job.payments.append(Payment(
+                        amount=line.amount, method=PaymentMethod.TRANSFER, on=line.on.isoformat(),
+                        reference=f"בנק ⁦{line.on:%d/%m/%Y}⁩ {line.reference}".strip(),
+                        note=line.text[:200]))
+                    job.touch()
+                    store.save(job)
+                applied.append(line.key)
+            except Exception as exc:  # noqa: BLE001 - said; the others go on
+                self.report(exc, f"שורה לא הוחלה: {line.describe()}")
+        if any(found.kind != "payment" for found in chosen):
+            if not self._save():
+                # The drawer was not written: the cheque lines are not remembered.
+                applied = [found.line.key for found in chosen
+                           if found.kind == "payment" and found.line.key in applied]
+        try:
+            bankimport.remember(applied)
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "לא נשמר אילו שורות טופלו — ייבוא חוזר יציע אותן שוב")
+        self.refresh()
+        self.status(f"הוחלו ⁦{len(applied)}⁩ שורות מדף הבנק")
+        return len(applied)
 
     def save_bank_balance(self) -> None:
         from datetime import date
@@ -7733,7 +7833,7 @@ class CollectionPage(Page):
 
         summary = book.summary()
         self.stats.update_many({
-            "in_hand": (f"{summary['in_hand']:,.0f}", f"{summary['count']} צ׳קים"),
+            "in_hand": (f"{summary['in_hand']:,.0f}", f"⁦{summary['in_hand_count']}⁩ צ׳קים"),
             "bankable": (f"{summary['bankable_today']:,.0f}", ""),
             "bounced": (f"{summary['bounced']:,.0f}", ""),
             "days": (f"{summary['average_days_out']:.0f}", "ימים"),
@@ -9953,7 +10053,7 @@ class SystemPage(Page):
         layout = QVBoxLayout(page)
         layout.setContentsMargins(0, METRICS.space(3), 0, 0)
         layout.setSpacing(METRICS.space(3))
-        card = Card("Morning (חשבונית ירוקה) — הפקת חשבוניות מהפרויקט")
+        card = Card("חשבונית ירוקה (Morning) — הפקת חשבוניות מהפרויקט")
         grid = FieldGrid()
         self.morning_id = QLineEdit()
         self.morning_id.setPlaceholderText("מזהה המפתח (API Key ID)")
@@ -10032,7 +10132,7 @@ class SystemPage(Page):
             self.morning_state.setStyleSheet(f"color: {self.colours.danger};")
             return False
         QApplication.restoreOverrideCursor()
-        self.morning_state.setText("Morning אישר את המפתח — אפשר להפיק מסמכים מהפרויקטים")
+        self.morning_state.setText("המפתח אושר ב־Morning — אפשר להפיק מסמכים מהפרויקטים")
         self.morning_state.setStyleSheet(f"color: {self.colours.success};")
         return True
 
@@ -11107,7 +11207,7 @@ class SurveyPage(Page):
     def compare_to_quote(self) -> list[Any]:
         """The measured frames against the sizes the customer agreed to, and
         what the growth costs at the price that version sold them at."""
-        from ..delivery.remeasure import accepted_revision, compare, unbilled
+        from ..delivery.remeasure import accepted_revision, compare, not_compared, unbilled
         from ..projects import default_store
         from ..quoting.revisions import RevisionBook
 
@@ -11130,8 +11230,17 @@ class SurveyPage(Page):
                 "אין הצעה להשוות אליה")
             return []
         changes = compare(job, self._survey, revision)
+        left = not_compared(job, self._survey, revision)
+        if left:
+            skipped = "\n".join(f"⁦{marking or '—'}⁩: {why}" for marking, why in left)
+            self.survey_problems.setText(
+                f"⁦{len(left)}⁩ פתחים שנמדדו לא הושוו להצעה:\n{skipped}")
         if not changes:
-            self.status(f"כל הפתחים שנמדדו תואמים להצעה (גרסה ⁦{revision.number}⁩)")
+            if left:
+                self.status(f"הפתחים שהושוו תואמים להצעה — ⁦{len(left)}⁩ לא הושוו, "
+                            "ראו מתחת לגיליון")
+            else:
+                self.status(f"כל הפתחים שנמדדו תואמים להצעה (גרסה ⁦{revision.number}⁩)")
             return []
         fresh = unbilled(job, changes)
         grown = sum(change.amount for change in fresh)

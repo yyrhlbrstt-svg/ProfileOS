@@ -168,9 +168,10 @@ class TestCheques:
         assert book.in_hand == 3000
 
     def test_a_bounced_cheque_leaves_the_expected_money(self):
-        book = ChequeBook([Cheque(customer="א", amount=1000, due=date(2026, 1, 1))])
+        # Dated this month: one past six months is not expected money anyway.
+        book = ChequeBook([Cheque(customer="א", amount=1000, due=date.today())])
         assert book.in_hand == 1000
-        list(book)[0].bounce(date(2026, 1, 5), "אין כיסוי")
+        list(book)[0].bounce(date.today(), "אין כיסוי")
         assert book.in_hand == 0
         assert book.summary()["bounced"] == 1000
 

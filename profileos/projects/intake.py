@@ -80,7 +80,9 @@ class Intake:
     def describe(self) -> str:
         units = sum(line.opening.quantity for line in self.read)
         text = f"נקלטו ⁦{len(self.read)}⁩ פתחים (⁦{units}⁩ יחידות)"
-        if self.unread:
+        if len(self.unread) == 1:
+            text += " · שורה אחת לא נקלטה — היא לא תתווסף"
+        elif self.unread:
             text += f" · ⁦{len(self.unread)}⁩ שורות לא נקלטו — הן לא יתווספו"
         return text
 
@@ -108,7 +110,7 @@ _SAID_COUNT = re.compile(
     r"(?:(\d{1,3})\s*יח(?:ידות|ידה)?[׳'\"]?|כמות\s*:?\s*(\d{1,3}))(?=\s|$)")
 #: More than this "of the same" in one schedule line is a sill height or a
 #: code in the next column, not a count — the line is shown, not guessed.
-MOST_ALIKE = 50
+MOST_ALIKE = 20
 #: What is fitted to an opening, never an opening by itself: "תריס 120x140"
 #: does not say whether the window under it slides or turns.
 _FITTED = {"תריס", "רשת", "סורג", "אדן", "ארגז"}
@@ -132,9 +134,66 @@ def _known_words(text: str) -> str:
     kept = []
     for word in text.split():
         word = _PLURALS.get(word, word)
-        if any(ch.isdigit() for ch in word) or _folds(word) in known or len(word) <= 1:
+        if (any(ch.isdigit() for ch in word) or word in ("על", "x")
+                or (word.isalpha() and (_folds(word) in known or len(word) <= 1))):
             kept.append(word)
     return " ".join(kept)
+
+
+#: A unit said after a size: kept, so "420x250 ס"מ" is 4200 × 2500 mm.
+_UNITS = {"ס\"מ", "ס״מ", "סמ", "סנטימטר", "cm", "מ\"מ", "מ״מ", "ממ", "mm", "מטר", "מטרים",
+          "מ'", "מ׳", "m", "על", "x"}
+
+
+_UNIT_FACTOR = {"ס\"מ": 10, "ס״מ": 10, "סמ": 10, "סנטימטר": 10, "cm": 10,
+                "מ\"מ": 1, "מ״מ": 1, "ממ": 1, "mm": 1,
+                "מטר": 1000, "מטרים": 1000, "מ'": 1000, "מ׳": 1000, "m": 1000}
+_SIZE = re.compile(
+    r"(\d+(?:\.\d+)?)\s*(?:x|/|על)\s*(\d+(?:\.\d+)?)"
+    r"(?:\s*(" + "|".join(re.escape(u) for u in sorted(_UNIT_FACTOR, key=len, reverse=True))
+    + r"))?(?=\s|$)")
+
+
+#: "120 140 ס״מ": two numbers and a unit, no sign between them.
+_SPACED = re.compile(
+    r"(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s*("
+    + "|".join(re.escape(u) for u in sorted(_UNIT_FACTOR, key=len, reverse=True))
+    + r")(?=\s|$)")
+
+
+def _sizes(text: str) -> str:
+    """A width and height, with the unit said or not, as millimetres —
+    the pair read as one: "450/230" is 4.5 m by 2.3 m, not 450 mm by 2.3 m."""
+    def as_mm(found: re.Match) -> str:
+        a, b = float(found.group(1)), float(found.group(2))
+        unit = found.group(3)
+        if unit:
+            factor = _UNIT_FACTOR[unit]
+        elif max(a, b) < 10:
+            factor = 1000                      # 1.2 x 1.4: metres
+        elif max(a, b) < 1000 and min(a, b) < 400:
+            factor = 10                        # 120 x 140, 450 / 230: centimetres
+        else:
+            factor = 1                         # 1200 x 1400: millimetres
+        # Under 400 the library would read a bare number as centimetres:
+        # those are written in metres, which it reads as they are.
+        def plain(mm: float) -> str:
+            return f"{mm:.0f}" if mm >= 400 else f"{mm / 1000:.3f}"
+
+        return f"{plain(a * factor)}x{plain(b * factor)}"
+    text = _SPACED.sub(lambda found: f"{found.group(1)}x{found.group(2)} {found.group(3)}", text)
+    return _SIZE.sub(as_mm, text)
+
+
+def _numbers(text: str) -> str:
+    """A decimal comma is a decimal point (1,2 m); a comma before three
+    digits is a thousands mark (1,200 mm); any other comma separates."""
+    if re.search(r",\s*[^\d\s]|[^\d\s,]\s*,", text):
+        # "W3,120,140,חלון הזזה,2": a row of columns — every comma separates.
+        return text.replace(",", " ")
+    text = re.sub(r"(?<![\d.])(\d{1,2}),(?=\d{3}(?!\d))", r"\1", text)
+    text = re.sub(r"(?<=\d),(?=\d{1,2}(?!\d))", ".", text)
+    return text.replace(",", " ")
 
 
 def _room(text: str) -> tuple[str, str]:
@@ -163,8 +222,9 @@ def read_line(text: str, *, used: set[str] | None = None) -> IntakeLine:
         line.mark = found.group(1).upper()
         rest = rest[found.end():]
     # Table columns arrive tab- or comma-separated; "120x140" is one size.
-    rest = rest.replace("\t", " ").replace(",", " ")
+    rest = _numbers(rest.replace("\t", " "))
     rest = _TIMES.sub("x", rest)
+    rest = _sizes(rest)
     line.room, rest = _room(rest)
     count = None
     said = _SAID_COUNT.search(rest)
@@ -186,6 +246,18 @@ def read_line(text: str, *, used: set[str] | None = None) -> IntakeLine:
         rest = (rest[:trailing.start()]
                 + f"{trailing.group(1)}{trailing.group(2)}{trailing.group(3)}"
                 + rest[trailing.end():])
+    if count is None:
+        # "W3 120 140 חלון 2": the count column after the type.
+        last = re.search(r"(?<=\s)(\d{1,2})\s*$", rest)
+        before = rest[:last.start()] if last else ""
+        if last and len(re.findall(r"\d+(?:\.\d+)?", before)) >= 2:
+            number = int(last.group(1))
+            if number > MOST_ALIKE:
+                line.problem = (f"{_quoted(text)} — לא ברור מה המספר ⁦{number}⁩ "
+                                "(כמות? גובה סף?) — כתבו ״יח׳״ אחרי כמות")
+                return line
+            count = number
+            rest = before
     rest = _known_words(rest)
 
     query = parse_query(rest)
@@ -201,11 +273,30 @@ def read_line(text: str, *, used: set[str] | None = None) -> IntakeLine:
         # A size alone is not an opening: which kind is for the person to say.
         line.problem = f"{_quoted(text)} — לא כתוב איזה פתח (חלון, דלת, הזזה…)"
         return line
-    presets = search_openings(rest, limit=1)
+    presets = search_openings(rest, limit=12)
     if not presets:
         # The words named no type the shop makes: a plain window at the size
         # is not assumed — the line is shown to the person instead.
-        line.problem = f"{_quoted(text)} — לא זוהה סוג הפתח"
+        words_only = " ".join(w for w in rest.split()
+                              if not any(ch.isdigit() for ch in w) and w not in _UNITS)
+        if words_only and search_openings(words_only, limit=1):
+            line.problem = (f"{_quoted(text)} — אין בספרייה סוג כזה במידה "
+                            f"⁦{query.width:.0f}×{query.height:.0f}⁩ מ״מ — הוסיפו אותו בעמוד ״פתח״")
+        else:
+            line.problem = f"{_quoted(text)} — לא זוהה סוג הפתח"
+        return line
+    families = {preset.family_id for preset in presets}
+    generic = {"חלון", "דלת", "פתח"}
+    if len(families) > 1 and set(named) <= generic:
+        # "חלון 120x140" fits a casement, a slider and a fixed light alike:
+        # which one is the person's to say, not the first match's.
+        kinds = []
+        for preset in presets:
+            label = preset.hebrew.split(" ⁦")[0]
+            if label not in kinds:
+                kinds.append(label)
+        line.problem = (f"{_quoted(text)} — לא כתוב איזה סוג: "
+                        + ", ".join(kinds[:4]) + (" ועוד" if len(kinds) > 4 else ""))
         return line
     preset = presets[0]
     try:
@@ -221,6 +312,8 @@ def read_line(text: str, *, used: set[str] | None = None) -> IntakeLine:
         opening.reference = line.mark
         if used is not None:
             used.add(line.mark)
+    if line.room:
+        opening.metadata["room"] = line.room
     notes = [line.room] if line.room else []
     if fitted:
         notes.append("עם " + ", ".join(fitted))

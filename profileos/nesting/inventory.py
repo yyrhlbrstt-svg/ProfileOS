@@ -76,7 +76,7 @@ class RemnantInventory:
             raw = read_json(target, default={})
         except Exception as exc:  # noqa: BLE001
             raise ProfileOSError(
-                f"Cannot read remnant inventory: {exc}", path=str(target)
+                f"מדף השאריות לא נקרא — הקובץ לא נדרס: {exc}", path=str(target)
             ) from exc
 
         entries = raw.get("remnants", raw) if isinstance(raw, dict) else raw

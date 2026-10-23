@@ -7,7 +7,7 @@ from datetime import date
 
 import pytest
 
-from profileos.delivery.remeasure import compare, unbilled, worth_asking
+from profileos.delivery.remeasure import compare, not_compared, unbilled, worth_asking
 from profileos.delivery.survey import SurveyBook, sheet_for_job
 from profileos.elements.model import ElementSchedule, Opening
 from profileos.projects import JobFile, JobStatus, default_store
@@ -124,3 +124,31 @@ def test_the_extra_is_added_once_for_approval_and_the_home_page_stops_asking(sho
                 if l.origin == "measure:W1"]) == 1
     assert not [i for i in scan(date.today()) if i.key.startswith("remeasured:")]
     window.close(); window.deleteLater(); QCoreApplication.processEvents()
+
+
+def test_an_opening_that_could_not_be_compared_is_named_not_counted_as_matching(shop):
+    job = _sold_job()
+    sheet = sheet_for_job(job, SurveyBook().load())
+    _measure(sheet, "W1", 1520, 1220)      # frame 1500 × 1200 — as sold
+    _measure(sheet, "W2", 1200, 1300)      # much bigger, but no diagonals taken
+    w2 = sheet.opening("W2")
+    w2.diagonal_a = w2.diagonal_b = None
+    revision = RevisionBook().load().for_job(job.job_id).get(1)
+    assert compare(job, sheet, revision) == []
+    left = not_compared(job, sheet, revision)
+    assert [marking for marking, _why in left] == ["W2"]
+    assert "אלכסונים" in left[0][1]
+
+
+def test_an_opening_added_after_the_quote_is_named_as_not_compared(shop):
+    from profileos.elements.model import Opening
+
+    job = _sold_job()
+    job.schedule.openings.append(Opening(element_id="W3", name="W3", reference="W3",
+                                         width=600, height=600))
+    default_store().save(job)
+    sheet = sheet_for_job(job, SurveyBook().load())
+    _measure(sheet, "W3", 900, 900)
+    revision = RevisionBook().load().for_job(job.job_id).get(1)
+    assert compare(job, sheet, revision) == []
+    assert not_compared(job, sheet, revision) == [("W3", "לא תומחר בשורה משלו בגרסה שאושרה")]

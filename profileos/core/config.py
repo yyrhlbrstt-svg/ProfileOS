@@ -196,6 +196,9 @@ class Settings(BaseModel):
     #: The shop's own pace against the general labour norms, applied by the
     #: owner from its booked hours (System ← operator); 1.0 until then.
     labour_factor: float = 1.0
+    #: Which column of the bank's export is which (Collection ← bank
+    #: statement), named once by the person.
+    bank_columns: dict[str, str] = Field(default_factory=dict)
     labour_factor_basis: str = ""
     bank_balance_on: str = ""
     phone_port: int = 8765
