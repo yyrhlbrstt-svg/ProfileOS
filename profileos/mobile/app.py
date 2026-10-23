@@ -90,6 +90,14 @@ class HandoverRequest(BaseModel):
     note: str = ""
 
 
+class AcceptRequest(BaseModel):
+    job_id: str
+    #: The version shown on the phone — refused if a newer one exists.
+    revision: int
+    signed_by: str
+    signature: str
+
+
 #: What a photo from site can be of, in the job's own words.
 PHOTO_KINDS = ("opening_photo", "progress_photo", "defect_photo", "before_photo",
                "after_photo", "handover_photo", "survey_photo")
@@ -518,6 +526,118 @@ def build_router(state: MobileState | None = None) -> Any:
             except Exception as exc:  # noqa: BLE001 - said to the phone in words
                 raise HTTPException(status_code=422, detail=str(exc)) from exc
         return {"name": saved.name, "kind": saved.kind.hebrew, "job": job.name}
+
+    def _sent_version(job_id: str) -> Any:
+        from ..quoting.revisions import default_revisions
+
+        book = default_revisions()
+        if getattr(book, "damaged", None) is not None:
+            raise HTTPException(status_code=409, detail="גרסאות ההצעה לא נקראו במשרד")
+        history = book.for_job(job_id)
+        return history.last_sent
+
+    @router.get("/api/quote")
+    def quote(
+        job_id: str,
+        x_device_id: str | None = Header(default=None),
+        x_device_token: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        """The version the customer was sent, as they will sign it."""
+        from ..projects.account import current_vat_rate
+
+        device_for(x_device_id, x_device_token, "measure")
+        job = _open_job(job_id)
+        version = _sent_version(job.job_id)
+        if version is None:
+            raise HTTPException(status_code=404, detail="לפרויקט עוד לא נשלחה הצעה מהמשרד")
+        vat = current_vat_rate()
+        return {
+            "job": job.name, "customer": job.customer_name, "status": job.status.hebrew,
+            "revision": version.number,
+            "sent_on": version.sent_on.strftime("%d/%m/%Y") if version.sent_on else "",
+            "lines": [{"description": line.description, "quantity": line.quantity,
+                       "total": round(line.total, 2)} for line in version.lines],
+            "net": round(version.net_price, 2),
+            "gross": round(version.net_price * (1 + vat), 2),
+            "won": job.status.value not in ("enquiry", "quoted"),
+        }
+
+    @router.post("/api/accept")
+    def accept(
+        request: AcceptRequest,
+        x_device_id: str | None = Header(default=None),
+        x_device_token: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        """The customer approves the version on the phone and signs: kept as
+        the signed quotation, and the job is won — at the table, not a week
+        later when the shop rings back."""
+        import base64
+        import tempfile
+        from pathlib import Path as _Path
+
+        from ..projects import JobStatus, default_store
+        from ..projects.account import current_vat_rate
+        from ..projects.attachments import AttachmentKind, attachments_for
+        from ..projects.winning import settle_chases, win
+
+        device = device_for(x_device_id, x_device_token, "measure")
+        signed_by = request.signed_by.strip()
+        if not signed_by:
+            raise HTTPException(status_code=422, detail="מי מאשר? כתבו את שם הלקוח")
+        prefix = "data:image/png;base64,"
+        if not request.signature.startswith(prefix):
+            raise HTTPException(status_code=422, detail="אין חתימה — בקשו מהלקוח לחתום")
+        try:
+            image = base64.b64decode(request.signature[len(prefix):], validate=True)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail="החתימה לא נקראה — חתמו שוב") from exc
+        if len(image) < 200 or len(image) > 2_000_000:
+            raise HTTPException(status_code=422, detail="החתימה לא נקראה — חתמו שוב")
+        job = _open_job(request.job_id)
+        if job.status not in (JobStatus.ENQUIRY, JobStatus.QUOTED):
+            raise HTTPException(status_code=409, detail=f"הפרויקט כבר {job.status.hebrew}")
+        version = _sent_version(job.job_id)
+        if version is None or version.number != request.revision:
+            raise HTTPException(status_code=409, detail=(
+                "במשרד יש גרסה חדשה יותר של ההצעה — טענו אותה שוב לפני החתימה"))
+        vat = current_vat_rate()
+        record = "\n".join(
+            [f"אישור הצעת מחיר — {job.name} ({job.job_id})",
+             f"גרסה {version.number}, נשלחה {version.sent_on or ''}",
+             f"אושרה ונחתמה בטלפון ע״י {signed_by}, בנוכחות {device.name}", ""]
+            + [f"{line.description} · {line.quantity:g} · {line.total:,.2f} ₪"
+               for line in version.lines]
+            + ["", f"לפני מע״מ: {version.net_price:,.2f} ₪",
+               f"כולל מע״מ: {version.net_price * (1 + vat):,.2f} ₪"])
+        try:
+            files = attachments_for(job.job_id)
+            with tempfile.TemporaryDirectory() as scratch:
+                signature = _Path(scratch) / "signature.png"
+                signature.write_bytes(image)
+                files.add(signature, kind=AttachmentKind.SIGNED_QUOTE, added_by=device.name,
+                          caption=f"אישור הצעה גרסה ⁦{version.number}⁩ — נחתם ע״י {signed_by}")
+                text = _Path(scratch) / "approved-quote.txt"
+                text.write_text(record, encoding="utf-8")
+                files.add(text, kind=AttachmentKind.SIGNED_QUOTE, added_by=device.name,
+                          caption=f"מה אושר — גרסה ⁦{version.number}⁩")
+            store = default_store()
+            fresh = store.load(job.job_id)
+            if fresh.status is JobStatus.ENQUIRY:
+                fresh.advance(JobStatus.QUOTED, "הצעה נשלחה")
+            win(fresh, revision=version.number,
+                note=f"אושר ונחתם בטלפון ע״י {signed_by}")
+            store.save(fresh)
+        except HTTPException:
+            raise
+        except Exception as exc:  # noqa: BLE001 - said to the phone in words
+            _log.exception("Approval of %s not saved", job.job_id)
+            raise HTTPException(status_code=500,
+                                detail=f"האישור לא נשמר במשרד — נסו שוב ({exc})") from exc
+        try:
+            settle_chases(job.job_id, won=True)
+        except Exception:  # noqa: BLE001 - the job is won either way
+            _log.exception("Chase calls of %s not closed", job.job_id)
+        return {"job": fresh.name, "status": fresh.status.hebrew, "revision": version.number}
 
     @router.post("/api/handover")
     def handover(

@@ -211,6 +211,21 @@ textarea{min-height:96px;resize:vertical}
       <div id="s-wait" class="msg"></div>
     </div>
     <div class="card">
+      <h2 data-t="mobile.approve_quote"></h2>
+      <p class="note" data-t="mobile.approve_help"></p>
+      <button class="ghost" onclick="showQuote()" data-t="mobile.show_quote"></button>
+      <div id="q-view"></div>
+      <div id="q-sign" style="display:none">
+        <label for="qby" data-t="mobile.signed_by"></label>
+        <input id="qby">
+        <label data-t="mobile.sign_here"></label>
+        <canvas id="qsign" class="sign"></canvas>
+        <button class="ghost" onclick="clearSignature('qsign')" data-t="mobile.clear_signature"></button>
+        <button id="q-accept" onclick="acceptQuote()" data-t="mobile.customer_approves"></button>
+      </div>
+      <div id="q-msg" class="msg"></div>
+    </div>
+    <div class="card">
       <h2 data-t="mobile.handover"></h2>
       <p class="note" data-t="mobile.handover_help"></p>
       <label for="hby" data-t="mobile.signed_by"></label>
@@ -219,7 +234,7 @@ textarea{min-height:96px;resize:vertical}
       <textarea id="hsnags"></textarea>
       <label data-t="mobile.sign_here"></label>
       <canvas id="hsign" class="sign"></canvas>
-      <button class="ghost" onclick="clearSignature()" data-t="mobile.clear_signature"></button>
+      <button class="ghost" onclick="clearSignature('hsign')" data-t="mobile.clear_signature"></button>
       <button onclick="handOver()" data-t="mobile.sign_and_hand_over"></button>
       <div id="h-msg" class="msg"></div>
     </div>
@@ -304,7 +319,7 @@ function show(id){
   document.querySelectorAll("nav button").forEach(b => b.classList.toggle("on", b.dataset.tab === id));
   if(id === "jobs") loadJobs();
   if(id === "measure"){ loadProjects(); loadMeasurements(); }
-  if(id === "site"){ loadProjects().then(fillSiteJobs); readySignature(); flushPhotos(); }
+  if(id === "site"){ loadProjects().then(fillSiteJobs); readySignature("hsign"); readySignature("qsign"); flushPhotos(); }
   if(id === "draw") loadDrawings();
 }
 
@@ -667,10 +682,10 @@ async function showWaitingPhotos(){
   box.className = count ? "msg on wait" : "msg";
 }
 
-let SIGNED = false;
-function readySignature(){
-  const canvas = document.getElementById("hsign");
-  if(canvas.dataset.ready) return;
+const SIGNED = {};
+function readySignature(id){
+  const canvas = document.getElementById(id);
+  if(!canvas || canvas.dataset.ready || !canvas.clientWidth) return;
   canvas.dataset.ready = "1";
   const ratio = window.devicePixelRatio || 1;
   canvas.width = canvas.clientWidth * ratio; canvas.height = canvas.clientHeight * ratio;
@@ -679,20 +694,58 @@ function readySignature(){
   let drawing = false;
   const at = e => { const r = canvas.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; };
   canvas.addEventListener("pointerdown", e => { drawing = true; pen.beginPath(); pen.moveTo(...at(e)); canvas.setPointerCapture(e.pointerId); });
-  canvas.addEventListener("pointermove", e => { if(!drawing) return; pen.lineTo(...at(e)); pen.stroke(); SIGNED = true; });
+  canvas.addEventListener("pointermove", e => { if(!drawing) return; pen.lineTo(...at(e)); pen.stroke(); SIGNED[id] = true; });
   ["pointerup","pointercancel","pointerleave"].forEach(name => canvas.addEventListener(name, () => drawing = false));
 }
 
-function clearSignature(){
-  const canvas = document.getElementById("hsign");
+function clearSignature(id){
+  const canvas = document.getElementById(id);
   canvas.getContext("2d").clearRect(0, 0, canvas.width, canvas.height);
-  SIGNED = false;
+  SIGNED[id] = false;
+}
+
+// The version the customer was sent, shown to them, signed on the screen.
+let SHOWN = null;
+async function showQuote(){
+  const job = document.getElementById("sjob").value;
+  if(!job){ say("q-msg", t("mobile.need_project"), false); return; }
+  try{
+    SHOWN = await api("/api/quote?job_id=" + encodeURIComponent(job));
+  }catch(err){ SHOWN = null; say("q-msg", err.message, false); return; }
+  const money = v => Number(v).toLocaleString("he-IL", {minimumFractionDigits:2, maximumFractionDigits:2});
+  document.getElementById("q-view").innerHTML =
+    `<p class="note">${esc(SHOWN.job)} · ${esc(SHOWN.customer || "")} · ${esc(t("mobile.version"))} <span class="num">${SHOWN.revision}</span> · ${esc(SHOWN.sent_on)}</p>` +
+    SHOWN.lines.map(l => `<div class="item"><div class="grow"><b>${esc(l.description)}</b>
+       <small class="num">× ${l.quantity}</small></div><span class="num">${money(l.total)} ₪</span></div>`).join("") +
+    `<div class="item"><div class="grow"><b>${esc(t("mobile.total_with_vat"))}</b></div>
+       <b class="num">${money(SHOWN.gross)} ₪</b></div>`;
+  document.getElementById("q-sign").style.display = SHOWN.won ? "none" : "block";
+  if(SHOWN.won){ say("q-msg", SHOWN.status, true); }
+  readySignature("qsign");
+}
+
+async function acceptQuote(){
+  if(!SHOWN){ return; }
+  if(!SIGNED["qsign"]){ say("q-msg", t("mobile.need_signature"), false); return; }
+  const button = document.getElementById("q-accept");
+  button.disabled = true;
+  try{
+    const data = await api("/api/accept", {method:"POST", body:JSON.stringify({
+      job_id: document.getElementById("sjob").value, revision: SHOWN.revision,
+      signed_by: document.getElementById("qby").value.trim(),
+      signature: document.getElementById("qsign").toDataURL("image/png")})});
+    clearSignature("qsign");
+    document.getElementById("q-sign").style.display = "none";
+    say("q-msg", t("mobile.quote_approved") + " · " + data.job + " · " + data.status, true);
+  }catch(err){
+    say("q-msg", err.offline ? t("mobile.handover_offline") : err.message, false);
+  }finally{ button.disabled = false; }
 }
 
 async function handOver(){
   const job = document.getElementById("sjob").value;
   if(!job){ say("h-msg", t("mobile.need_project"), false); return; }
-  if(!SIGNED){ say("h-msg", t("mobile.need_signature"), false); return; }
+  if(!SIGNED["hsign"]){ say("h-msg", t("mobile.need_signature"), false); return; }
   const body = {
     job_id: job,
     signed_by: document.getElementById("hby").value.trim(),
@@ -704,7 +757,7 @@ async function handOver(){
   button.disabled = true;
   try{
     const data = await api("/api/handover", {method:"POST", body:JSON.stringify(body)});
-    clearSignature();
+    clearSignature("hsign");
     document.getElementById("hsnags").value = "";
     say("h-msg", t("mobile.handed_over") + " · " + data.job + " · " + data.status, true);
   }catch(err){

@@ -560,6 +560,34 @@ MESSAGES: dict[str, dict[str, str]] = {
         "en": "Handed over and signed", "he": "נמסר ונחתם", "ar": "تم التسليم والتوقيع",
         "ru": "Сдано и подписано", "it": "Consegnato e firmato", "es": "Entregado y firmado",
     },
+    "mobile.approve_quote": {
+        "en": "Customer approves the quote", "he": "אישור הצעת מחיר", "ar": "موافقة العميل على العرض",
+        "ru": "Клиент одобряет смету", "it": "Il cliente approva il preventivo", "es": "El cliente aprueba el presupuesto",
+    },
+    "mobile.approve_help": {
+        "en": "Show the customer the version they were sent; they approve it and sign here — the job is won on the spot.", "he": "מציגים ללקוח את הגרסה שנשלחה אליו; הוא מאשר וחותם כאן — והפרויקט נסגר במקום.", "ar": "اعرض على العميل النسخة التي أُرسلت إليه؛ يوافق ويوقّع هنا — ويُغلق المشروع فوراً.",
+        "ru": "Покажите клиенту отправленную ему версию; он одобряет и подписывает здесь — заказ закрыт на месте.", "it": "Mostra al cliente la versione inviata; la approva e firma qui — la commessa è chiusa sul posto.", "es": "Muestra al cliente la versión enviada; la aprueba y firma aquí — la obra se cierra en el acto.",
+    },
+    "mobile.show_quote": {
+        "en": "Show the quote", "he": "הצגת ההצעה", "ar": "عرض العرض",
+        "ru": "Показать смету", "it": "Mostra il preventivo", "es": "Mostrar el presupuesto",
+    },
+    "mobile.version": {
+        "en": "version", "he": "גרסה", "ar": "نسخة",
+        "ru": "версия", "it": "versione", "es": "versión",
+    },
+    "mobile.total_with_vat": {
+        "en": "Total incl. VAT", "he": "סה״כ כולל מע״מ", "ar": "المجموع شامل الضريبة",
+        "ru": "Итого с НДС", "it": "Totale IVA inclusa", "es": "Total con IVA",
+    },
+    "mobile.customer_approves": {
+        "en": "The customer approves — signed", "he": "הלקוח מאשר — נחתם", "ar": "العميل يوافق — تم التوقيع",
+        "ru": "Клиент одобряет — подписано", "it": "Il cliente approva — firmato", "es": "El cliente aprueba — firmado",
+    },
+    "mobile.quote_approved": {
+        "en": "Approved and signed — the job is won", "he": "אושר ונחתם — הפרויקט נסגר", "ar": "تمت الموافقة والتوقيع — أُغلق المشروع",
+        "ru": "Одобрено и подписано — заказ получен", "it": "Approvato e firmato — commessa acquisita", "es": "Aprobado y firmado — obra ganada",
+    },
     "mobile.project": {
         "en": "Job", "he": "פרויקט", "ar": "المشروع",
         "ru": "Объект", "it": "Commessa", "es": "Obra",

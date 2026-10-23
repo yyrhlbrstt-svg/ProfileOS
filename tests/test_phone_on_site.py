@@ -146,6 +146,7 @@ def test_photo_and_signature_from_the_phone_page(office, tmp_path):
 
             page.fill("#hby", "משה כהן")
             page.fill("#hsnags", "ידית נתקעת")
+            page.locator("#hsign").scroll_into_view_if_needed()
             box = page.locator("#hsign").bounding_box()
             page.mouse.move(box["x"] + 20, box["y"] + 90)
             page.mouse.down()
@@ -241,3 +242,109 @@ def test_a_photo_taken_without_signal_goes_by_itself_later(office, tmp_path):
         server.should_exit = True
         thread.join(timeout=5)
     assert len(attachments_for("J-2026-0005").photos()) == 1
+
+
+def _quoted_job(job_id="J-2026-0020"):
+    from profileos.projects import JobFile, JobStatus, default_store
+    from profileos.quoting.revisions import Line, RevisionBook
+
+    default_store().save(JobFile(job_id=job_id, name="מטבח לוי", customer_name="לוי",
+                                 status=JobStatus.QUOTED, quote_total=8_000))
+    book = RevisionBook().load()
+    book.for_job(job_id).record_issued(
+        [Line("W1", "W1 — חלון הזזה", 2, "pc", 4_000.0, "element")], 8_000.0)
+    book.save()
+    return job_id
+
+
+def test_the_customer_approves_the_sent_version_and_the_job_is_won(office):
+    from fastapi.testclient import TestClient
+
+    from profileos.api.server import app
+    from profileos.projects import JobStatus, default_store
+    from profileos.projects.attachments import AttachmentKind, attachments_for
+
+    job_id = _quoted_job()
+    client = TestClient(app)
+    headers = _headers(client, office)
+    shown = client.get(f"/m/api/quote?job_id={job_id}", headers=headers).json()
+    assert shown["revision"] == 1 and shown["net"] == 8_000 and not shown["won"]
+    assert shown["lines"][0]["description"] == "W1 — חלון הזזה"
+
+    signature = "data:image/png;base64," + base64.b64encode(_png()).decode()
+    stale = client.post("/m/api/accept", headers=headers, json={
+        "job_id": job_id, "revision": 7, "signed_by": "לוי", "signature": signature})
+    assert stale.status_code == 409 and "גרסה חדשה" in stale.json()["detail"]
+    answer = client.post("/m/api/accept", headers=headers, json={
+        "job_id": job_id, "revision": 1, "signed_by": "דוד לוי", "signature": signature})
+    assert answer.status_code == 200, answer.text
+    job = default_store().load(job_id)
+    assert job.status is JobStatus.WON and job.accepted_revision == 1
+    assert [need.need for need in job.waiting_for] == ["measurement", "colour", "glass_choice"]
+    signed = attachments_for(job_id).of_kind(AttachmentKind.SIGNED_QUOTE)
+    assert len(signed) == 2
+    record = next(f for f in signed if f.name.endswith(".txt"))
+    text = attachments_for(job_id).path_of(record).read_text(encoding="utf-8")
+    assert "דוד לוי" in text and "8,000.00" in text
+    again = client.post("/m/api/accept", headers=headers, json={
+        "job_id": job_id, "revision": 1, "signed_by": "דוד לוי", "signature": signature})
+    assert again.status_code == 409                              # once is enough
+
+
+@pytest.mark.skipif(not _executables, reason="no Chromium for Playwright here")
+def test_approved_and_signed_at_the_customers_table(office):
+    playwright = pytest.importorskip("playwright.sync_api")
+    import uvicorn
+
+    from profileos.api.server import app
+    from profileos.projects import JobStatus, default_store
+
+    job_id = _quoted_job()
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning"))
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    for _ in range(100):
+        if server.started:
+            break
+        time.sleep(0.05)
+    try:
+        with playwright.sync_playwright() as pw:
+            browser = pw.chromium.launch(executable_path=str(_executables[-1]))
+            page = browser.new_context(viewport={"width": 390, "height": 844}).new_page()
+            page.goto(f"http://127.0.0.1:{port}/m?lang=he")
+            code = office.registry.issue_code("המוכר", scopes=("measure",)).code
+            page.evaluate("""code => fetch('/m/api/pair', {method: 'POST',
+                headers: {'Content-Type': 'application/json'}, body: JSON.stringify({code})})
+                .then(r => r.json()).then(d => {
+                  localStorage.setItem('pos.token', d.token);
+                  localStorage.setItem('pos.device', d.device_id);
+                  localStorage.setItem('pos.scopes', 'measure');
+                })""", code)
+            page.reload()
+            page.click("nav button[data-tab=site]")
+            page.wait_for_selector(f"#sjob option[value='{job_id}']", state="attached")
+            page.select_option("#sjob", job_id)
+            page.click("button[onclick='showQuote()']")
+            page.wait_for_selector("#q-sign", state="visible")
+            assert "חלון הזזה" in page.inner_text("#q-view")
+            page.fill("#qby", "דוד לוי")
+            page.locator("#qsign").scroll_into_view_if_needed()
+            box = page.locator("#qsign").bounding_box()
+            page.mouse.move(box["x"] + 20, box["y"] + 90)
+            page.mouse.down()
+            for step in range(1, 12):
+                page.mouse.move(box["x"] + 20 + step * 25, box["y"] + 90 - (step % 3) * 20)
+            page.mouse.up()
+            page.click("#q-accept")
+            try:
+                page.wait_for_selector("#q-msg.ok", timeout=10_000)
+            except Exception:
+                raise AssertionError(page.inner_text("#q-msg"))
+            browser.close()
+    finally:
+        server.should_exit = True
+        thread.join(timeout=5)
+    assert default_store().load(job_id).status is JobStatus.WON

@@ -2330,21 +2330,15 @@ class ProjectsPage(Page):
             # added in the job's account meanwhile is kept.
             store = self._store()
             job = store.load(job.job_id)
-            job.advance(target, reason)
+            if target is JobStatus.WON:
+                from ..projects.winning import win
+
+                # The version the customer holds is the one they said yes to.
+                win(job, revision=self._last_sent_revision(job.job_id), note=reason)
+            else:
+                job.advance(target, reason)
             if target is JobStatus.LOST:
                 job.lost_reason = reason.strip()
-            if target is JobStatus.WON:
-                # The version the customer holds is the one they said yes to.
-                accepted = self._last_sent_revision(job.job_id)
-                if accepted:
-                    job.accepted_revision = accepted
-                # What a window cannot be made without: asked for now, in
-                # one list, not discovered when the bars are on the saw.
-                if not job.waiting_for and job.trade.value == "aluminium":
-                    from ..projects import CustomerNeed
-
-                    job.waiting_for = [CustomerNeed(need=kind)
-                                       for kind in ("measurement", "colour", "glass_choice")]
             store.save(job)
         except Exception as exc:  # noqa: BLE001
             self.report(exc, "לא ניתן לעדכן את הסטטוס")
@@ -2352,12 +2346,9 @@ class ProjectsPage(Page):
         if target in (JobStatus.WON, JobStatus.LOST):
             # The customer decided: the quotation's chase calls are over.
             try:
-                from ..projects.followups import Outcome
+                from ..projects.winning import settle_chases
 
-                self._task_book().settle_quote(
-                    job.job_id, Outcome.DONE if target is JobStatus.WON else Outcome.LOST,
-                    result="נסגר" if target is JobStatus.WON else f"לא נסגר: {reason}".strip(": "),
-                )
+                settle_chases(job.job_id, won=target is JobStatus.WON, reason=reason)
             except Exception as exc:  # noqa: BLE001 - the status is saved either way
                 self.report(exc, "הסטטוס עודכן, אבל משימות המעקב על ההצעה לא נסגרו")
         if self.session.job is not None and self.session.job.job_id == job.job_id:
