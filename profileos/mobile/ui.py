@@ -208,6 +208,7 @@ textarea{min-height:96px;resize:vertical}
       <input id="sfile" type="file" accept="image/*" capture="environment" style="display:none" onchange="sendPhoto(this)">
       <button onclick="document.getElementById('sfile').click()" data-t="mobile.take_photo"></button>
       <div id="s-msg" class="msg"></div>
+      <div id="s-wait" class="msg"></div>
     </div>
     <div class="card">
       <h2 data-t="mobile.handover"></h2>
@@ -303,7 +304,7 @@ function show(id){
   document.querySelectorAll("nav button").forEach(b => b.classList.toggle("on", b.dataset.tab === id));
   if(id === "jobs") loadJobs();
   if(id === "measure"){ loadProjects(); loadMeasurements(); }
-  if(id === "site"){ loadProjects().then(fillSiteJobs); readySignature(); }
+  if(id === "site"){ loadProjects().then(fillSiteJobs); readySignature(); flushPhotos(); }
   if(id === "draw") loadDrawings();
 }
 
@@ -576,6 +577,39 @@ function shrink(file){
   });
 }
 
+// Photos taken without signal wait in the phone's own database (a photo is
+// too big for the measurement outbox) and go by themselves when it returns.
+function photoDb(){
+  return new Promise((resolve, reject) => {
+    const open = indexedDB.open("profileos-photos", 1);
+    open.onupgradeneeded = () => open.result.createObjectStore("photos", {keyPath:"client_id"});
+    open.onsuccess = () => resolve(open.result);
+    open.onerror = () => reject(open.error);
+  });
+}
+
+async function photoStore(mode, action){
+  const db = await photoDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction("photos", mode);
+    const request = action(tx.objectStore("photos"));
+    tx.oncomplete = () => resolve(request && request.result);
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+async function postPhoto(record){
+  const form = new FormData();
+  for(const key of ["job_id","kind","element","caption","client_id"]) form.append(key, record[key]);
+  form.append("photo", record.blob, "site.jpg");
+  const response = await fetch(API + "/api/photos", {method:"POST", body:form,
+    headers:{"X-Device-Id":DEVICE, "X-Device-Token":TOKEN}});   // throws with no signal
+  if(response.status === 401){ signOut(); const gone = new Error(t("mobile.session_expired")); gone.refused = true; throw gone; }
+  const data = await response.json().catch(() => ({}));
+  if(!response.ok){ const refused = new Error(data.detail || "שגיאה"); refused.refused = true; throw refused; }
+  return data;
+}
+
 async function sendPhoto(input){
   const file = input.files && input.files[0];
   input.value = "";
@@ -584,22 +618,53 @@ async function sendPhoto(input){
   if(!job){ say("s-msg", t("mobile.need_project"), false); return; }
   const box = document.getElementById("s-msg");
   box.textContent = t("mobile.photo_sending"); box.className = "msg on wait";
-  const form = new FormData();
-  form.append("job_id", job);
-  form.append("kind", document.getElementById("skind").value);
-  form.append("element", document.getElementById("sref").value.trim());
-  form.append("caption", document.getElementById("scap").value.trim());
-  form.append("photo", await shrink(file), "site.jpg");
-  let response;
+  const record = {
+    client_id: newId(), job_id: job,
+    kind: document.getElementById("skind").value,
+    element: document.getElementById("sref").value.trim(),
+    caption: document.getElementById("scap").value.trim(),
+    blob: await shrink(file),
+  };
   try{
-    response = await fetch(API + "/api/photos", {method:"POST", body:form,
-      headers:{"X-Device-Id":DEVICE, "X-Device-Token":TOKEN}});
-  }catch(err){ say("s-msg", t("mobile.photo_offline"), false); return; }
-  if(response.status === 401){ signOut(); return; }
-  const data = await response.json().catch(() => ({}));
-  if(!response.ok){ say("s-msg", data.detail || "שגיאה", false); return; }
-  document.getElementById("scap").value = "";
-  say("s-msg", t("mobile.photo_saved") + " · " + data.job, true);
+    const data = await postPhoto(record);
+    document.getElementById("scap").value = "";
+    say("s-msg", t("mobile.photo_saved") + " · " + data.job, true);
+  }catch(err){
+    if(err.refused){ say("s-msg", err.message, false); return; }
+    try{
+      await photoStore("readwrite", store => store.put(record));
+      document.getElementById("scap").value = "";
+      box.textContent = t("mobile.photo_queued"); box.className = "msg on wait";
+    }catch(storeErr){ say("s-msg", t("mobile.photo_offline"), false); }
+  }
+  showWaitingPhotos();
+}
+
+let SENDING_PHOTOS = false;
+async function flushPhotos(){
+  if(SENDING_PHOTOS || !TOKEN || !window.indexedDB) return;
+  SENDING_PHOTOS = true;
+  try{
+    const waiting = await photoStore("readonly", store => store.getAll()) || [];
+    for(const record of waiting){
+      try{ await postPhoto(record); }
+      catch(err){
+        if(err.refused){ say("s-msg", err.message, false); continue; }   // kept, and said
+        break;                                                           // still no signal
+      }
+      await photoStore("readwrite", store => store.delete(record.client_id));
+    }
+  }catch(err){ /* no database on this phone: nothing waits */ }
+  finally{ SENDING_PHOTOS = false; showWaitingPhotos(); }
+}
+
+async function showWaitingPhotos(){
+  const box = document.getElementById("s-wait");
+  if(!box || !window.indexedDB) return;
+  let count = 0;
+  try{ count = await photoStore("readonly", store => store.count()); }catch(err){ count = 0; }
+  box.textContent = count ? t("mobile.photos_waiting").replace("{n}", count) : "";
+  box.className = count ? "msg on wait" : "msg";
 }
 
 let SIGNED = false;
@@ -743,6 +808,7 @@ async function loadMeasurements(){
 }
 
 window.addEventListener("online", flushOutbox);
+window.addEventListener("online", flushPhotos);
 setInterval(flushOutbox, 30000);
 
 async function check(){

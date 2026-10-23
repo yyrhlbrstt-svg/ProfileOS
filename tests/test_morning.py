@@ -101,7 +101,7 @@ def test_a_tax_invoice_is_sent_as_morning_takes_it(morning):
     path, document, headers = morning.seen[1]
     assert path == "/api/v1/documents" and headers["Authorization"] == "Bearer TOKEN-1"
     assert document["type"] == 305 and document["lang"] == "he" and document["vatType"] == 0
-    assert document["client"] == {"name": "משה כהן", "add": True, "taxId": "514000000",
+    assert document["client"] == {"name": "משה כהן", "add": False, "taxId": "514000000",
                                   "emails": ["m@example.test"]}
     assert document["income"] == [{"description": "עבודות אלומיניום — וילה", "quantity": 1.0,
                                    "price": 10_000, "currency": "ILS", "vatType": 0}]
@@ -154,6 +154,8 @@ def test_issued_from_the_jobs_account_and_recorded_on_the_job(shop, morning, mon
         dialog.kind.setCurrentIndex(dialog.kind.findData(TAX_INVOICE_RECEIPT))
         dialog.net.setValue(5_000)
         dialog.method.setCurrentIndex(dialog.method.findData("transfer"))
+        assert not dialog.keep_payment.isChecked()                # never doubled by default
+        dialog.keep_payment.setChecked(True)
         return QDialog.DialogCode.Accepted
 
     asked = []
@@ -180,3 +182,68 @@ def test_issued_from_the_jobs_account_and_recorded_on_the_job(shop, morning, mon
     assert dialog.issue_in_morning() is None and len(morning.seen) == sent
     assert suggested[-1] == pytest.approx(15_000)               # the rest, next time
     dialog.deleteLater()
+
+
+def test_no_answer_after_sending_is_unclear_not_nothing_and_the_job_remembers(shop, monkeypatch):
+    """A timeout after the document went out: the person is told it may exist,
+    and the job keeps saying so until somebody checked."""
+    pytest.importorskip("PySide6")
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from datetime import date
+
+    from PySide6.QtWidgets import QApplication, QDialog, QMessageBox
+
+    from profileos.erp import morning as module
+    from profileos.insights import scan
+    from profileos.projects import JobFile, JobStatus, default_store
+    from profileos.ui import money_dialogs
+
+    for name in ("http_proxy", "HTTP_PROXY", "https_proxy", "HTTPS_PROXY"):
+        monkeypatch.delenv(name, raising=False)
+    fake = FakeMorning()
+    monkeypatch.setitem(module.API, "live", fake.url + "/api")
+    monkeypatch.setitem(module.TOKEN, "live", fake.url + "/idp/v1/oauth/token")
+    real_post = module.MorningClient._post
+
+    def slow(self, url, body, *, auth, issuing=False):
+        if issuing:
+            real_post(self, url, body, auth=auth, issuing=issuing)   # Morning got it…
+            raise module.MaybeIssued("Morning לא ענה בזמן — לא ברור אם המסמך הופק")
+        return real_post(self, url, body, auth=auth, issuing=issuing)
+
+    monkeypatch.setattr(module.MorningClient, "_post", slow)
+    QApplication.instance() or QApplication([])
+    save_account(MorningAccount("key", "s3cret"))
+    default_store().save(JobFile(job_id="J-2026-0010", name="וילה", customer_name="כהן",
+                                 status=JobStatus.INSTALLED, quote_total=10_000))
+    warned = []
+    monkeypatch.setattr(money_dialogs, "_warn", lambda parent, title, exc: warned.append(title))
+    monkeypatch.setattr(money_dialogs.MorningInvoiceDialog, "exec",
+                        lambda dialog: QDialog.DialogCode.Accepted)
+    monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.StandardButton.Yes)
+    dialog = money_dialogs.JobAccountDialog("J-2026-0010", default_store())
+    assert dialog.issue_in_morning() is None
+    assert warned == ["לא ברור אם המסמך הופק"]
+    job = default_store().load("J-2026-0010")
+    assert job.document_pending and not job.invoices
+    found = [i for i in scan(date.today()) if i.key.startswith("pending-doc:")]
+    assert found and found[0].severity == "danger"
+
+    # Asked again: first "did you check in Morning?" — "no" stops there.
+    sent = len(fake.seen)
+    monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.StandardButton.No)
+    assert dialog.issue_in_morning() is None and len(fake.seen) == sent
+    dialog.deleteLater()
+    fake.close()
+
+
+def test_a_connection_refused_is_certainly_nothing_issued():
+    import socket
+    import urllib.error
+
+    from profileos.erp.morning import _never_sent
+
+    assert _never_sent(urllib.error.URLError(ConnectionRefusedError()))
+    assert _never_sent(urllib.error.URLError(socket.gaierror()))
+    assert not _never_sent(TimeoutError())
+    assert not _never_sent(urllib.error.URLError(TimeoutError()))

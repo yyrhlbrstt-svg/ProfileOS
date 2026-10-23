@@ -658,6 +658,18 @@ def _accounts(context: dict[str, Any], today: date) -> list[Insight]:
             ),
         ))
 
+    # A document sent to Morning with no answer: it may exist. Before anybody
+    # issues it again, somebody looks.
+    unsure = [job for job in jobs if getattr(job, "document_pending", "")]
+    if unsure:
+        found.append(Insight(
+            "danger",
+            _count(len(unsure), "מסמך מס שלא ידוע אם הופק", "מסמכי מס שלא ידוע אם הופקו"),
+            "Morning לא ענה כשנשלחו — בדקו שם לפני שמפיקים שוב, ורשמו בחשבון הפרויקט: "
+            + _names(unsure, lambda job: f"⁦{job.job_id}⁩ {job.document_pending}"),
+            "Projects", "pending-doc:" + ",".join(sorted(job.job_id for job in unsure)),
+        ))
+
     # A job won, built or installed with no price on it: nothing to collect
     # against, so every check above (deposit, balance owed) stays silent.
     unpriced = []
@@ -989,7 +1001,10 @@ def _material(context: dict[str, Any], today: date) -> list[Insight]:
             if order.batch and order.state.value != "cancelled":
                 batches.setdefault(order.batch, []).append((job, order))
     for parts in batches.values():
-        invoiced = sum(order.invoice_net for _job, order in parts)
+        # The one invoice may have been recorded on several parts: once each.
+        invoiced = sum(net for _number, net in {
+            (order.invoice_number or order.order_id, order.invoice_net)
+            for _job, order in parts if order.invoice_net > 0})
         total = sum(order.total for _job, order in parts)
         if invoiced <= 0 or total <= 0 or any(order.unpriced for _job, order in parts):
             continue

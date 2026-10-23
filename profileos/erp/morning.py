@@ -54,6 +54,11 @@ PAYMENT_TYPES = {"cash": 1, "cheque": 2, "credit": 3, "transfer": 4, "bit": 10, 
 TIMEOUT_S = 30
 
 
+class MaybeIssued(ProfileOSError):
+    """The request reached Morning and no answer came back: the document may
+    exist. Sending it again could issue a second tax invoice."""
+
+
 # --------------------------------------------------------------------------- #
 # The shop's key
 # --------------------------------------------------------------------------- #
@@ -95,10 +100,12 @@ def save_account(account: MorningAccount) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     write_json(path, {"key_id": account.key_id.strip(), "secret": account.secret.strip(),
                       "sandbox": account.sandbox})
-    try:
-        os.chmod(path, 0o600)
-    except OSError:  # pragma: no cover - Windows keeps it in the user's profile
-        pass
+    for copy in (path, path.with_name(path.name + ".bak")):
+        try:
+            if copy.exists():
+                os.chmod(copy, 0o600)
+        except OSError:  # pragma: no cover - Windows keeps it in the user's profile
+            pass
 
 
 # --------------------------------------------------------------------------- #
@@ -150,7 +157,9 @@ class InvoiceDraft:
 
     def payload(self) -> dict[str, Any]:
         """The document as Morning's API takes it."""
-        client: dict[str, Any] = {"name": self.client_name.strip(), "add": True}
+        # Not added to Morning's client list: each invoice would add the
+        # customer again. The document carries the details it needs.
+        client: dict[str, Any] = {"name": self.client_name.strip(), "add": False}
         for key, value in (("taxId", self.client_tax_id), ("phone", self.client_phone),
                            ("address", self.client_address), ("city", self.client_city)):
             if value.strip():
@@ -213,7 +222,8 @@ class MorningClient:
         self._token = ""
         self._expires = 0.0
 
-    def _post(self, url: str, body: dict[str, Any], *, auth: bool) -> dict[str, Any]:
+    def _post(self, url: str, body: dict[str, Any], *, auth: bool,
+              issuing: bool = False) -> dict[str, Any]:
         headers = {"Content-Type": "application/json", "User-Agent": "ProfileOS"}
         if auth:
             headers["Authorization"] = "Bearer " + self.token()
@@ -226,6 +236,10 @@ class MorningClient:
             detail = exc.read().decode("utf-8", errors="replace")
             raise ProfileOSError(f"Morning סירב: {_said(detail) or exc.reason}") from exc
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            if issuing and not _never_sent(exc):
+                raise MaybeIssued(
+                    "Morning לא ענה בזמן — לא ברור אם המסמך הופק. בדקו ב־Morning (מסמכים) "
+                    "לפני שמנסים שוב, כדי לא להפיק חשבונית כפולה.") from exc
             raise ProfileOSError(
                 "אין חיבור ל־Morning — בדקו את האינטרנט ונסו שוב. שום מסמך לא הופק.") from exc
         try:
@@ -256,7 +270,9 @@ class MorningClient:
         problems = draft.problems()
         if problems:
             raise ProfileOSError("המסמך לא הופק: " + "; ".join(problems))
-        body = self._post(self.api_url + "/v1/documents", draft.payload(), auth=True)
+        self.token()          # a refused key is found before anything is sent
+        body = self._post(self.api_url + "/v1/documents", draft.payload(), auth=True,
+                          issuing=True)
         document_id = str(body.get("id") or "")
         number = body.get("number")
         if not document_id or number in (None, ""):
@@ -265,6 +281,16 @@ class MorningClient:
         link = (url.get("he") or url.get("origin") or "") if isinstance(url, dict) else str(url)
         _log.info("Morning issued %s number %s", draft.kind, number)
         return Issued(document_id=document_id, number=str(number), url=str(link))
+
+
+def _never_sent(exc: BaseException) -> bool:
+    """Whether the request certainly never reached Morning: no route, no
+    name, the connection refused. A timeout or a cut connection may have
+    come after Morning received it."""
+    import socket
+
+    reason = getattr(exc, "reason", exc)
+    return isinstance(reason, (ConnectionRefusedError, socket.gaierror))
 
 
 def _said(text: str) -> str:
@@ -288,6 +314,7 @@ __all__ = [
     "InvoiceDraft",
     "KIND_HEBREW",
     "MorningAccount",
+    "MaybeIssued",
     "MorningClient",
     "PAYMENT_TYPES",
     "TAX_INVOICE",

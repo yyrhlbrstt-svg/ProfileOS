@@ -122,6 +122,9 @@ class Attachment:
     checksum: str = ""
     #: The element this is a picture of, when it is of one.
     element: str = ""
+    #: The phone's own name for it: a photo sent again (the answer was lost
+    #: on a weak signal) is recognised, not filed twice.
+    client_id: str = ""
 
     @property
     def suffix(self) -> str:
@@ -181,6 +184,7 @@ class AttachmentStore:
                     size=int(entry.get("size", 0)),
                     checksum=entry.get("checksum", ""),
                     element=entry.get("element", ""),
+                    client_id=entry.get("client_id", ""),
                 ))
             except Exception:  # noqa: BLE001 - one bad row, not the folder
                 _log.warning("Skipping unreadable attachment entry: %s", entry)
@@ -222,6 +226,11 @@ class AttachmentStore:
     def path_of(self, attachment: Attachment) -> Path:
         return self.folder / attachment.name
 
+    def by_client_id(self, client_id: str) -> Attachment | None:
+        if not client_id:
+            return None
+        return next((item for item in self._items if item.client_id == client_id), None)
+
     def missing(self) -> list[Attachment]:
         """Files the manifest lists that are no longer on disk."""
         return [item for item in self if not self.path_of(item).is_file()]
@@ -251,6 +260,7 @@ class AttachmentStore:
         caption: str = "",
         added_by: str = "",
         element: str = "",
+        client_id: str = "",
     ) -> Attachment:
         """Copy a file into the job and record what it is."""
         source = Path(source)
@@ -291,6 +301,7 @@ class AttachmentStore:
             size=size,
             checksum=_checksum(target),
             element=element,
+            client_id=client_id,
         )
         with path_lock(self.manifest_path):
             self.load()

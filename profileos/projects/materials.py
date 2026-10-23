@@ -443,11 +443,23 @@ def propose_combined(jobs: list[Any], *, defaults: Any = None, strategy: str = "
         compare = Proposal()
         _add_profiles(compare, items, "הזמנה משותפת", weights=weights, defaults=defaults,
                       strategy=strategy)
+    together_bars: dict[tuple[str, float], float] = defaultdict(float)
+    price_of: dict[tuple[str, float], float] = {}
     for line in compare.lines:
-        saved = alone_bars.get((line.code, line.length_mm), 0.0) - line.quantity
-        if saved > 0:
-            combined.saved_bars[line.code] = combined.saved_bars.get(line.code, 0.0) + saved
-            combined.saved_money += saved * line.unit_price
+        if line.category == "profile":
+            together_bars[(line.code, line.length_mm)] += line.quantity
+            price_of[(line.code, line.length_mm)] = line.unit_price
+    for proposal in separate.values():
+        for line in proposal.lines:
+            if line.category == "profile":
+                price_of.setdefault((line.code, line.length_mm), line.unit_price)
+    # Net, bar length by bar length — one cut together that needs a bar
+    # more (or a different length) counts against the saving.
+    for key in set(alone_bars) | set(together_bars):
+        saved = alone_bars.get(key, 0.0) - together_bars.get(key, 0.0)
+        if saved:
+            combined.saved_bars[key[0]] = combined.saved_bars.get(key[0], 0.0) + saved
+            combined.saved_money += saved * price_of.get(key, 0.0)
     combined.saved_money = round(combined.saved_money, 2)
 
     # Everything bought, not cut: the jobs' lines added up.

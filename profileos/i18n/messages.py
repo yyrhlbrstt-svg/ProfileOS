@@ -535,6 +535,19 @@ MESSAGES: dict[str, dict[str, str]] = {
         "en": "The customer has not signed yet", "he": "הלקוח עוד לא חתם", "ar": "لم يوقّع العميل بعد",
         "ru": "Клиент ещё не подписал", "it": "Il cliente non ha ancora firmato", "es": "El cliente aún no ha firmado",
     },
+    "mobile.photo_queued": {
+        "en": "No signal — the photo is kept on the phone and will go by itself when there is signal.",
+        "he": "אין קליטה — הצילום נשמר בטלפון וישלח לבד כשתחזור קליטה.",
+        "ar": "لا توجد إشارة — حُفظت الصورة في الهاتف وستُرسل تلقائياً عند عودة الإشارة.",
+        "ru": "Нет связи — фото сохранено в телефоне и уйдёт само, когда появится связь.",
+        "it": "Nessun segnale — la foto resta nel telefono e partirà da sola quando c'è segnale.",
+        "es": "Sin señal — la foto queda en el teléfono y se enviará sola cuando haya señal.",
+    },
+    "mobile.photos_waiting": {
+        "en": "{n} photos waiting for signal", "he": "⁦{n}⁩ צילומים מחכים לקליטה",
+        "ar": "{n} صور تنتظر الإشارة", "ru": "{n} фото ждут связи",
+        "it": "{n} foto in attesa di segnale", "es": "{n} fotos esperando señal",
+    },
     "mobile.handover_offline": {
         "en": "No signal — the handover was NOT sent. Try again while the customer is here.",
         "he": "אין קליטה — המסירה לא נשלחה. נסו שוב כל עוד הלקוח כאן.",

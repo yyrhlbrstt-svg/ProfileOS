@@ -825,3 +825,49 @@ def test_one_invoice_for_a_combined_order_is_checked_against_all_its_parts(shop)
     a.material_orders[0].invoice_net = 5_400
     found = [i for i in scan(date.today(), jobs=[a, b]) if i.key.startswith("invoice-gap:")]
     assert found and "⁦+400 ₪⁩" in found[0].detail and "⁦CO-1⁩" in found[0].detail
+
+
+def test_a_combined_order_one_job_cannot_keep_is_neither_sent_nor_kept(shop, monkeypatch):
+    pytest.importorskip("PySide6")
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtCore import QCoreApplication
+    from PySide6.QtWidgets import QApplication
+
+    from profileos.projects import default_store
+    from profileos.projects.materials import propose_combined
+    from profileos.projects.store import JobStore
+    from profileos.ui import money_dialogs
+    from profileos.ui.main_window import MainWindow
+    from profileos.ui.theme import LIGHT
+
+    jobs = [_small_job("J-A", 2000), _small_job("J-B", 1900)]
+    for job in jobs:
+        default_store().save(job)
+    combined = propose_combined(jobs, mass_per_metre=lambda c: None)
+
+    def send(self):
+        self.supplier.setEditText("קליל")
+        self._finish(self.SEND)
+        return self.result()
+
+    monkeypatch.setattr(money_dialogs.MaterialOrderDialog, "exec", send)
+    real_save = JobStore.save
+
+    def failing(self, job):
+        if job.job_id == "J-B" and job.material_orders:
+            raise OSError("הדיסק מלא")
+        return real_save(self, job)
+
+    monkeypatch.setattr(JobStore, "save", failing)
+    opened, told = [], []
+    from PySide6.QtGui import QDesktopServices
+
+    monkeypatch.setattr(QDesktopServices, "openUrl", lambda url: opened.append(url))
+    QApplication.instance() or QApplication([])
+    window = MainWindow(LIGHT)
+    page = window.go_to_page("Projects")
+    monkeypatch.setattr(page, "report", lambda exc, context="": told.append(context))
+    assert page._send_combined_order(jobs, combined) == 0
+    assert not opened and told and "לא נשלחה" in told[0]
+    assert not default_store().load("J-A").material_orders        # taken back
+    window.close(); window.deleteLater(); QCoreApplication.processEvents()

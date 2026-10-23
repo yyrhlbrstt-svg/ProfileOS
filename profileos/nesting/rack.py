@@ -55,7 +55,7 @@ def rack_for(job_id: str = "") -> RemnantInventory:
     if job_id:
         with rack._lock:
             for index, offcut in enumerate(rack._remnants):
-                if offcut.reserved and offcut.metadata.get("job_id") == job_id:
+                if offcut.reserved and _owned_by(offcut, job_id):
                     rack._remnants[index] = offcut.model_copy(update={"reserved": False})
     return rack
 
@@ -87,9 +87,19 @@ def used_from_rack(report: Any) -> list[tuple[str, str, float]]:
     return used
 
 
-def reserve(remnant_ids: Iterable[str], *, job_id: str) -> int:
-    """Set offcuts aside for a job: no other plan counts on them."""
+def _owned_by(offcut: RemnantBar, job_id: str) -> bool:
+    """Set aside for this job — on its own, or as one of a combined order's jobs."""
+    return bool(job_id) and (offcut.metadata.get("job_id") == job_id
+                             or job_id in (offcut.metadata.get("jobs") or []))
+
+
+def reserve(remnant_ids: Iterable[str], *, job_id: str,
+            jobs: Iterable[str] = ()) -> int:
+    """Set offcuts aside for a job — or a combined order (``job_id`` its
+    number, ``jobs`` the jobs in it, any of which may cut them): no other
+    plan counts on them. Returns how many were set aside."""
     wanted = list(remnant_ids)
+    members = list(jobs)
 
     def mark(rack: RemnantInventory) -> int:
         done = 0
@@ -98,12 +108,29 @@ def reserve(remnant_ids: Iterable[str], *, job_id: str) -> int:
                 if offcut.remnant_id in wanted and not offcut.reserved:
                     rack._remnants[index] = offcut.model_copy(update={
                         "reserved": True,
-                        "metadata": {**offcut.metadata, "job_id": job_id},
+                        "metadata": {**offcut.metadata, "job_id": job_id, "jobs": members},
                     })
                     done += 1
         return done
 
     return change_rack(mark)
+
+
+def release(owner: str) -> int:
+    """An order cancelled: the offcuts it counted on are free again."""
+
+    def free(rack: RemnantInventory) -> int:
+        done = 0
+        with rack._lock:
+            for index, offcut in enumerate(rack._remnants):
+                if offcut.reserved and offcut.metadata.get("job_id") == owner:
+                    metadata = {k: v for k, v in offcut.metadata.items() if k not in ("job_id", "jobs")}
+                    rack._remnants[index] = offcut.model_copy(
+                        update={"reserved": False, "metadata": metadata})
+                    done += 1
+        return done
+
+    return change_rack(free)
 
 
 def record_cut(report: Any, *, job_id: str = "") -> tuple[int, int]:
@@ -129,6 +156,7 @@ __all__ = [
     "change_rack",
     "load_rack",
     "rack_for",
+    "release",
     "rack_path",
     "record_cut",
     "reserve",

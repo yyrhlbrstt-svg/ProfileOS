@@ -512,6 +512,10 @@ class JobFile(RoundTrips):
     #: What the shop is waiting for from the customer before it can make it.
     waiting_for: list[CustomerNeed] = Field(default_factory=list)
 
+    #: A document sent to the invoicing service whose answer never came:
+    #: what and when. Cleared when it is recorded or the shop checked it.
+    document_pending: str = ""
+
     #: A snapshot of the last quotation, so the job list can show money
     #: without repricing every job it displays.
     quote_total: float = 0.0

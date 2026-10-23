@@ -478,6 +478,7 @@ def build_router(state: MobileState | None = None) -> Any:
         kind: str = Form("progress_photo"),
         element: str = Form(""),
         caption: str = Form(""),
+        client_id: str = Form(""),
         photo: UploadFile = File(...),
         x_device_id: str | None = Header(default=None),
         x_device_token: str | None = Header(default=None),
@@ -492,6 +493,11 @@ def build_router(state: MobileState | None = None) -> Any:
         if kind not in PHOTO_KINDS:
             raise HTTPException(status_code=422, detail="סוג צילום לא מוכר")
         job = _open_job(job_id)
+        client_id = client_id.strip()[:64]
+        already = attachments_for(job.job_id).by_client_id(client_id)
+        if already is not None:
+            return {"name": already.name, "kind": already.kind.hebrew, "job": job.name,
+                    "duplicate": True}
         # Read in the server's worker thread, not its event loop: copying,
         # checksumming and writing a photo must not stall the other phones.
         data = photo.file.read(MAX_BYTES + 1)
@@ -507,6 +513,7 @@ def build_router(state: MobileState | None = None) -> Any:
                 saved = attachments_for(job.job_id).add(
                     source, kind=AttachmentKind(kind), caption=caption.strip()[:200],
                     added_by=device.name, element=element.strip().upper()[:20],
+                    client_id=client_id,
                 )
             except Exception as exc:  # noqa: BLE001 - said to the phone in words
                 raise HTTPException(status_code=422, detail=str(exc)) from exc

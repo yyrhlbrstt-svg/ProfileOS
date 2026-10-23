@@ -157,6 +157,9 @@ def invoices_missing_allocation(job: Any) -> list[Any]:
         invoice for invoice in getattr(job, "invoices", []) or []
         if invoice.business_customer and invoice.net >= threshold
         and not invoice.allocation_number.strip()
+        # Issued through Morning: the service asks the Tax Authority for the
+        # number itself and prints it on the document.
+        and getattr(invoice, "issuer", "") != "Morning"
     ]
 
 

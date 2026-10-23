@@ -167,3 +167,77 @@ def test_photo_and_signature_from_the_phone_page(office, tmp_path):
     with Image.open(files.path_of(taken)) as image:
         assert max(image.size) <= 2000        # shrunk on the phone
     assert default_store().load("J-2026-0005").status is JobStatus.INSTALLED
+
+
+def test_the_same_photo_sent_twice_is_kept_once(office):
+    from fastapi.testclient import TestClient
+
+    from profileos.api.server import app
+    from profileos.projects.attachments import attachments_for
+
+    client = TestClient(app)
+    headers = _headers(client, office)
+    for _ in range(2):
+        answer = client.post("/m/api/photos", headers=headers, data={
+            "job_id": "J-2026-0005", "client_id": "ph-123"},
+            files={"photo": ("site.jpg", _png(), "image/jpeg")})
+        assert answer.status_code == 200
+    assert answer.json().get("duplicate") is True
+    assert len(attachments_for("J-2026-0005").photos()) == 1
+
+
+@pytest.mark.skipif(not _executables, reason="no Chromium for Playwright here")
+def test_a_photo_taken_without_signal_goes_by_itself_later(office, tmp_path):
+    playwright = pytest.importorskip("playwright.sync_api")
+    import uvicorn
+
+    from profileos.api.server import app
+    from profileos.projects.attachments import attachments_for
+
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning"))
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    for _ in range(100):
+        if server.started:
+            break
+        time.sleep(0.05)
+    photo = tmp_path / "frame.png"
+    photo.write_bytes(_png(800, 600))
+    try:
+        with playwright.sync_playwright() as pw:
+            browser = pw.chromium.launch(executable_path=str(_executables[-1]))
+            context = browser.new_context(viewport={"width": 390, "height": 844})
+            page = context.new_page()
+            page.goto(f"http://127.0.0.1:{port}/m?lang=he")
+            code = office.registry.issue_code("המתקין", scopes=("measure",)).code
+            page.evaluate("""code => fetch('/m/api/pair', {method: 'POST',
+                headers: {'Content-Type': 'application/json'}, body: JSON.stringify({code})})
+                .then(r => r.json()).then(d => {
+                  localStorage.setItem('pos.token', d.token);
+                  localStorage.setItem('pos.device', d.device_id);
+                  localStorage.setItem('pos.scopes', 'measure');
+                })""", code)
+            page.reload()
+            page.click("nav button[data-tab=site]")
+            page.wait_for_selector("#sjob option[value='J-2026-0005']", state="attached")
+            page.select_option("#sjob", "J-2026-0005")
+
+            context.set_offline(True)
+            page.set_input_files("#sfile", str(photo))
+            page.wait_for_function(
+                "document.getElementById('s-wait').textContent.includes('1')", timeout=10_000)
+            assert "נשמר בטלפון" in page.inner_text("#s-msg")
+            assert not attachments_for("J-2026-0005").photos()
+
+            context.set_offline(False)
+            page.evaluate("window.dispatchEvent(new Event('online'))")
+            page.wait_for_function(
+                "document.getElementById('s-wait').textContent === ''", timeout=10_000)
+            browser.close()
+    finally:
+        server.should_exit = True
+        thread.join(timeout=5)
+    assert len(attachments_for("J-2026-0005").photos()) == 1

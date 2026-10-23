@@ -639,6 +639,10 @@ class RackDialog(QDialog):
         self.table = DataTable(["פרופיל", "אורך", "כמות", "מיקום", "מאיפה", "שמורה ל"],
                                empty_text="המדף ריק — הוסיפו את השאריות שיש לכם")
         layout.addWidget(self.table, 1)
+        self.said = QLabel("")
+        self.said.setObjectName("Hint")
+        self.said.setWordWrap(True)
+        layout.addWidget(self.said)
         buttons = QHBoxLayout()
         remove = QPushButton("הוצאה מהמדף")
         remove.setToolTip("נחתכה, נזרקה, או לא באמת שם")
@@ -658,9 +662,9 @@ class RackDialog(QDialog):
         try:
             offcuts = sorted(load_rack().all(), key=lambda o: (o.profile_id, -o.length))
         except Exception as exc:  # noqa: BLE001
-            self.problem = str(exc)
-            self.table.set_rows([[str(exc), "", "", "", "", ""]])
             self._ids: list[str] = []
+            self.table.set_rows([])
+            self._say(str(exc))
             return
         self._ids = [offcut.remnant_id for offcut in offcuts]
         self.table.set_rows([
@@ -676,8 +680,7 @@ class RackDialog(QDialog):
 
         code = self.code.text().strip().upper()
         if not code:
-            self.problem = "חסר מק״ט הפרופיל"
-            self.table.setToolTip(self.problem)
+            self._say("חסר מק״ט הפרופיל — מה כתוב על השארית")
             return False
         offcut = RemnantBar(profile_id=code, length=float(self.length.value()),
                             quantity=self.count.value(),
@@ -685,22 +688,29 @@ class RackDialog(QDialog):
         try:
             change_rack(lambda rack: rack.add(offcut))
         except Exception as exc:  # noqa: BLE001
-            self.problem = str(exc)
+            self._say(f"השארית לא נוספה: {exc}")
             return False
+        self._say("")
         self.show_rack()
         return True
+
+    def _say(self, text: str) -> None:
+        """A problem shown in the window itself, where the person is looking."""
+        self.problem = text
+        self.said.setText(text)
 
     def remove(self) -> bool:
         from ..nesting.rack import change_rack
 
         model = self.table.selectionModel()
         if model is None or not model.selectedRows():
+            self._say("בחרו שארית מהרשימה")
             return False
         remnant_id = self._ids[model.selectedRows()[0].row()]
         try:
             change_rack(lambda rack: rack.consume(remnant_id))
         except Exception as exc:  # noqa: BLE001
-            self.problem = str(exc)
+            self._say(f"השארית לא הוצאה: {exc}")
             return False
         self.show_rack()
         return True

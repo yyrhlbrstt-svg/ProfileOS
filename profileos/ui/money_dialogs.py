@@ -557,6 +557,18 @@ class JobAccountDialog(QDialog):
                 "ב־Morning: הגדרות ← כלים למפתחים ← מפתחות API."))
             return None
         job = self.job()
+        if job.document_pending:
+            answer = QMessageBox.question(
+                self, "מסמך שלא ידוע אם הופק",
+                f"{job.document_pending} — Morning לא ענה אז, ולא ידוע אם המסמך הופק.\n\n"
+                "בדקתם ב־Morning שהוא לא הופק (או רשמתם אותו ב״רישום חשבונית״)?",
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return None
+            if not self._change(lambda fresh: setattr(fresh, "document_pending", ""),
+                                "הסימון לא נוקה"):
+                return None
+            job = self.job()
         customer = None
         if job.customer_id:
             try:
@@ -585,11 +597,27 @@ class JobAccountDialog(QDialog):
         )
         if answer != QMessageBox.StandardButton.Yes:
             return None
+        from datetime import datetime
+
+        from ..erp.morning import MaybeIssued
+
+        # Written down before it is sent: if no answer comes (or the program
+        # is closed while it waits), the job says a document may exist.
+        pending = (f"{kind} ל{draft.client_name} על ⁦{draft.gross:,.2f} ₪⁩ "
+                   f"(⁦{datetime.now():%d/%m/%Y %H:%M}⁩)")
+        if not self._change(lambda fresh: setattr(fresh, "document_pending", pending),
+                            "המסמך לא נשלח"):
+            return None
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         try:
             issued = MorningClient(account).issue(draft)
-        except Exception as exc:  # noqa: BLE001 - said in Morning's words
+        except MaybeIssued as exc:
             QApplication.restoreOverrideCursor()
+            _warn(self, "לא ברור אם המסמך הופק", exc)
+            return None
+        except Exception as exc:  # noqa: BLE001 - said in Morning's words; nothing issued
+            QApplication.restoreOverrideCursor()
+            self._change(lambda fresh: setattr(fresh, "document_pending", ""), "הסימון לא נוקה")
             _warn(self, "המסמך לא הופק", exc)
             return None
         QApplication.restoreOverrideCursor()
@@ -598,6 +626,7 @@ class JobAccountDialog(QDialog):
                           and draft.payment_method != "cheque")
 
         def keep(fresh: Any) -> None:
+            fresh.document_pending = ""
             fresh.invoices.append(InvoiceRecord(
                 number=issued.number, net=round(draft.net, 2),
                 business_customer=bool(draft.client_tax_id.strip()), issuer="Morning",
@@ -1596,8 +1625,10 @@ class MorningInvoiceDialog(QDialog):
             self.method.addItem(label, key)
         self.cheque = QLineEdit()
         self.cheque.setPlaceholderText("מספר הצ׳ק")
-        self.keep_payment = QCheckBox("לרשום גם את התשלום בחשבון הפרויקט")
-        self.keep_payment.setChecked(True)
+        # Off unless asked: the transfer is often recorded when it arrives,
+        # and a second record would show the job as overpaid.
+        self.keep_payment = QCheckBox("לרשום גם את התשלום בחשבון הפרויקט (אם עוד לא נרשם)")
+        self.keep_payment.setChecked(False)
         for label, widget in (("סוג המסמך", self.kind), ("לקוח", self.name),
                               ("ח.פ. / ע.מ.", self.tax_id), ("דוא״ל", self.email),
                               ("טלפון", self.phone), ("כתובת", self.address), ("עיר", self.city),

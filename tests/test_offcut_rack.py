@@ -127,3 +127,40 @@ def test_the_rack_from_the_cutting_page(shop, monkeypatch):
     remaining = sum(o.quantity for o in load_rack().all() if o.length == 6000)
     assert remaining == 2 - len(used)
     window.close(); window.deleteLater(); QCoreApplication.processEvents()
+
+
+def test_offcuts_set_aside_for_a_combined_order_can_be_cut_by_its_jobs(shop):
+    from profileos.nesting.rack import release
+
+    add_offcuts([RemnantBar(profile_id="F", length=5_000)])
+    [offcut] = load_rack().all()
+    assert reserve([offcut.remnant_id], job_id="CO-1", jobs=["J-A", "J-B"]) == 1
+    assert rack_for("J-B").for_profile("F") and rack_for("J-A").for_profile("F")
+    assert not rack_for("J-C").for_profile("F")
+    # Set aside already: a second order cannot count on it.
+    assert reserve([offcut.remnant_id], job_id="J-C") == 0
+    assert release("CO-1") == 1 and rack_for("J-C").for_profile("F")
+
+
+def test_the_same_cut_is_recorded_on_the_rack_once(shop, monkeypatch):
+    pytest.importorskip("PySide6")
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtCore import QCoreApplication
+    from PySide6.QtWidgets import QApplication, QMessageBox
+
+    from profileos.ui.main_window import MainWindow
+    from profileos.ui.theme import LIGHT
+
+    QApplication.instance() or QApplication([])
+    window = MainWindow(LIGHT)
+    window.page("Element").build_element()
+    page = window.go_to_page("Nesting")
+    page.run()
+    monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.StandardButton.Yes)
+    page.record_cut()
+    after_first = len(load_rack().all())
+    told = []
+    monkeypatch.setattr(page, "report", lambda exc, context="": told.append(context))
+    assert page.record_cut() == (0, 0) and told == ["כבר נרשם"]
+    assert len(load_rack().all()) == after_first
+    window.close(); window.deleteLater(); QCoreApplication.processEvents()

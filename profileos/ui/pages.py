@@ -1734,16 +1734,22 @@ class ProjectsPage(Page):
             self.status(f"{exc} — ההזמנה מחושבת בלי השאריות")
             return None
 
-    def _reserve(self, proposal: Any, owner: str) -> None:
+    def _reserve(self, proposal: Any, owner: str, jobs: list[str] | None = None) -> None:
         from ..nesting.rack import reserve
 
         used = [remnant_id for remnant_id, _p, _l in getattr(proposal, "from_rack", [])]
         if not used:
             return
         try:
-            reserve(used, job_id=owner)
+            done = reserve(used, job_id=owner, jobs=jobs or [])
         except Exception as exc:  # noqa: BLE001
             self.report(exc, "השאריות מהמדף לא סומנו לפרויקט — סמנו אותן ביד")
+            return
+        if done < len(set(used)):
+            # Taken meanwhile by another order: this one counted on them.
+            self.report(ProfileOSError(
+                f"⁦{len(set(used)) - done}⁩ מהשאריות שההזמנה סמכה עליהן נשמרו בינתיים לפרויקט "
+                "אחר — הוסיפו להזמנה מוטות במקומן"), "חסרות שאריות")
 
     def order_combined(self) -> None:
         """One supplier order for several won jobs, cut together on the same
@@ -1824,14 +1830,20 @@ class ProjectsPage(Page):
             return (line.code, line.unit, line.length_mm)
 
         planned = {key(line): line.quantity for line in combined.lines}
-        kept = 0
         store = self._store()
-        for job in jobs:
+        orders: dict[str, Any] = {}
+        for index, job in enumerate(jobs):
             parts = {key(line): line for line in combined.shares.get(job.job_id, [])}
             share = []
             for line in final:
                 part = parts.get(key(line))
-                if part is None or not planned.get(key(line)):
+                if not planned.get(key(line)):
+                    # Added in the dialog, not planned from any job: it goes
+                    # on the first job's part, so the order is recorded whole.
+                    if index == 0:
+                        share.append(type(line)(**{**line.__dict__}))
+                    continue
+                if part is None:
                     continue
                 # The person may have changed the quantity (bars already on
                 # the rack, a spare bar): each job keeps its proportion of it.
@@ -1839,22 +1851,37 @@ class ProjectsPage(Page):
                 piece.quantity = round(line.quantity * part.quantity / planned[key(line)], 2)
                 if piece.quantity > 0:
                     share.append(piece)
-            if not share:
-                continue
-            order = to_order(share, supplier=values["supplier"], needed_by=values["needed_by"],
-                             note=f"חלק מהזמנה משותפת ⁦{batch}⁩")
-            order.batch = batch
-            try:
-                fresh = store.load(job.job_id)
+            if share:
+                order = to_order(share, supplier=values["supplier"],
+                                 needed_by=values["needed_by"],
+                                 note=f"חלק מהזמנה משותפת ⁦{batch}⁩")
+                order.batch = batch
+                orders[job.job_id] = order
+        # Every part kept, or none: an order sent to the supplier is an
+        # order recorded on every job it is for.
+        saved: list[str] = []
+        try:
+            for job_id, order in orders.items():
+                fresh = store.load(job_id)
                 fresh.material_orders.append(order)
                 fresh.touch()
                 store.save(fresh)
-                kept += 1
-            except Exception as exc:  # noqa: BLE001 - said; the others are kept
-                self.report(exc, f"החלק של ⁦{job.job_id}⁩ לא נשמר")
+                saved.append(job_id)
+        except Exception as exc:  # noqa: BLE001
+            for job_id in saved:
+                try:
+                    fresh = store.load(job_id)
+                    fresh.material_orders = [o for o in fresh.material_orders
+                                             if o.order_id != orders[job_id].order_id]
+                    store.save(fresh)
+                except Exception:  # noqa: BLE001 - said below
+                    _log.exception("Could not take back the part of %s", job_id)
+            self.report(exc, "ההזמנה המשותפת לא נשמרה בכל הפרויקטים — היא לא נשלחה ולא נרשמה")
+            return 0
+        kept = len(saved)
         if not kept:
             return 0
-        self._reserve(combined, batch)
+        self._reserve(combined, batch, jobs=[job.job_id for job in jobs])
         if dialog.choice == MaterialOrderDialog.SEND:
             message = combined_message(final, brand_name=active_brand().display_name,
                                        jobs=jobs, batch=batch, needed_by=values["needed_by"],
@@ -1919,6 +1946,7 @@ class ProjectsPage(Page):
             store = self._store()
             fresh = store.load(job.job_id)
             by_id = {order.order_id: order for order in fresh.material_orders}
+            released: list[str] = []
             for order_id, state in dialog.changes:
                 order = by_id.get(order_id)
                 if order is None:
@@ -1926,6 +1954,8 @@ class ProjectsPage(Page):
                 order.state = MaterialOrderState(state)
                 if order.state is MaterialOrderState.RECEIVED and not order.received_on:
                     order.received_on = date.today().isoformat()
+                if order.state is MaterialOrderState.CANCELLED:
+                    released.append(order.batch or job.job_id)
             for order_id, number, net in dialog.invoices:
                 order = by_id.get(order_id)
                 if order is None:
@@ -1937,6 +1967,15 @@ class ProjectsPage(Page):
         except Exception as exc:  # noqa: BLE001
             self.report(exc, "העדכון לא נשמר")
             return
+        if released:
+            # A cancelled order no longer needs the offcuts it counted on.
+            from ..nesting.rack import release
+
+            try:
+                for owner in set(released):
+                    release(owner)
+            except Exception as exc:  # noqa: BLE001
+                self.report(exc, "השאריות של ההזמנה שבוטלה לא שוחררו במדף")
         self.refresh()
 
     # -- money ------------------------------------------------------------------ #
@@ -4575,6 +4614,10 @@ class NestingPage(Page):
             self.report(ProfileOSError("הריצו קודם אופטימיזציה — ואז ״החיתוך בוצע״"),
                         "אין חיתוך לרשום")
             return 0, 0
+        if getattr(self, "_recorded", None) is report:
+            self.report(ProfileOSError(
+                "החיתוך הזה כבר נרשם במדף — לחיתוך הבא הריצו אופטימיזציה שוב"), "כבר נרשם")
+            return 0, 0
         answer = QMessageBox.question(
             self, "החיתוך בוצע",
             "לרשום שהחיתוך בוצע לפי התוכנית? השאריות שנחתכו ייצאו מהמדף, "
@@ -4588,6 +4631,7 @@ class NestingPage(Page):
         except Exception as exc:  # noqa: BLE001
             self.report(exc, "המדף לא עודכן")
             return 0, 0
+        self._recorded = report
         self.status(f"המדף עודכן: ⁦{taken}⁩ שאריות יצאו, ⁦{added}⁩ חדשות נכנסו")
         return taken, added
 
