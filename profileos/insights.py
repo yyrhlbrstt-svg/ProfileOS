@@ -544,6 +544,30 @@ def _field(context: dict[str, Any], today: date) -> list[Insight]:
     )]
 
 
+def _pace(context: dict[str, Any], today: date) -> list[Insight]:
+    """The shop works slower (or faster) than its quotations assume."""
+    from .quoting.labour_learning import calibrate
+
+    book = context.get("timebook")
+    if book is None:
+        return []
+    calibration = calibrate(context.get("jobs") or [], book)
+    current = float(getattr(context.get("settings"), "labour_factor", 1.0) or 1.0)
+    if not calibration.enough or abs(calibration.factor - current) / current < 0.1:
+        return []
+    slower = calibration.factor > current
+    return [Insight(
+        "warning" if slower else "info",
+        ("העבודה במפעל ארוכה ממה שההצעות מתמחרות" if slower
+         else "העבודה במפעל מהירה ממה שההצעות מתמחרות"),
+        calibration.describe() + f" ההצעות מחושבות לפי ⁦{current:.2f}⁩. "
+        + ("כל הצעה מפסידה על שעות שלא נכללו בה. " if slower else
+           "ההצעות יקרות מהצורך — אפשר להתחרות במחיר. ")
+        + "מערכת ← מפעיל ← תעריפי הערכה: ״לתמחר מעכשיו לפי…״.",
+        "System", f"pace:{calibration.factor:.2f}:{len(calibration.jobs)}",
+    )]
+
+
 def _install_ready(context: dict[str, Any], today: date) -> list[Insight]:
     """Installations in the next two working days whose job is not ready."""
     from .projects.agenda import VisitKind, day_word, next_working_day
@@ -1130,6 +1154,7 @@ def _remeasured(context: dict[str, Any], today: date) -> list[Insight]:
 RULES: tuple[Callable[[dict[str, Any], date], list[Insight]], ...] = (
     _data_safety, _jobs, _accounts, _field, _customers, _money, _service, _tasks,
     _paperwork, _draft, _catalogue, _price_lists, _material, _remeasured, _install_ready,
+    _pace,
 )
 
 
@@ -1277,6 +1302,12 @@ def gather_context(**given: Any) -> dict[str, Any]:
 
         return default_revisions()
 
+    def timebook() -> Any:
+        from .erp.timesheets import default_timebook
+
+        return default_timebook()
+
+    load("timebook", timebook)
     load("surveys", surveys)
     load("revisions", revisions)
     load("confirmations", confirmations)
@@ -1350,6 +1381,7 @@ _BOOK_NAMES = {
     "confirmations": "נתוני היצרן שאושרו לחיתוך", "stocktakes": "ספירות המלאי",
     "price_lists": "מחירוני הספקים",
     "surveys": "גיליונות המדידה", "revisions": "גרסאות ההצעות",
+    "timebook": "דיווחי השעות",
 }
 
 

@@ -193,6 +193,10 @@ class Settings(BaseModel):
     #: The bank balance as the shop last typed it, and the day — the starting
     #: point of the two-sided cash flow (Collection page).
     bank_balance: float | None = None
+    #: The shop's own pace against the general labour norms, applied by the
+    #: owner from its booked hours (System ← operator); 1.0 until then.
+    labour_factor: float = 1.0
+    labour_factor_basis: str = ""
     bank_balance_on: str = ""
     phone_port: int = 8765
     withholding_certificate_until: str = ""

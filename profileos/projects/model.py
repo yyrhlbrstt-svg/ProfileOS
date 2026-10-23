@@ -515,6 +515,9 @@ class JobFile(RoundTrips):
     #: A document sent to the invoicing service whose answer never came:
     #: what and when. Cleared when it is recorded or the shop checked it.
     document_pending: str = ""
+    #: The workshop hours the general norms gave this job's openings when it
+    #: was quoted — what the hours booked on it are later compared with.
+    norm_hours: dict[str, float] = Field(default_factory=dict)
 
     #: A snapshot of the last quotation, so the job list can show money
     #: without repricing every job it displays.

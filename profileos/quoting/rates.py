@@ -39,10 +39,27 @@ def shop_rates() -> dict[str, float]:
 def shop_labour() -> "LabourRates":
     """The workshop hour at the shop's own rate — or at zero, which the
     quotation then says ("labour not included"), never at a rate nobody set.
-    The hours per task stay the engine's general norms."""
+    The hours per task are the general norms times the shop's own factor,
+    once the owner applied one learned from its booked hours."""
     from .pricing import LabourRates
 
-    return LabourRates(hourly_rate=_entered().get("labour_hour", 0.0), currency="ILS")
+    labour = LabourRates(hourly_rate=_entered().get("labour_hour", 0.0), currency="ILS")
+    factor = shop_labour_factor()
+    if factor != 1.0:
+        for name in ("hours_per_cut", "hours_per_element", "hours_per_sash",
+                     "hours_per_glass_m2", "hours_per_element_qc"):
+            setattr(labour, name, round(getattr(labour, name) * factor, 4))
+    return labour
 
 
-__all__ = ["MATERIAL_KEYS", "RATE_FIELDS", "shop_labour", "shop_rates"]
+def shop_labour_factor() -> float:
+    try:
+        from ..core.config import get_settings
+
+        factor = float(getattr(get_settings(), "labour_factor", 1.0) or 1.0)
+    except Exception:  # noqa: BLE001 - unknown means the norms as they are
+        return 1.0
+    return factor if 0.3 <= factor <= 3.0 else 1.0
+
+
+__all__ = ["MATERIAL_KEYS", "RATE_FIELDS", "shop_labour", "shop_labour_factor", "shop_rates"]

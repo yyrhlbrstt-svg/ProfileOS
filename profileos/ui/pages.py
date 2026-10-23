@@ -5585,6 +5585,11 @@ class QuotePage(Page):
                 return
             job.record_quote(float(totals["net"]), self.draft.quotation.currency)
             variant = self.draft.variant()
+            # What the norms give these openings, kept for comparing with
+            # the hours that will be booked on the job.
+            from ..quoting.labour_learning import norm_hours
+
+            job.norm_hours = norm_hours(variant.builds)
             job.quote_spec = {
                 "system_id": variant.system_id, "glass_id": variant.glass_id,
                 "finish_id": variant.finish_id, "margin": float(variant.policy.margin_pct),
@@ -10191,6 +10196,53 @@ class SystemPage(Page):
         ("אתר", "website"),
     )
 
+    def _calibration(self) -> Any:
+        from ..erp.timesheets import default_timebook
+        from ..projects import default_store
+        from ..quoting.labour_learning import calibrate
+
+        return calibrate(default_store().all(), default_timebook())
+
+    def show_pace(self) -> None:
+        from ..core.config import get_settings
+
+        try:
+            calibration = self._calibration()
+        except Exception as exc:  # noqa: BLE001
+            self.pace.setText(f"שעות העבודה הרשומות לא נקראו: {exc}")
+            self.apply_pace.setVisible(False)
+            return
+        current = get_settings().labour_factor
+        text = calibration.describe()
+        if current != 1.0:
+            text += f" כרגע ההצעות מחושבות לפי ⁦{current:.2f}⁩ מהנורמה."
+        self.pace.setText(text)
+        offer = calibration.enough and abs(calibration.factor - current) >= 0.05
+        self.apply_pace.setVisible(offer)
+        if offer:
+            self.apply_pace.setText(f"לתמחר מעכשיו לפי ⁦{calibration.factor:.2f}⁩ מהנורמה")
+
+    def apply_labour_factor(self) -> None:
+        """The owner's decision: quotations from now on at the shop's own pace."""
+        from datetime import date
+
+        from ..core.config import get_settings, save_settings
+
+        calibration = self._calibration()
+        if not calibration.enough:
+            return
+        settings = get_settings()
+        settings.labour_factor = calibration.factor
+        settings.labour_factor_basis = (
+            f"⁦{len(calibration.jobs)}⁩ עבודות, ⁦{date.today():%d/%m/%Y}⁩")
+        try:
+            save_settings(settings)
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "המקדם לא נשמר")
+            return
+        self.show_pace()
+        self.status(f"הצעות חדשות יחושבו לפי ⁦{calibration.factor:.2f}⁩ מהנורמה")
+
     def save_rates(self) -> None:
         from ..core.config import get_settings, save_settings
 
@@ -10363,6 +10415,15 @@ class SystemPage(Page):
         save_rates = QPushButton("שמור תעריפים")
         save_rates.clicked.connect(self.save_rates)
         rates_card.add(save_rates)
+        # The pace the shop really works at, learned from its booked hours.
+        self.pace = QLabel("")
+        self.pace.setObjectName("Hint")
+        self.pace.setWordWrap(True)
+        rates_card.add(self.pace)
+        self.apply_pace = QPushButton("")
+        self.apply_pace.clicked.connect(self.apply_labour_factor)
+        rates_card.add(self.apply_pace)
+        self.show_pace()
         layout.addWidget(rates_card)
 
         note = QLabel(
