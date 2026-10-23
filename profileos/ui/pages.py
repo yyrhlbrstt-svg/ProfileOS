@@ -1713,6 +1713,7 @@ class ProjectsPage(Page):
         from ..core.config import get_settings
 
         defaults = copy.deepcopy(get_settings().nesting)
+        rack = self._rack(job.job_id)
 
         def done(proposal: Any, error: BaseException | None) -> None:
             self._proposing = False
@@ -1721,7 +1722,28 @@ class ProjectsPage(Page):
                 return
             self._send_material_order(job, proposal)
 
-        run_in_background(lambda: propose(job, defaults=defaults), done)
+        run_in_background(lambda: propose(job, defaults=defaults, rack=rack), done)
+
+    def _rack(self, job_id: str) -> Any:
+        """The offcut rack for planning — or none, said, when it cannot be read."""
+        from ..nesting.rack import rack_for
+
+        try:
+            return rack_for(job_id)
+        except Exception as exc:  # noqa: BLE001
+            self.status(f"{exc} — ההזמנה מחושבת בלי השאריות")
+            return None
+
+    def _reserve(self, proposal: Any, owner: str) -> None:
+        from ..nesting.rack import reserve
+
+        used = [remnant_id for remnant_id, _p, _l in getattr(proposal, "from_rack", [])]
+        if not used:
+            return
+        try:
+            reserve(used, job_id=owner)
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "השאריות מהמדף לא סומנו לפרויקט — סמנו אותן ביד")
 
     def order_combined(self) -> None:
         """One supplier order for several won jobs, cut together on the same
@@ -1762,6 +1784,7 @@ class ProjectsPage(Page):
         from ..core.config import get_settings
 
         defaults = copy.deepcopy(get_settings().nesting)
+        rack = self._rack("")
 
         def done(combined: Any, error: BaseException | None) -> None:
             self._proposing = False
@@ -1770,7 +1793,7 @@ class ProjectsPage(Page):
                 return
             self._send_combined_order(chosen, combined)
 
-        run_in_background(lambda: propose_combined(chosen, defaults=defaults), done)
+        run_in_background(lambda: propose_combined(chosen, defaults=defaults, rack=rack), done)
 
     def _send_combined_order(self, jobs: list[Any], combined: Any) -> int:
         """The combined order checked, then each job's part kept on the job."""
@@ -1831,6 +1854,7 @@ class ProjectsPage(Page):
                 self.report(exc, f"החלק של ⁦{job.job_id}⁩ לא נשמר")
         if not kept:
             return 0
+        self._reserve(combined, batch)
         if dialog.choice == MaterialOrderDialog.SEND:
             message = combined_message(final, brand_name=active_brand().display_name,
                                        jobs=jobs, batch=batch, needed_by=values["needed_by"],
@@ -1867,6 +1891,7 @@ class ProjectsPage(Page):
         except Exception as exc:  # noqa: BLE001 - nothing is sent that is not kept
             self.report(exc, "ההזמנה לא נשמרה — לא נשלחה")
             return
+        self._reserve(proposal, job.job_id)
         if dialog.choice == MaterialOrderDialog.SEND:
             message = order_message(order, brand_name=active_brand().display_name, job=fresh)
             QDesktopServices.openUrl(QUrl(whatsapp_link("", message)))
@@ -4382,9 +4407,19 @@ class NestingPage(Page):
         self.needs_design(run)
         self.header.add_action(run)
 
+        done = QPushButton("החיתוך בוצע")
+        done.setToolTip("השאריות שנחתכו יוצאות מהמדף, והשאריות החדשות נכנסות אליו")
+        done.clicked.connect(self.record_cut)
+        self.needs_design(done)
+        self.header.add_action(done)
+
+        rack = QPushButton("מדף השאריות…")
+        rack.clicked.connect(self.open_rack)
+        self.header.add_action(rack)
+
         self.stats = StatRow([
             ("bars", "מוטות"), ("pieces", "חלקים"), ("yield", "ניצולת"),
-            ("waste", "פחת"), ("remnants", "שאריות"),
+            ("waste", "פחת"), ("remnants", "שאריות"), ("rack", "מהמדף"),
         ])
         self.body.addWidget(self.stats)
 
@@ -4404,6 +4439,9 @@ class NestingPage(Page):
                               ("אסטרטגיה", self.strategy), ("פרופיל", self.profile)]:
             caption = QLabel(label); caption.setObjectName("FieldLabel")
             row.addWidget(caption); row.addWidget(widget)
+        self.use_rack = QCheckBox("קודם מהשאריות שבמדף")
+        self.use_rack.setChecked(True)
+        row.addWidget(self.use_rack)
         row.addStretch(1)
         controls.add_layout(row)
         self.body.addWidget(controls)
@@ -4471,14 +4509,27 @@ class NestingPage(Page):
                 f"אורך המוט לפי מחירון הספק ל־⁦{len(stock)}⁩ פרופילים; "
                 "לשאר — לפי האורכים שהוקלדו"
             )
+        rack = None
+        if self.use_rack.isChecked():
+            from ..nesting.rack import rack_for
+
+            job = getattr(self.session, "job", None)
+            try:
+                rack = rack_for(job.job_id if job is not None else "")
+            except Exception as exc:  # noqa: BLE001 - said; cut from new bars
+                self.status(f"{exc} — החיתוך מחושב ממוטות חדשים")
         try:
-            report = nest_project(project, strategy=self.strategy.currentData() or "auto")
+            report = nest_project(project, strategy=self.strategy.currentData() or "auto",
+                                  inventory=rack)
         except Exception as exc:  # noqa: BLE001
             self.report(exc, "האופטימיזציה נכשלה")
             return
 
         self.session.set_nesting(project, report)
 
+        from ..nesting.rack import used_from_rack
+
+        from_rack = used_from_rack(report)
         remnants = sum(len(r.reusable_remnants(300.0)) for r in report.results.values())
         self.stats.update_many({
             "bars": (str(report.total_bars), f"\u2066{report.total_stock_length / 1000:.1f} m\u2069"),
@@ -4486,6 +4537,8 @@ class NestingPage(Page):
             "yield": (f"{report.overall_yield_pct:.2f}%", "יעד 97.5%"),
             "waste": (f"{100 - report.overall_yield_pct:.2f}%", ""),
             "remnants": (str(remnants), "לשימוש חוזר"),
+            "rack": (str(len(from_rack)) if from_rack else "—",
+                     "שאריות מהמדף" if from_rack else "לא נלקחו"),
         })
 
         colours: dict[tuple[int, int], str] = {}
@@ -4512,6 +4565,36 @@ class NestingPage(Page):
             f"{report.total_bars} מוטות בניצולת {report.overall_yield_pct:.2f}% "
             f"תוך \u2066{report.solve_time_s:.2f}\u2069 שניות"
         )
+
+    def record_cut(self) -> tuple[int, int]:
+        """The cut was made as planned: the rack says so."""
+        from ..nesting.rack import record_cut
+
+        report = self.session.nesting_report
+        if report is None:
+            self.report(ProfileOSError("הריצו קודם אופטימיזציה — ואז ״החיתוך בוצע״"),
+                        "אין חיתוך לרשום")
+            return 0, 0
+        answer = QMessageBox.question(
+            self, "החיתוך בוצע",
+            "לרשום שהחיתוך בוצע לפי התוכנית? השאריות שנחתכו ייצאו מהמדף, "
+            "והשאריות החדשות שארוכות מספיק ייכנסו אליו.",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return 0, 0
+        job = getattr(self.session, "job", None)
+        try:
+            taken, added = record_cut(report, job_id=job.job_id if job is not None else "")
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "המדף לא עודכן")
+            return 0, 0
+        self.status(f"המדף עודכן: ⁦{taken}⁩ שאריות יצאו, ⁦{added}⁩ חדשות נכנסו")
+        return taken, added
+
+    def open_rack(self) -> None:
+        from .dialogs import RackDialog
+
+        RackDialog(self).exec()
 
     def _show_profile(self, profile_id: str) -> None:
         report = self.session.nesting_report

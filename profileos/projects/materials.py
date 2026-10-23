@@ -120,6 +120,8 @@ class ProposedLine:
 class Proposal:
     lines: list[ProposedLine] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    #: Offcuts from the rack the bars count on: (remnant_id, profile, length).
+    from_rack: list[tuple[str, str, float]] = field(default_factory=list)
 
     @property
     def total(self) -> float:
@@ -237,7 +239,7 @@ def _supplier_for(code: str, category: str,
 
 
 def _add_profiles(proposal: "Proposal", items: list[Any], name: str, *,
-                  weights: Any, defaults: Any, strategy: str) -> None:
+                  weights: Any, defaults: Any, strategy: str, rack: Any = None) -> None:
     """Profiles in whole bars: one supplier each, its bar length, its price."""
     from ..core.config import get_settings
     from ..models.orders import Project, StockBar
@@ -269,7 +271,8 @@ def _add_profiles(proposal: "Proposal", items: list[Any], name: str, *,
         stock_bars=[StockBar(profile_id=pid, length=length) for pid, length in length_of.items()],
     )
     try:
-        report = nest_project(project, strategy=strategy, defaults=defaults)  # type: ignore[arg-type]
+        report = nest_project(project, strategy=strategy, defaults=defaults,  # type: ignore[arg-type]
+                              inventory=rack)
     except Exception as exc:  # noqa: BLE001 - said, and the job's other lines still come
         proposal.warnings.append(f"חישוב המוטות נכשל: {exc}")
         report = None
@@ -291,9 +294,23 @@ def _add_profiles(proposal: "Proposal", items: list[Any], name: str, *,
                 price_line(line, mass_per_metre=weights, supplier=chosen.get(profile_id))
                 proposal.lines.append(line)
                 _check_bar_price(line, chosen.get(profile_id), proposal)
-        proposal.warnings.append(
-            "שאריות שכבר במדף לא נלקחו בחשבון — אם יש, הורידו מוטות מהכמות."
-        )
+        if rack is None:
+            proposal.warnings.append(
+                "שאריות שכבר במדף לא נלקחו בחשבון — אם יש, הורידו מוטות מהכמות."
+            )
+        else:
+            from ..nesting.rack import used_from_rack
+
+            used = used_from_rack(report)
+            proposal.from_rack += used
+            if used:
+                proposal.warnings.append(
+                    f"נלקחו ⁦{len(used)}⁩ שאריות מהמדף, ולכן מזמינים פחות מוטות: "
+                    + ", ".join(f"⁦{code}⁩ ⁦{length / 1000:.2f}⁩ מ׳"
+                                for _rid, code, length in used[:6])
+                    + (" ועוד" if len(used) > 6 else "")
+                    + ". עם רישום ההזמנה הן נשמרות בצד לפרויקט הזה."
+                )
     if any(getattr(line, "by_weight", False) for line in proposal.lines):
         proposal.warnings.append(
             "חלק מהפרופילים מתומחרים לפי ק״ג, במשקל למטר שבקטלוג הספק. המשקל "
@@ -303,7 +320,7 @@ def _add_profiles(proposal: "Proposal", items: list[Any], name: str, *,
 
 
 def propose(job: Any, *, mass_per_metre: Callable[[str], float | None] | None = None,
-            strategy: str = "auto", defaults: Any = None) -> Proposal:
+            strategy: str = "auto", defaults: Any = None, rack: Any = None) -> Proposal:
     """What to order for this job, priced from the lists in force."""
     import math
 
@@ -320,7 +337,7 @@ def propose(job: Any, *, mass_per_metre: Callable[[str], float | None] | None = 
     weights = mass_per_metre or catalogue_weights()
 
     _add_profiles(proposal, collect_cut_items(builds), getattr(job, "name", "") or "פרויקט",
-                  weights=weights, defaults=defaults, strategy=strategy)
+                  weights=weights, defaults=defaults, strategy=strategy, rack=rack)
 
     # -- everything else that is bought, not cut ---------------------------- #
     bom = build_bom(builds, project_id=getattr(job, "job_id", ""), currency="ILS")
@@ -366,6 +383,7 @@ class Combined:
     saved_bars: dict[str, float] = field(default_factory=dict)
     saved_money: float = 0.0
     warnings: list[str] = field(default_factory=list)
+    from_rack: list[tuple[str, str, float]] = field(default_factory=list)
 
     @property
     def total(self) -> float:
@@ -382,7 +400,8 @@ class Combined:
 
 
 def propose_combined(jobs: list[Any], *, defaults: Any = None, strategy: str = "auto",
-                     mass_per_metre: Callable[[str], float | None] | None = None) -> Combined:
+                     mass_per_metre: Callable[[str], float | None] | None = None,
+                     rack: Any = None) -> Combined:
     """What to order for these jobs together, and each one's part of it."""
     from collections import defaultdict
 
@@ -406,7 +425,8 @@ def propose_combined(jobs: list[Any], *, defaults: Any = None, strategy: str = "
 
     together = Proposal()
     _add_profiles(together, items, "הזמנה משותפת", weights=weights, defaults=defaults,
-                  strategy=strategy)
+                  strategy=strategy, rack=rack)
+    combined.from_rack = list(together.from_rack)
     combined.warnings += [w for w in together.warnings if w not in combined.warnings]
     combined.lines += together.lines
 
@@ -416,7 +436,14 @@ def propose_combined(jobs: list[Any], *, defaults: Any = None, strategy: str = "
         for line in proposal.lines:
             if line.category == "profile":
                 alone_bars[(line.code, line.length_mm)] += line.quantity
-    for line in together.lines:
+    # The saving from cutting together is measured without the rack: the
+    # offcuts would have served the jobs ordered apart just as well.
+    compare = together
+    if together.from_rack:
+        compare = Proposal()
+        _add_profiles(compare, items, "הזמנה משותפת", weights=weights, defaults=defaults,
+                      strategy=strategy)
+    for line in compare.lines:
         saved = alone_bars.get((line.code, line.length_mm), 0.0) - line.quantity
         if saved > 0:
             combined.saved_bars[line.code] = combined.saved_bars.get(line.code, 0.0) + saved

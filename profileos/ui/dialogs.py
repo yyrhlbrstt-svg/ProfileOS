@@ -597,6 +597,115 @@ class PasteOpeningsDialog(QDialog):
         return self.intake
 
 
+class RackDialog(QDialog):
+    """The offcut rack: what is on it, entered by hand from the real one,
+    and taken off when it is used or thrown away. Each change is written at
+    once, onto the rack as it is on disk."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        from .widgets import DataTable
+
+        self.setWindowTitle("מדף השאריות")
+        self.setMinimumSize(720, 480)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(*(METRICS.space(5),) * 4)
+        layout.setSpacing(METRICS.space(3))
+        hint = QLabel(
+            "שאריות שבמדף נלקחות בחשבון בחיתוך ובהזמנת חומר לפני מוט חדש. "
+            "שארית שנשמרה בצד לפרויקט מסומנת — היא לא תיספר לפרויקט אחר."
+        )
+        hint.setObjectName("Hint")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+        row = QHBoxLayout()
+        self.code = QLineEdit()
+        self.code.setPlaceholderText("מק״ט הפרופיל")
+        self.length = QSpinBox()
+        self.length.setRange(100, 7500)
+        self.length.setValue(1500)
+        self.length.setSuffix(" מ״מ")
+        self.count = QSpinBox()
+        self.count.setRange(1, 200)
+        self.count.setSuffix(" יח׳")
+        self.place = QLineEdit()
+        self.place.setPlaceholderText("איפה במדף (לא חובה)")
+        add = QPushButton("הוספה")
+        add.setObjectName("Primary")
+        add.clicked.connect(self.add)
+        for widget in (self.code, self.length, self.count, self.place, add):
+            row.addWidget(widget)
+        layout.addLayout(row)
+        self.table = DataTable(["פרופיל", "אורך", "כמות", "מיקום", "מאיפה", "שמורה ל"],
+                               empty_text="המדף ריק — הוסיפו את השאריות שיש לכם")
+        layout.addWidget(self.table, 1)
+        buttons = QHBoxLayout()
+        remove = QPushButton("הוצאה מהמדף")
+        remove.setToolTip("נחתכה, נזרקה, או לא באמת שם")
+        remove.clicked.connect(self.remove)
+        buttons.addWidget(remove)
+        buttons.addStretch(1)
+        close = QPushButton("סגור")
+        close.clicked.connect(self.accept)
+        buttons.addWidget(close)
+        layout.addLayout(buttons)
+        self.problem = ""
+        self.show_rack()
+
+    def show_rack(self) -> None:
+        from ..nesting.rack import load_rack
+
+        try:
+            offcuts = sorted(load_rack().all(), key=lambda o: (o.profile_id, -o.length))
+        except Exception as exc:  # noqa: BLE001
+            self.problem = str(exc)
+            self.table.set_rows([[str(exc), "", "", "", "", ""]])
+            self._ids: list[str] = []
+            return
+        self._ids = [offcut.remnant_id for offcut in offcuts]
+        self.table.set_rows([
+            [f"\u2066{o.profile_id}\u2069", f"\u2066{o.length:,.0f}\u2069 מ״מ", o.quantity,
+             o.location or "—", f"\u2066{o.source_project}\u2069" if o.source_project else "ביד",
+             f"\u2066{o.metadata.get('job_id', '')}\u2069" if o.reserved else ""]
+            for o in offcuts
+        ], numeric_columns=(2,))
+
+    def add(self) -> bool:
+        from ..models.orders import RemnantBar
+        from ..nesting.rack import change_rack
+
+        code = self.code.text().strip().upper()
+        if not code:
+            self.problem = "חסר מק״ט הפרופיל"
+            self.table.setToolTip(self.problem)
+            return False
+        offcut = RemnantBar(profile_id=code, length=float(self.length.value()),
+                            quantity=self.count.value(),
+                            location=self.place.text().strip() or None)
+        try:
+            change_rack(lambda rack: rack.add(offcut))
+        except Exception as exc:  # noqa: BLE001
+            self.problem = str(exc)
+            return False
+        self.show_rack()
+        return True
+
+    def remove(self) -> bool:
+        from ..nesting.rack import change_rack
+
+        model = self.table.selectionModel()
+        if model is None or not model.selectedRows():
+            return False
+        remnant_id = self._ids[model.selectedRows()[0].row()]
+        try:
+            change_rack(lambda rack: rack.consume(remnant_id))
+        except Exception as exc:  # noqa: BLE001
+            self.problem = str(exc)
+            return False
+        self.show_rack()
+        return True
+
+
 class PickJobsDialog(QDialog):
     """Which jobs go into one order — ticked from a list, never typed."""
 
