@@ -217,7 +217,21 @@ class Session:
             # written over with the older copy held in memory — that is the
             # one way this save could lose somebody else's change.
             fresh = store.load(self.job.job_id)
+        kept = {opening.element_id: opening.metadata.get("blind_frame")
+                for opening in (fresh.schedule.openings if fresh.schedule else [])}
+        two_stage = any(value is not None for value in kept.values())
         fresh.schedule = self.to_schedule(name=fresh.name, system_id=fresh.system_id)
+        # The blind frames' site record is kept by its own screen: the design
+        # on screen never writes an old copy of it over the one on disk, and
+        # an opening added to a two-stage job gets a blind frame too.
+        for opening in fresh.schedule.openings:
+            record = kept.get(opening.element_id)
+            if record is not None:
+                opening.metadata["blind_frame"] = record
+            elif two_stage and opening.element_id not in kept:
+                opening.metadata["blind_frame"] = {}
+            else:
+                opening.metadata.pop("blind_frame", None)
         store.save(fresh)
         self.job = fresh
         return fresh

@@ -703,6 +703,177 @@ class BankImportDialog(QDialog):
                 if self.table.item(row, 0).checkState() == Qt.CheckState.Checked]
 
 
+def _day(iso: str) -> str:
+    """A recorded day as the shop reads it: ⁦23/10/2026⁩."""
+    from datetime import date
+
+    if not iso:
+        return "—"
+    try:
+        return f"\u2066{date.fromisoformat(iso):%d/%m/%Y}\u2069"
+    except ValueError:
+        return iso
+
+
+class BlindFramesDialog(QDialog):
+    """A two-stage job's blind frames: which went in, when, to which level
+    mark, and how they looked after the plaster. Works on a copy of the job;
+    ``openings`` holds the changed openings for the page to save."""
+
+    def __init__(self, job: Any, people: list[str], parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        import copy
+
+        from .widgets import DataTable
+
+        self.job = copy.deepcopy(job)
+        self.changed = False
+        self.setWindowTitle(f"משקופים עיוורים — {job.name}")
+        self.setMinimumSize(860, 560)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(*(METRICS.space(5),) * 4)
+        layout.setSpacing(METRICS.space(3))
+        hint = QLabel(
+            "בבנייה חדשה: משקוף עיוור נכנס לפני הטיח, והחלון נמדד ממנו אחרי הטיח. "
+            "סמנו פתחים ברשימה, ואז ״הותקנו״ או ״תקין אחרי הטיח״.")
+        hint.setObjectName("Hint")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+        self.two_stage = QCheckBox("התקנה בשני שלבים — משקוף עיוור לכל פתח")
+        layout.addWidget(self.two_stage)
+        self.stage = QLabel("")
+        self.stage.setObjectName("FieldLabel")
+        layout.addWidget(self.stage)
+        self.table = DataTable(["פתח", "הותקן", "מי התקין", "קו גובה", "אחרי הטיח", "הערה"],
+                               empty_text="סמנו ״התקנה בשני שלבים״")
+        self.table.setSelectionMode(self.table.SelectionMode.ExtendedSelection)
+        self.table.stretch(5)
+        layout.addWidget(self.table, 1)
+
+        installed = QHBoxLayout()
+        self.installer = QComboBox()
+        self.installer.setEditable(True)
+        self.installer.addItems(people)
+        self.installer.setCurrentIndex(-1)
+        self.installer.lineEdit().setPlaceholderText("מי התקין")
+        self.installer.setMinimumWidth(METRICS.space(40))
+        self.level_mark = QLineEdit()
+        self.level_mark.setPlaceholderText("לפי איזה קו גובה (למשל: קו המטר של הקבלן, קומה א)")
+        mark_installed = QPushButton("הותקנו היום")
+        mark_installed.clicked.connect(self.mark_installed)
+        installed.addWidget(self.installer)
+        installed.addWidget(self.level_mark, 1)
+        installed.addWidget(mark_installed)
+        layout.addLayout(installed)
+
+        checked = QHBoxLayout()
+        self.note = QLineEdit()
+        self.note.setPlaceholderText("מה צריך לתקן (טיח בתוך המשקוף, לא בפלס…)")
+        good = QPushButton("תקין אחרי הטיח")
+        good.clicked.connect(lambda: self.mark_checked(True))
+        bad = QPushButton("יש מה לתקן")
+        bad.clicked.connect(lambda: self.mark_checked(False))
+        checked.addWidget(self.note, 1)
+        checked.addWidget(good)
+        checked.addWidget(bad)
+        layout.addLayout(checked)
+
+        self.problem = QLabel("")
+        self.problem.setObjectName("FieldError")
+        self.problem.setWordWrap(True)
+        layout.addWidget(self.problem)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("שמירה")
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setObjectName("Primary")
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("ביטול")
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+        from ..projects.blindframes import is_two_stage, set_two_stage
+
+        if is_two_stage(self.job):
+            # An opening added since the job went two-stage gets its blind frame.
+            before = len(self._ids())
+            set_two_stage(self.job, True)
+            self.changed = len(self._ids()) != before
+        self.two_stage.setChecked(is_two_stage(self.job))
+        self.two_stage.toggled.connect(self.set_two_stage)
+        self.show_frames()
+
+    def _ids(self) -> list[str]:
+        from ..projects.blindframes import frames
+
+        return [opening.element_id for opening, _frame in frames(self.job)]
+
+    def show_frames(self) -> None:
+        from ..projects.blindframes import describe, frames, marking
+
+        rows = []
+        for opening, frame in frames(self.job):
+            after = ("—" if frame.check_ok is None
+                     else "תקין" if frame.check_ok else "לתיקון")
+            rows.append([marking(opening),
+                         _day(frame.installed_on),
+                         frame.installed_by or "—", frame.level_mark or "—", after,
+                         frame.check_note])
+        self.table.set_rows(rows)
+        self.stage.setText(describe(self.job))
+
+    def _say(self, exc: Exception) -> None:
+        self.problem.setText(str(exc))
+
+    def selected(self) -> list[str]:
+        model = self.table.selectionModel()
+        rows = sorted({index.row() for index in model.selectedRows()}) if model else []
+        ids = self._ids()
+        return [ids[row] for row in rows if row < len(ids)]
+
+    def set_two_stage(self, on: bool) -> None:
+        from ..projects.blindframes import set_two_stage
+
+        try:
+            set_two_stage(self.job, on)
+        except Exception as exc:  # noqa: BLE001 - said in the window
+            self._say(exc)
+            self.two_stage.blockSignals(True)
+            self.two_stage.setChecked(not on)
+            self.two_stage.blockSignals(False)
+            return
+        self.problem.setText("")
+        self.changed = True
+        self.show_frames()
+
+    def mark_installed(self) -> int:
+        from ..projects.blindframes import record_installed
+
+        try:
+            done = record_installed(self.job, self.selected(), by=self.installer.currentText(),
+                                    level_mark=self.level_mark.text())
+        except Exception as exc:  # noqa: BLE001
+            self._say(exc)
+            return 0
+        self.problem.setText("")
+        self.changed = True
+        self.show_frames()
+        return done
+
+    def mark_checked(self, ok: bool) -> int:
+        from ..projects.blindframes import record_check
+
+        try:
+            done = record_check(self.job, self.selected(), ok=ok, note=self.note.text())
+        except Exception as exc:  # noqa: BLE001
+            self._say(exc)
+            return 0
+        self.problem.setText("")
+        self.note.clear()
+        self.changed = True
+        self.show_frames()
+        return done
+
+
 class RackDialog(QDialog):
     """The offcut rack: what is on it, entered by hand from the real one,
     and taken off when it is used or thrown away. Each change is written at

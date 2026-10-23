@@ -3838,6 +3838,10 @@ def measure_open(
     sheet: Optional[Path] = typer.Option(
         None, "--sheet", help="Write the blank site sheet here as CSV."
     ),
+    blind_frame: bool = typer.Option(
+        False, "--blind-frame",
+        help="Measure from the blind frames (two-stage job), not the wall.",
+    ),
 ) -> None:
     """Open a measurement sheet with a blank line per opening in the job."""
     import csv
@@ -3851,6 +3855,10 @@ def measure_open(
         _fail(str(exc))
 
     survey = survey_for_job(job, clearance_per_side=clearance or None)
+    if blind_frame:
+        from .delivery.survey import BLIND_FRAME
+
+        survey.stage = BLIND_FRAME
     if not len(survey):
         _fail(f"Job {job_id} has no openings scheduled to measure.")
     default_surveys().add(survey)

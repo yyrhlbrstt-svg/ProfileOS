@@ -1118,6 +1118,7 @@ def _material(context: dict[str, Any], today: date) -> list[Insight]:
 def _remeasured(context: dict[str, Any], today: date) -> list[Insight]:
     """Openings measured bigger than they were sold, with no extra for it."""
     from .delivery.remeasure import accepted_revision, compare, unbilled, worth_asking
+    from .delivery.survey import window_sheet
     from .projects import JobStatus
 
     surveys = context.get("surveys")
@@ -1128,11 +1129,11 @@ def _remeasured(context: dict[str, Any], today: date) -> list[Insight]:
     for job in context.get("jobs") or []:
         if job.status not in (JobStatus.WON, JobStatus.IN_PRODUCTION, JobStatus.INSTALLED):
             continue
-        sheets = surveys.for_job(job.job_id)
-        if not sheets:
+        sheet = window_sheet(job, surveys)
+        if sheet is None:
             continue
         revision = accepted_revision(job, revisions.for_job(job.job_id))
-        grown = unbilled(job, compare(job, sheets[0], revision))
+        grown = unbilled(job, compare(job, sheet, revision))
         if grown and worth_asking(grown):
             owed.append((job, sum(change.amount for change in grown)))
     if not owed:
@@ -1151,10 +1152,70 @@ def _remeasured(context: dict[str, Any], today: date) -> list[Insight]:
     )]
 
 
+def _blind_frames(context: dict[str, Any], today: date) -> list[Insight]:
+    """Two-stage jobs: blind frames waiting on the plaster, blind frames to
+    put right, and windows ordered before they were measured from them."""
+    from .delivery.survey import window_sheet
+    from .projects import JobStatus
+    from .projects.blindframes import CHASE_AFTER_DAYS, is_two_stage, to_fix, waiting_since
+
+    surveys = context.get("surveys")
+    waiting: list[tuple[Any, int]] = []
+    broken: list[tuple[Any, list[tuple[str, str]]]] = []
+    early: list[Any] = []
+    for job in context.get("jobs") or []:
+        if job.status not in (JobStatus.WON, JobStatus.IN_PRODUCTION) or not is_two_stage(job):
+            continue
+        since = waiting_since(job)
+        if since is not None and (today - since).days >= CHASE_AFTER_DAYS:
+            waiting.append((job, (today - since).days))
+        wrong = to_fix(job)
+        if wrong:
+            broken.append((job, wrong))
+        ordered = [o for o in job.material_orders if o.state.value != "cancelled"]
+        if ordered and surveys is not None:
+            sheet = window_sheet(job, surveys)
+            openings = len(job.schedule.openings) if job.schedule else 0
+            if sheet is None or len(sheet.makeable) < openings:
+                early.append(job)
+    found: list[Insight] = []
+    if broken:
+        found.append(Insight(
+            "warning",
+            _count(len(broken), "פרויקט אחד עם משקופים עיוורים לתיקון",
+                   "פרויקטים עם משקופים עיוורים לתיקון"),
+            _names(broken, lambda pair: f"{pair[0].customer_name or pair[0].name}: "
+                   + "; ".join(f"⁦{mark}⁩ {what}" for mark, what in pair[1][:2]))
+            + ". לתקן לפני מדידת החלונות — חלון שנמדד ממשקוף עקום ייצא עקום.",
+            "Projects", "bf-fix:" + ",".join(sorted(job.job_id for job, _w in broken)),
+        ))
+    if early:
+        found.append(Insight(
+            "warning",
+            _count(len(early), "בפרויקט אחד הוזמן חומר לחלונות לפני מדידה מהמשקופים העיוורים",
+                   "פרויקטים שהוזמן בהם חומר לחלונות לפני מדידה מהמשקופים העיוורים"),
+            _names(early, lambda job: job.customer_name or job.name)
+            + ". החלונות נעשים לפי המשקוף העיוור כפי שנבנה, לא לפי התכנית — "
+            "מדידה באתר ← ״מה נמדד: המשקוף העיוור״ לפני החיתוך.",
+            "Survey", "bf-early:" + ",".join(sorted(job.job_id for job in early)),
+        ))
+    if waiting:
+        found.append(Insight(
+            "info",
+            _count(len(waiting), "פרויקט אחד מחכה לטיח אחרי המשקופים העיוורים",
+                   "פרויקטים מחכים לטיח אחרי המשקופים העיוורים"),
+            _names(waiting, lambda pair: f"{pair[0].customer_name or pair[0].name} "
+                   f"⁦{pair[1]}⁩ ימים")
+            + ". שווה לברר עם הקבלן מתי אפשר לבוא למדוד את החלונות.",
+            "Projects", "bf-wait:" + ",".join(sorted(job.job_id for job, _d in waiting)),
+        ))
+    return found
+
+
 RULES: tuple[Callable[[dict[str, Any], date], list[Insight]], ...] = (
     _data_safety, _jobs, _accounts, _field, _customers, _money, _service, _tasks,
     _paperwork, _draft, _catalogue, _price_lists, _material, _remeasured, _install_ready,
-    _pace,
+    _pace, _blind_frames,
 )
 
 

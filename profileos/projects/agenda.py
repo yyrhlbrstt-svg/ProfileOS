@@ -28,6 +28,7 @@ _log = get_logger("projects.agenda")
 
 class VisitKind(StrEnum):
     INSTALLATION = "installation"
+    BLIND_FRAMES = "blind_frames"
     SURVEY = "survey"
     SERVICE = "service"
     DELIVERY = "delivery"
@@ -38,6 +39,7 @@ class VisitKind(StrEnum):
     def hebrew(self) -> str:
         return {
             "installation": "התקנה",
+            "blind_frames": "התקנת משקופים עיוורים",
             "survey": "מדידה",
             "service": "שירות",
             "delivery": "אספקה",
@@ -50,6 +52,7 @@ class VisitKind(StrEnum):
         """How the reminder names it: "מחר <phrase>"."""
         return {
             "installation": "מגיעים להתקין את העבודה",
+            "blind_frames": "מגיעים להתקין את המשקופים העיוורים",
             "survey": "מגיעים למדידה",
             "service": "מגיע טכנאי שירות",
             "delivery": "מגיעה אספקה",
@@ -234,6 +237,10 @@ def reminder_text(appointment: Appointment, *, brand_name: str, phone: str = "",
         from .install_check import site_questions
 
         questions = site_questions(job)
+    elif appointment.kind is VisitKind.BLIND_FRAMES:
+        from .install_check import blind_frame_questions
+
+        questions = blind_frame_questions()
     return visit_reminder_message(
         brand_name=brand_name, customer_name=appointment.customer_name,
         when=appointment.time, what=appointment.kind.phrase, phone=phone,

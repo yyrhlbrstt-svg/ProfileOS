@@ -1456,6 +1456,7 @@ class ProjectsPage(Page):
             ("ממתינים מהלקוח…", self.manage_needs),
             ("רשימת תיקונים…", self.manage_snags),
             ("גרסאות ההצעה — מה השתנה…", self.show_revisions),
+            ("משקופים עיוורים — התקנה בשני שלבים…", self.manage_blind_frames),
             ("הזמנת חומר מהספק…", self.order_material),
             ("הזמנה משותפת לכמה פרויקטים…", self.order_combined),
             ("הזמנות חומר — אישור והגעה…", self.manage_material_orders),
@@ -1943,6 +1944,53 @@ class ProjectsPage(Page):
         else:
             self.status(f"ההזמנה ל{order.supplier} נרשמה בפרויקט")
         self.refresh()
+
+    def manage_blind_frames(self) -> bool:
+        """Blind frames set and checked, kept on the job as it is on disk now."""
+        from ..projects.blindframes import KEY
+        from .dialogs import BlindFramesDialog
+
+        job = self._selected_job()
+        if job is None:
+            self.status("בחר פרויקט מהרשימה")
+            return False
+        if job.schedule is None or not job.schedule.openings:
+            self.report(ProfileOSError("אין פתחים בפרויקט — הוסיפו פתחים קודם"),
+                        "אין למה משקופים")
+            return False
+        try:
+            store = self._store()
+            job = store.load(job.job_id)
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "הפרויקט לא נקרא")
+            return False
+        dialog = BlindFramesDialog(job, known_people(), self)
+        if dialog.exec() != QDialog.DialogCode.Accepted or not dialog.changed:
+            return False
+        edited = {opening.element_id: opening for opening in dialog.job.schedule.openings}
+        try:
+            fresh = store.load(job.job_id)   # the file as it is now, not as it was opened
+            for opening in fresh.schedule.openings:
+                mine = edited.get(opening.element_id)
+                if mine is None:
+                    continue
+                if KEY in mine.metadata:
+                    opening.metadata[KEY] = mine.metadata[KEY]
+                else:
+                    opening.metadata.pop(KEY, None)
+            fresh.touch()
+            store.save(fresh)
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "המשקופים העיוורים לא נשמרו")
+            return False
+        from ..projects.blindframes import describe
+
+        current = getattr(self.session, "job", None)
+        if current is not None and current.job_id == fresh.job_id:
+            self.session.job = fresh
+        self.status(f"{fresh.name}: {describe(fresh)}")
+        self.refresh()
+        return True
 
     def manage_material_orders(self) -> None:
         from .money_dialogs import MaterialOrdersDialog
@@ -11094,6 +11142,17 @@ class SurveyPage(Page):
         row = QHBoxLayout()
         row.setSpacing(METRICS.space(3))
 
+        # On a two-stage job there are two sheets: the wall (which sized the
+        # blind frames) and the blind frames (which size the windows).
+        self.survey_stage = QComboBox()
+        self.survey_stage.addItem("הפתח בקיר", "")
+        self.survey_stage.addItem("המשקוף העיוור", "blind_frame")
+        self.survey_stage.setToolTip("בהתקנה בשני שלבים: החלונות נמדדים מהמשקוף העיוור אחרי הטיח")
+        self.survey_stage.currentIndexChanged.connect(self._stage_changed)
+        self._stage_job = ""
+        row.addWidget(self._caption("מה נמדד"))
+        row.addWidget(self.survey_stage)
+
         self.survey_opening = QComboBox()
         row.addWidget(self._caption("פתח"))
         row.addWidget(self.survey_opening)
@@ -11124,7 +11183,8 @@ class SurveyPage(Page):
         self.survey_clearance.setDecimals(1)
         self.survey_clearance.setSpecialValueText("—")
         self.survey_clearance.setSuffix(" מ״מ לצד")
-        second.addWidget(self._caption("מרווח התקנה"))
+        self.clearance_caption = self._caption("מרווח התקנה")
+        second.addWidget(self.clearance_caption)
         second.addWidget(self.survey_clearance)
 
         self.floor_finished = QCheckBox("הרצפה גמורה")
@@ -11186,6 +11246,25 @@ class SurveyPage(Page):
             )
             return
 
+        from ..projects.blindframes import Stage as FrameStage
+        from ..projects.blindframes import is_two_stage, stage as frame_stage
+        from ..projects.blindframes import windows_not_ready
+
+        job = self._fresh_job() or job
+        two_stage = is_two_stage(job)
+        if self._stage_job != job.job_id:
+            # A job seen for the first time here: the sheet its stage calls for.
+            self._stage_job = job.job_id
+            current = frame_stage(job)
+            self.survey_stage.blockSignals(True)
+            self.survey_stage.setCurrentIndex(
+                1 if current is not None and current not in (
+                    FrameStage.TO_INSTALL, FrameStage.PARTLY) else 0)
+            self.survey_stage.blockSignals(False)
+        if not two_stage and self.survey_stage.currentIndex() != 0:
+            self.survey_stage.setCurrentIndex(0)
+        stage_name = str(self.survey_stage.currentData() or "")
+
         clearance = self.survey_clearance.value() or None
         source = ""
         if clearance is None:
@@ -11193,7 +11272,7 @@ class SurveyPage(Page):
             from ..delivery.survey import series_clearance
 
             try:
-                found = series_clearance(job)
+                found = series_clearance(job, stage_name)
             except Exception as exc:  # noqa: BLE001
                 self.report(exc, "אישורי הסדרות לא נקראו — הקלידו את מרווח ההתקנה")
                 found = None
@@ -11205,10 +11284,12 @@ class SurveyPage(Page):
             if book.damaged is not None:
                 self._survey = None
                 return
-            self._survey = sheet_for_job(job, book, clearance_per_side=clearance)
+            self._survey = sheet_for_job(job, book, clearance_per_side=clearance,
+                                         stage=stage_name)
         except Exception as exc:  # noqa: BLE001
             self.report(exc, "גיליון המדידה לא נפתח")
             return
+        waiting = windows_not_ready(job) if stage_name else []
         self.survey_opening.clear()
         for entry in self._survey:
             self.survey_opening.addItem(entry.reference or "—", entry.reference)
@@ -11216,7 +11297,44 @@ class SurveyPage(Page):
         self.show_survey()
         self.status(self._survey.describe()
                     + (f" · ⁦{len(filled)}⁩ מדידות הגיעו מהטלפון" if filled else "")
-                    + (f" · מרווח ההתקנה לפי {source}" if source else ""))
+                    + (f" · {'הניכוי' if stage_name else 'מרווח ההתקנה'} לפי {source}"
+                       if source else "")
+                    + (" · שימו לב: " + "; ".join(waiting) if waiting else ""))
+
+    def _stage_changed(self) -> None:
+        """The other sheet asked for: its own clearance, its own lines."""
+        self.survey_clearance.setValue(0.0)
+        self.clearance_caption.setText(
+            "ניכוי ממשקוף עיוור" if self.survey_stage.currentData() else "מרווח התקנה")
+        if self._survey is not None:
+            self.open_sheet()
+
+    def _fresh_job(self) -> Any:
+        """The open job as it is on disk now — the blind frames are recorded
+        from the projects page, not through the copy this page holds."""
+        from ..projects import default_store
+
+        job = getattr(self.session, "job", None)
+        if job is None:
+            return None
+        try:
+            return default_store().load(job.job_id)
+        except Exception:  # noqa: BLE001 - the copy in hand, said nowhere worse
+            return job
+
+    def _wall_sheet_of_two_stage(self) -> bool:
+        """The wall's sheet of a two-stage job sized the blind frames — the
+        windows are not made or priced from it."""
+        from ..projects.blindframes import is_two_stage
+
+        job = self._fresh_job()
+        if (job is not None and self._survey is not None and not self._survey.stage
+                and is_two_stage(job)):
+            self.report(ProfileOSError(
+                "בפרויקט בשני שלבים החלונות נמדדים מהמשקופים העיוורים — "
+                "בחרו ״מה נמדד: המשקוף העיוור״"), "זה גיליון הקיר")
+            return True
+        return False
 
     def compare_to_quote(self) -> list[Any]:
         """The measured frames against the sizes the customer agreed to, and
@@ -11228,6 +11346,8 @@ class SurveyPage(Page):
         job = getattr(self.session, "job", None)
         if job is None or self._survey is None:
             self.report(ProfileOSError("פתחו קודם את גיליון המדידה של הפרויקט"), "אין מה להשוות")
+            return []
+        if self._wall_sheet_of_two_stage():
             return []
         try:
             job = default_store().load(job.job_id)
@@ -11309,6 +11429,12 @@ class SurveyPage(Page):
         except Exception as exc:  # noqa: BLE001
             self.survey_problems.setText(f"המדידות מהטלפון לא נקראו: {exc}")
             return []
+        # On a two-stage job the dates say which sheet a phone figure is for.
+        from ..projects.blindframes import phone_records_for
+
+        job = self._fresh_job()
+        if job is not None:
+            records = phone_records_for(job, self._survey.stage, records)
         filled = self._survey.take_from_phone(records)
         if filled:
             self._save_sheet(filled)
@@ -11479,6 +11605,8 @@ class SurveyPage(Page):
         if self._survey is None:
             self.report(ProfileOSError("פתח גיליון מדידה קודם"), "אין מה לעדכן")
             return
+        if self._wall_sheet_of_two_stage():
+            return
         if not self._survey.makeable:
             self.report(
                 ProfileOSError(
@@ -11512,11 +11640,20 @@ class SurveyPage(Page):
         built = 0
         problems: list[str] = []
         used: set[str] = set()
+        originals = {opening.element_id: opening
+                     for opening in getattr(schedule, "openings", []) or []}
         for opening in self._survey.to_openings():
             key = str(opening.reference or opening.name)
             if key in original_ids and original_ids[key] not in used:
                 opening.element_id = original_ids[key]
                 used.add(opening.element_id)
+                # The measured size is new; what the opening is stays: its
+                # series, kind, count, glass, finish and its site records.
+                original = originals[opening.element_id]
+                for name in ("kind", "system_id", "quantity", "glass_spec_id", "finish",
+                             "notes"):
+                    setattr(opening, name, getattr(original, name))
+                opening.metadata = dict(original.metadata)
             elif key in ambiguous:
                 problems.append(f"{key}: יש בפרויקט כמה פתחים בשם הזה — נוסף כפתח חדש, בדקו")
             try:

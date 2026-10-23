@@ -310,6 +310,10 @@ class Survey:
     site_address: str = ""
     opened: date = field(default_factory=date.today)
     openings: list[OpeningSurvey] = field(default_factory=list)
+    #: What was measured: the opening in the wall (""), or — on a two-stage
+    #: job — the blind frame the window will sit in. Two sheets, never one
+    #: overwriting the other: the first is the record of what was built.
+    stage: str = ""
 
     def __len__(self) -> int:
         return len(self.openings)
@@ -467,6 +471,7 @@ class Survey:
             "job_name": self.job_name, "site_address": self.site_address,
             "opened": self.opened.isoformat(),
             "openings": [entry.as_dict() for entry in self.openings],
+            "stage": self.stage,
         }
 
     @classmethod
@@ -482,16 +487,36 @@ class Survey:
             openings=[
                 OpeningSurvey.from_dict(item) for item in raw.get("openings", [])
             ],
+            stage=str(raw.get("stage", "")),
         )
 
 
+#: The sheet measured from blind frames, on a two-stage job.
+BLIND_FRAME = "blind_frame"
+
+
+def window_sheet(job: Any, book: "SurveyBook") -> "Survey | None":
+    """The sheet the windows are made from: on a two-stage job, the one
+    measured from the blind frames — never the wall's, which sized them."""
+    from ..projects.blindframes import is_two_stage
+
+    wanted = BLIND_FRAME if is_two_stage(job) else ""
+    for sheet in book.for_job(str(getattr(job, "job_id", ""))):
+        if sheet.stage == wanted:
+            return sheet
+    return None
+
+
 def sheet_for_job(job: Any, book: "SurveyBook", *,
-                  clearance_per_side: float | None = None) -> Survey:
+                  clearance_per_side: float | None = None, stage: str = "") -> Survey:
     """The job's measurement sheet: the one already kept, with a line added
     for any opening the job gained since — or a new one, kept at once."""
-    kept = book.for_job(str(getattr(job, "job_id", "")))
+    kept = [sheet for sheet in book.for_job(str(getattr(job, "job_id", "")))
+            if sheet.stage == stage]
     if not kept:
-        return book.add(survey_for_job(job, clearance_per_side=clearance_per_side))
+        fresh = survey_for_job(job, clearance_per_side=clearance_per_side)
+        fresh.stage = stage
+        return book.add(fresh)
     survey = kept[0]
     have = {entry.reference for entry in survey.openings}
     fresh = survey_for_job(job, clearance_per_side=clearance_per_side)
@@ -502,9 +527,10 @@ def sheet_for_job(job: Any, book: "SurveyBook", *,
     return survey
 
 
-def series_clearance(job: Any) -> tuple[float, str] | None:
+def series_clearance(job: Any, stage: str = "") -> tuple[float, str] | None:
     """The installation clearance of the job's series, as the shop confirmed
-    it from the catalogue — ``(mm per side, where it was read)``. ``None``
+    it from the catalogue — ``(mm per side, where it was read)``; measured
+    from a blind frame, the series' blind-frame deduction instead. ``None``
     when the openings are of more than one series, or the figure was never
     entered: then the person types it, nothing is assumed."""
     from ..systems.confirmation import default_confirmations
@@ -518,7 +544,8 @@ def series_clearance(job: Any) -> tuple[float, str] | None:
     confirmed = book.get(next(iter(series)))
     if confirmed is None:
         return None
-    value = confirmed.values.get("installation_clearance")
+    value = confirmed.values.get(
+        "blind_frame_deduction" if stage == BLIND_FRAME else "installation_clearance")
     if value is None or value <= 0:
         return None
     return float(value), confirmed.source
@@ -667,7 +694,9 @@ __all__ = [
     "SurveyBook",
     "default_surveys",
     "save_openings",
+    "BLIND_FRAME",
     "sheet_for_job",
+    "window_sheet",
     "series_clearance",
     "survey_for_job",
 ]

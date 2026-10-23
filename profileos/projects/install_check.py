@@ -24,7 +24,10 @@ def not_ready(job: Any, *, cheques: Iterable[Any] = (), work_order: Any = None) 
     """What stands between this job and its installation, in the shop's words."""
     from .account import job_account
 
-    missing: list[str] = []
+    from .blindframes import windows_not_ready
+
+    # Two stages: the windows wait for their blind frames, set and checked.
+    missing: list[str] = list(windows_not_ready(job))
     orders = [o for o in getattr(job, "material_orders", []) if o.state.value != "cancelled"]
     has_openings = bool(getattr(getattr(job, "schedule", None), "openings", None))
     if has_openings and not orders:
@@ -75,4 +78,15 @@ def site_questions(job: Any) -> list[str]:
     return questions
 
 
-__all__ = ["LARGE_UNIT_M2", "READY_STAGES", "not_ready", "site_questions"]
+def blind_frame_questions() -> list[str]:
+    """Before blind frames: what the contractor has to have done — a frame
+    set to a wrong mark is the contractor's, set without one is the shop's."""
+    return [
+        "קו הגובה של הקבלן (קו המטר) מסומן בכל קומה שבה מתקינים?",
+        "הפתחים בנויים לפי התכנית, והבלוקים סביבם יבשים?",
+        "מישהו מטעם הקבלן יהיה באתר לאשר את קווי הגובה?",
+    ]
+
+
+__all__ = ["LARGE_UNIT_M2", "READY_STAGES", "blind_frame_questions", "not_ready",
+           "site_questions"]

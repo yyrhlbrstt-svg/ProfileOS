@@ -119,6 +119,11 @@ FIGURES: tuple[Figure, ...] = (
         "בהוראות ההרכבה — המרווח בין המשקוף לפתח הבנייה",
         minimum=0.0, maximum=40.0, default=10.0, required=False,
     ),
+    Figure(
+        "blind_frame_deduction", "ניכוי ממשקוף עיוור", "Blind frame deduction",
+        "בהוראות ההרכבה עם משקוף עיוור — כמה קטן משקוף החלון מפנים המשקוף העיוור, לכל צד",
+        minimum=0.0, maximum=40.0, required=False,
+    ),
 )
 
 FIGURE_BY_KEY: dict[str, Figure] = {figure.key: figure for figure in FIGURES}
