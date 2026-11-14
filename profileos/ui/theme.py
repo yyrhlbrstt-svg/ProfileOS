@@ -881,6 +881,14 @@ QHeaderView::section {{
 }}
 QTableWidget::item, QTreeWidget::item {{ border-bottom: 1px solid {hairline}; }}
 QHeaderView {{ background: transparent; border: none; }}
+#AnswerCard {{
+    background: {p.accent_subtle}; border: none; border-radius: 14px;
+    margin: 8px 12px 4px;
+}}
+#AnswerCard QLabel {{ background: transparent; }}
+#AnswerTitle {{ font-size: {m.font_size + 6}px; font-weight: 800; color: {p.text}; }}
+#AnswerDetail {{ font-size: {m.font_size}px; color: {p.text_muted}; }}
+#AnswerRows {{ font-size: {m.font_size}px; color: {p.text}; }}
 #LessonCell {{ background: transparent; }}
 #LessonCell QLabel {{ background: transparent; }}
 #LessonTitle {{ font-size: {m.font_size + 2}px; font-weight: 700; color: {p.text}; }}

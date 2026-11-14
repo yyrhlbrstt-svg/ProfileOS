@@ -189,6 +189,8 @@ def build(folder: Path, *, today: date | None = None) -> Path:
                                     reference="מקדמה"))
         rest = gross - deposit
         for month in range(3):
+            if job_id == "J-2026-0128" and month == 2:
+                continue                      # the last third still owed after handover
             number += 1
             due = today + timedelta(days=30 * month - 20 + index * 3)
             part = round(rest / 3) if month < 2 else rest - 2 * round(rest / 3)

@@ -11,11 +11,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QDialog,
     QFrame,
+    QHBoxLayout,
     QLabel,
+    QPushButton,
     QLineEdit,
     QListWidget,
     QListWidgetItem,
@@ -57,22 +59,59 @@ class CommandPalette(QDialog):
 
         self.search = QLineEdit()
         self.search.setObjectName("PaletteInput")
-        self.search.setPlaceholderText("לאן עוברים? הקלד כדי לחפש…")
+        self.search.setPlaceholderText("לאן עוברים — או שאלו: כמה כסף יש במגירה?")
         self.search.textChanged.connect(self._filter)
         layout.addWidget(self.search)
+
+        # The answer to a question about the shop, read from its own books.
+        self.answer_card = QFrame()
+        self.answer_card.setObjectName("AnswerCard")
+        card = QVBoxLayout(self.answer_card)
+        card.setContentsMargins(METRICS.space(5), METRICS.space(3), METRICS.space(5), METRICS.space(3))
+        card.setSpacing(METRICS.space(1))
+        self.answer_title = QLabel("")
+        self.answer_title.setObjectName("AnswerTitle")
+        self.answer_title.setWordWrap(True)
+        self.answer_detail = QLabel("")
+        self.answer_detail.setObjectName("AnswerDetail")
+        self.answer_detail.setWordWrap(True)
+        self.answer_rows = QLabel("")
+        self.answer_rows.setObjectName("AnswerRows")
+        self.answer_rows.setWordWrap(True)
+        self.answer_go = QPushButton("")
+        self.answer_go.setObjectName("Primary")
+        self.answer_go.clicked.connect(self._go_to_answer)
+        go_row = QHBoxLayout()
+        go_row.addWidget(self.answer_go)
+        go_row.addStretch(1)
+        for widget in (self.answer_title, self.answer_detail, self.answer_rows):
+            card.addWidget(widget)
+        card.addLayout(go_row)
+        self.answer_card.setVisible(False)
+        layout.addWidget(self.answer_card)
+        self._answer = None
+        self._context = None
+        self._asking = QTimer(self)
+        self._asking.setSingleShot(True)
+        self._asking.setInterval(220)
+        self._asking.timeout.connect(self._ask)
 
         self.results = QListWidget()
         self.results.setObjectName("PaletteList")
         self.results.itemActivated.connect(self._run_item)
         layout.addWidget(self.results, 1)
 
-        hint = QLabel("Enter — מעבר · Esc — סגירה · ↑↓ — ניווט")
+        from ..ask import EXAMPLES
+
+        hint = QLabel("אפשר גם לשאול — למשל: "
+                      + " · ".join(example.rstrip("?") for example in EXAMPLES[:3])
+                      + "\nEnter — מעבר · Esc — סגירה · ↑↓ — ניווט")
         hint.setObjectName("PaletteHint")
         layout.addWidget(hint)
 
         self._commands = self._build_commands()
         self._filter("")
-        self.resize(520, 380)
+        self.resize(640, 460)
 
     # -- the catalogue ---------------------------------------------------- #
     def _build_commands(self) -> list[Command]:
@@ -158,6 +197,41 @@ class CommandPalette(QDialog):
                 self.results.addItem(item)
         if self.results.count():
             self.results.setCurrentRow(0)
+        self._asking.start()
+
+    def _ask(self) -> None:
+        """A question about the shop gets its answer above the list."""
+        from ..ask import answer
+
+        text = self.search.text().strip()
+        found = None
+        if len(text) >= 3:
+            try:
+                if self._context is None:
+                    from ..insights import gather_context
+
+                    self._context = gather_context()
+                found = answer(text, self._context)
+            except Exception:  # noqa: BLE001 - the search goes on searching
+                found = None
+        self._answer = found
+        self.answer_card.setVisible(found is not None)
+        if found is None:
+            return
+        self.answer_title.setText(found.title)
+        self.answer_detail.setText(found.detail)
+        self.answer_detail.setVisible(bool(found.detail))
+        self.answer_rows.setText("\n".join(f"• {row}" for row in found.rows))
+        self.answer_rows.setVisible(bool(found.rows))
+        self.answer_go.setText(found.go or "פתח")
+        self.answer_go.setVisible(bool(found.page))
+
+    def _go_to_answer(self) -> None:
+        if self._answer is None or not self._answer.page:
+            return
+        page = self._answer.page
+        self.accept()
+        self._window.go_to_page(page)
 
     def _run_item(self, item: QListWidgetItem) -> None:
         command = item.data(Qt.ItemDataRole.UserRole)
@@ -167,6 +241,12 @@ class CommandPalette(QDialog):
     def keyPressEvent(self, event: Any) -> None:  # noqa: N802 - Qt naming
         key = event.key()
         if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            # A question asked: Enter goes where it is dealt with.
+            self._asking.stop()
+            self._ask()
+            if self._answer is not None and self._answer.page:
+                self._go_to_answer()
+                return
             item = self.results.currentItem()
             if item is not None:
                 self._run_item(item)
@@ -186,6 +266,7 @@ class CommandPalette(QDialog):
         x = geometry.x() + (geometry.width() - self.width()) // 2
         y = geometry.y() + geometry.height() // 6
         self.move(x, y)
+        self._context = None              # the books as they are now
         self.search.clear()
         self.search.setFocus()
         self.show()

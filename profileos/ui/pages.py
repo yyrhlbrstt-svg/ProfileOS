@@ -320,7 +320,7 @@ class HomePage(Page):
     def build(self) -> None:
         from ..branding import active_brand
 
-        palette_button = QPushButton("Ctrl+K — מעבר מהיר")
+        palette_button = QPushButton("שאלו את התוכנה או חפשו — Ctrl+K")
         palette_button.setObjectName("Ghost")
         palette_button.clicked.connect(self._open_palette)
         self.header.add_action(palette_button)
