@@ -9296,7 +9296,7 @@ class CataloguePage(Page):
             self.family_combo.addItem(family.label("he"), family.value)
 
         self.decided_by = QLineEdit()
-        self.decided_by.setPlaceholderText("מי מחליט ולפי מה — למשל: דאדי, קטלוג קליל 2026")
+        self.decided_by.setPlaceholderText("מי מחליט ולפי מה — למשל: מנהל המפעל, קטלוג קליל 2026")
 
         classify = QPushButton("סווג את הסדרה שנבחרה")
         classify.setObjectName("Primary")
@@ -11788,7 +11788,7 @@ class ReportsPage(Page):
 
         self.stats = StatRow([
             ("won", "הוזמן"), ("rate", "אחוז סגירה"), ("average", "הזמנה ממוצעת"),
-            ("backlog", "צבר פתוח"), ("late", "באיחור"),
+            ("backlog", "כל התיקים הפתוחים"), ("late", "באיחור"),
         ])
         self.body.addWidget(self.stats)
 
@@ -11957,7 +11957,7 @@ class ReportsPage(Page):
             "average": (f"⁦{average.value:,.0f} ₪⁩", ""),
             "backlog": (
                 f"⁦{live.open_value:,.0f} ₪⁩",
-                f"⁦{sum(live.counts.values())}⁩ תיקים",
+                f"⁦{sum(live.counts.values())}⁩ תיקים · כולל הצעות שממתינות לתשובה",
             ),
             "late": (
                 f"⁦{len(live.overdue)}⁩",

@@ -889,6 +889,8 @@ QHeaderView {{ background: transparent; border: none; }}
 #AnswerTitle {{ font-size: {m.font_size + 6}px; font-weight: 800; color: {p.text}; }}
 #AnswerDetail {{ font-size: {m.font_size}px; color: {p.text_muted}; }}
 #AnswerRows {{ font-size: {m.font_size}px; color: {p.text}; }}
+#WelcomeTitle {{ font-size: 30px; font-weight: 800; color: {p.text}; }}
+#WelcomeLead {{ font-size: {m.font_size + 2}px; color: {p.text_muted}; }}
 #LessonCell {{ background: transparent; }}
 #LessonCell QLabel {{ background: transparent; }}
 #LessonTitle {{ font-size: {m.font_size + 2}px; font-weight: 700; color: {p.text}; }}

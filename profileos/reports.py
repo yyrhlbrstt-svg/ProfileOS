@@ -506,7 +506,7 @@ def dashboard(
             Figure("הוזמן השנה", this_year.won_value, this_year.won_count, "₪"),
             this_year.win_rate(),
             this_year.average_order(),
-            Figure("צבר פתוח", live.open_value, sum(live.counts.values()), "₪"),
+            Figure("כל התיקים הפתוחים (כולל הצעות)", live.open_value, sum(live.counts.values()), "₪"),
             Figure("באיחור", float(len(live.overdue)), len(live.overdue), "תיקים"),
         ],
     }

@@ -804,7 +804,7 @@ MESSAGES: dict[str, dict[str, str]] = {
         "it": "diagonale", "es": "diagonal",
     },
     "mobile.device_example": {
-        "en": "e.g. Dadi's phone", "he": "לדוגמה: הטלפון של דאדי",
+        "en": "e.g. the installer's phone", "he": "לדוגמה: הטלפון של המתקין",
         "ar": "مثال: هاتف دادي", "ru": "например: телефон Дади",
         "it": "es. il telefono di Dadi", "es": "p. ej. el teléfono de Dadi",
     },

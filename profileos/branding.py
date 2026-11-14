@@ -185,9 +185,34 @@ def configured_brand_id() -> str:
         return "profileos"
 
 
+def custom_brand() -> Brand:
+    """The shop that typed its own details in at the welcome."""
+    try:
+        from .core.config import get_settings
+
+        company = dict(getattr(get_settings(), "company", {}) or {})
+    except Exception:  # noqa: BLE001 - branding must never break on settings
+        company = {}
+    name = (company.get("name") or "").strip() or "ProfileOS"
+
+    def value(key: str) -> str | None:
+        text = (company.get(key) or "").strip()
+        return text or None
+
+    return Brand(
+        id="custom", name=name, legal_name=value("legal_name") or name,
+        tagline=value("tagline"), address_line=value("address_line"), city=value("city"),
+        country="ישראל", phone=value("phone"), email=value("email"),
+        registration_number=value("registration_number"),
+        machine_code_signature=f"{name} - ProfileOS",
+    )
+
+
 def get_brand(brand_id: str | None = None) -> Brand:
     """Return a brand, preferring registry (plugin) entries over built-ins."""
     key = (brand_id or configured_brand_id()).strip().lower()
+    if key == "custom":
+        return custom_brand()
     registered = BRANDS.get_or_none(key)
     if isinstance(registered, Brand):
         return registered
@@ -234,6 +259,7 @@ BRAND_SCHEMA = DataSchema(
 
 
 __all__ = [
+    "custom_brand",
     "BrandColours",
     "Brand",
     "DEFAULT_BRAND",

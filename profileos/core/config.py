@@ -168,6 +168,13 @@ class Settings(BaseModel):
     #: the choice has to survive a restart rather than living in a variable.
     #: This build is דאדי בע"מ's own installation, not a white-label default.
     brand_id: str = "dadi"
+    #: Whether the first-run welcome was completed (or not needed: a shop
+    #: already working in the program never sees it).
+    onboarded: bool = False
+    #: The shop's own details, typed in at the welcome (brand "custom"):
+    #: name, legal_name, tagline, city, address_line, phone, email,
+    #: registration_number. Nothing here is filled in by the program.
+    company: dict[str, str] = Field(default_factory=dict)
     #: "dark" for the office, "light" for a workshop screen in daylight. Kept
     #: in settings so the choice survives a restart.
     theme: str = "light"

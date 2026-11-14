@@ -175,6 +175,10 @@ def run(argv: Sequence[str] | None = None, *, theme: str | None = None) -> int:
         QTimer.singleShot(1500, window.announce_update)
         QTimer.singleShot(4000, window.offer_new_shortcut)
     window.offer_draft_recovery()
+    # A new shop, on a fresh installation: who it is, before anything else.
+    from .welcome import welcome
+
+    QTimer.singleShot(400, lambda: welcome(window))
     _log.info("Desktop application started")
     return application.exec()
 

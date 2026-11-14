@@ -6,7 +6,7 @@ color 0E
 echo.
 echo   ==========================================
 echo      ProfileOS - התקנה
-echo      דאדי בע"מ
+echo      תוכנה למפעלי אלומיניום
 echo   ==========================================
 echo.
 
@@ -44,8 +44,9 @@ if errorlevel 1 (
     exit /b 1
 )
 
-echo   [3/3] מכין נתוני התחלה ויוצר קיצור דרך...
-python -m profileos.cli seed --quiet
+rem No sample jobs in the shop's own books: the first start asks who the
+rem shop is, and the demonstration lives in its own window and folder.
+echo   [3/3] יוצר קיצור דרך על שולחן העבודה...
 call "%~dp0קיצור-דרך.bat" >nul 2>&1
 
 color 0A
