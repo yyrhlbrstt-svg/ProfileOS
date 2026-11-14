@@ -130,24 +130,30 @@ def run(argv: Sequence[str] | None = None, *, theme: str | None = None) -> int:
 
         return CANCELLED_CODE
 
+    from ..showroom import is_showroom
+
+    # A showroom window is the program on demonstration data: it does not
+    # update the program, prove a version, watch suppliers or open the phones.
+    showroom = is_showroom()
     window = MainWindow(palette)
     window.auto_backup = True
     window.autosave_enabled = True
-    window.watch_enabled = True
-    window.self_update_enabled = True
+    window.watch_enabled = not showroom
+    window.self_update_enabled = not showroom
     from PySide6.QtCore import QTimer
 
-    QTimer.singleShot(20_000, window.watch_suppliers)
-    # The program's own updates: shortly after it opens, then every few hours.
-    from ..core.selfupdate import CHECK_EVERY_S
+    if not showroom:
+        QTimer.singleShot(20_000, window.watch_suppliers)
+        # The program's own updates: shortly after it opens, then every few hours.
+        from ..core.selfupdate import CHECK_EVERY_S
 
-    QTimer.singleShot(60_000, window.check_for_update)
-    # The phones' way in, if the shop turned it on: open with the window.
-    QTimer.singleShot(3_000, window.start_phone_access)
-    update_timer = QTimer(window)
-    update_timer.setInterval(CHECK_EVERY_S * 1000)
-    update_timer.timeout.connect(window.check_for_update)
-    update_timer.start()
+        QTimer.singleShot(60_000, window.check_for_update)
+        # The phones' way in, if the shop turned it on: open with the window.
+        QTimer.singleShot(3_000, window.start_phone_access)
+        update_timer = QTimer(window)
+        update_timer.setInterval(CHECK_EVERY_S * 1000)
+        update_timer.timeout.connect(window.check_for_update)
+        update_timer.start()
     _install_error_handler(window)
     if session is not None:
         window.set_session_owner(session)
@@ -164,9 +170,10 @@ def run(argv: Sequence[str] | None = None, *, theme: str | None = None) -> int:
     # falls over on the first refresh is not a working one.
     from ..core.selfupdate import PROVEN_AFTER_S, mark_started
 
-    QTimer.singleShot(PROVEN_AFTER_S * 1000, mark_started)
-    QTimer.singleShot(1500, window.announce_update)
-    QTimer.singleShot(4000, window.offer_new_shortcut)
+    if not showroom:
+        QTimer.singleShot(PROVEN_AFTER_S * 1000, mark_started)
+        QTimer.singleShot(1500, window.announce_update)
+        QTimer.singleShot(4000, window.offer_new_shortcut)
     window.offer_draft_recovery()
     _log.info("Desktop application started")
     return application.exec()

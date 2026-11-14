@@ -379,7 +379,9 @@ class HomePage(Page):
         self.body.addWidget(self.learning_card)
         from PySide6.QtCore import QTimer
 
-        QTimer.singleShot(0, self.show_learning)
+        # The page the window opens on fills itself at once — the figures,
+        # today's list, what is worth a look — not on the first return to it.
+        QTimer.singleShot(0, self.refresh)
 
         # -- the pipeline ------------------------------------------------- #
         pipeline = Card("קו הייצור")

@@ -40,8 +40,40 @@ def _words(text: str) -> str:
     return " " + re.sub(r"\s+", " ", text.strip().lower()) + " "
 
 
+#: The letters Hebrew joins to the front of a word: "ו", "ה", "ב", "ל", "מ",
+#: "ש", "כ" — "להתקנה" is "התקנה", "במגירה" is "מגירה".
+_PREFIXES = "והבלמשכ"
+
+
+def _forms(word: str) -> set[str]:
+    """The word, and the word without up to two joined letters in front."""
+    forms = {word}
+    for cut in (1, 2):
+        head = word[:cut]
+        if len(word) - cut >= 2 and all(letter in _PREFIXES for letter in head):
+            forms.add(word[cut:])
+    return forms
+
+
+def _tokens(text: str) -> set[str]:
+    found: set[str] = set()
+    for word in text.split():
+        found |= _forms(word.strip("'\".:;!()"))
+    return found
+
+
 def _has(text: str, *stems: str) -> bool:
-    return any(stem in text for stem in stems)
+    """Whether the question has one of these: a phrase (with a space) as it
+    is written, a single stem at the start of one of its words — so "חוב"
+    is a debt, and not the middle of "רחוב"."""
+    tokens = _tokens(text)
+    for stem in stems:
+        if " " in stem.strip():
+            if f" {stem.strip()} " in text or f" {stem.strip()}" in text:
+                return True
+        elif any(token.startswith(stem) for token in tokens):
+            return True
+    return False
 
 
 def _n(count: int, one: str, many: str) -> str:
@@ -80,8 +112,9 @@ def _bankable(context: dict[str, Any], today: date, text: str) -> Answer | None:
     return Answer(
         f"{_money(sum(c.amount for c in ready))} אפשר להפקיד כבר היום"
         if ready else "אין היום צ׳קים להפקדה",
-        f"⁦{len(ready)}⁩ צ׳קים שתאריכם הגיע · עוד ⁦{len(week)}⁩ השבוע, בסך "
-        f"{_money(sum(c.amount for c in week))}.",
+        f"{_n(len(ready), 'צ׳ק אחד שתאריכו הגיע', 'צ׳קים שתאריכם הגיע')}"
+        + (f" · עוד {_n(len(week), 'צ׳ק אחד', 'צ׳קים')} השבוע, בסך "
+           f"{_money(sum(c.amount for c in week))}." if week else " · אין עוד צ׳קים השבוע."),
         _more(rows, len(ready)), page="Collection", go="לגבייה")
 
 
@@ -147,7 +180,9 @@ def _quotes(context: dict[str, Any], today: date, text: str) -> Answer | None:
     if _has(text, "שבוע"):
         jobs = [job for job in jobs if age(job) >= 7]
     jobs.sort(key=lambda job: -job.quote_total)
-    rows = [f"{job.customer_name or job.name} · {_money(job.quote_total)} · לפני ⁦{age(job)}⁩ ימים"
+    rows = [f"{job.customer_name or job.name} · {_money(job.quote_total)} · "
+            + ("נשלחה היום" if age(job) == 0 else "נשלחה אתמול" if age(job) == 1
+               else f"לפני ⁦{age(job)}⁩ ימים")
             for job in jobs[:SHOWN]]
     return Answer(
         f"{_n(len(jobs), 'הצעה פתוחה אחת', 'הצעות פתוחות')} בשווי {_money(sum(j.quote_total for j in jobs))}"
@@ -209,6 +244,8 @@ def _service(context: dict[str, Any], today: date, text: str) -> Answer | None:
 
 
 def _sales(context: dict[str, Any], today: date, text: str) -> Answer | None:
+    if _has(text, "שעבר", "קודם", "אשתקד"):
+        return None                     # only this month and this year are known here
     month = _has(text, "החודש", "חודש")
     start = today.replace(day=1) if month else today.replace(month=1, day=1)
     won = []
@@ -237,17 +274,26 @@ def _blind_frames(context: dict[str, Any], today: date, text: str) -> Answer | N
         "", rows, page="Projects", go="לפרויקטים")
 
 
+#: Words in customers' names that are ordinary words in a question too.
+_NAME_STOP = {"משפחת", "משפחה", "מרכז", "רפואי", "מוסדות", "חינוך", "בנייה", "בניה",
+              "וקבלנות", "קבלנות", "חברת", "בית", "ההר", "הגבעה", "בעמ", 'בע"מ'}
+
+
 def _customer(context: dict[str, Any], today: date, text: str) -> Answer | None:
-    """A question naming a customer: their jobs, and what they still owe."""
+    """A question naming a customer — a whole word of their name, not the
+    start of another word ("ברקוד" is not "ברק"): their jobs, and what they
+    still owe."""
     from .projects.account import job_account
 
     cheques = list(context.get("cheques") or [])
     jobs = context.get("jobs") or []
+    tokens = _tokens(text)
     best = None
     for job in jobs:
         name = (job.customer_name or "").strip()
-        words = [w for w in re.split(r"\s+", name) if len(w) >= 3 and w not in ("משפחת", "בנייה")]
-        if words and all(f" {w.lower()}" in text or f"ל{w.lower()}" in text for w in words[:1]):
+        words = [w.lower().strip('".') for w in re.split(r"\s+", name)]
+        words = [w for w in words if len(w) >= 3 and w not in _NAME_STOP]
+        if words and any(word in tokens for word in words):
             best = name
             break
     if best is None:
@@ -257,7 +303,8 @@ def _customer(context: dict[str, Any], today: date, text: str) -> Answer | None:
                if job.status.value in ("won", "in_production", "installed"))
     rows = [f"⁦{job.job_id}⁩ · {job.status.hebrew} · {_money(job.quote_total)}" for job in theirs]
     return Answer(
-        f"{best}: ⁦{len(theirs)}⁩ פרויקטים" + (f", חייבים {_money(owed)}" if owed > 0.5 else ""),
+        f"{best}: {_n(len(theirs), 'פרויקט אחד', 'פרויקטים')}"
+        + (f", חייבים {_money(owed)}" if owed > 0.5 else ""),
         "", rows[:SHOWN], page="Projects", go="לפרויקטים")
 
 
@@ -308,23 +355,28 @@ def _week(context: dict[str, Any], today: date, text: str) -> Answer | None:
 #: (what the question has to contain, the answer). The first that fits wins,
 #: so the narrower ones come before the broad.
 _RULES: tuple[tuple[Callable[[str], bool], Callable[..., Answer | None]], ...] = (
-    (lambda t: _has(t, "צ'ק", "צ\"ק", "שיק", "צקים") and _has(t, "חזר", "חוזר"), _bounced),
-    (lambda t: _has(t, "להפקיד", "הפקדה", "להפקדה"), _bankable),
-    (lambda t: _has(t, "מגירה", "במגירה") or (_has(t, "צ'ק", "שיק", "צקים") and _has(t, "כמה", "סך")),
+    (lambda t: _has(t, "צ'ק", "צ\"ק", "שיק", "צקים", "צ'קים") and _has(t, "חזר", "חוזר"), _bounced),
+    (lambda t: _has(t, "להפקיד", "הפקדה"), _bankable),
+    (lambda t: _has(t, "מגירה") or (_has(t, "צ'ק", "שיק", "צקים", "צ'קים") and _has(t, "כמה", "סך")),
      _drawer),
-    (lambda t: _has(t, "לשלם", "לספקים", "לספק", "צ'קים שנתתי", "שנתתי"), _to_pay),
-    (lambda t: _has(t, "ייכנס", "יכנס", "נכנס", "תזרים", "יגיע כסף", "כסף ייכנס"), _incoming),
-    (lambda t: _has(t, "חייב", "חוב", "לגבות", "גבייה", "יתרות"), _owed),
-    (lambda t: _has(t, "השבוע", "שבוע הקרוב") and _has(t, "שטח", "התקנ", "ביקור", "יומן"), _week),
-    (lambda t: _has(t, "מחר", "היום") and _has(t, "שטח", "התקנ", "ביקור", "יומן", "מתקינ", "לאן"),
+    # Money owed to the shop before money the shop owes: "צריכים לשלם לי".
+    (lambda t: (_has(t, "חייב", "חוב", "לגבות", "גבייה", "יתרות", "לשלם לי", "צריכים לשלם")
+                and not _has(t, "אני חייב", "אני צריך", "אנחנו חייבים")), _owed),
+    (lambda t: _has(t, "ספק", "שנתתי", "שכתבתי") and _has(t, "לשלם", "צ'ק", "צ'קים", "שנתתי",
+                                                         "שכתבתי", "חייב"), _to_pay),
+    (lambda t: _has(t, "ייכנס", "יכנס", "תזרים") or (_has(t, "כסף") and _has(t, "יגיע", "נכנס")),
+     _incoming),
+    (lambda t: _has(t, "השבוע", "שבוע הקרוב") and _has(t, "שטח", "התקנ", "ביקור", "יומן", "מתקין"),
+     _week),
+    (lambda t: _has(t, "מחר", "היום") and _has(t, "שטח", "התקנ", "ביקור", "יומן", "מתקין", "לאן"),
      _field),
     (lambda t: _has(t, "משקופ"), _blind_frames),
-    (lambda t: _has(t, "אחוז סגירה", "סוגרים", "נסגרות", "אחוז ה"), _closing),
+    (lambda t: _has(t, "סגירה", "סוגרים", "נסגרות", "אחוז סגירה"), _closing),
     (lambda t: _has(t, "הצעות", "הצעה") and _has(t, "פתוח", "מחכ", "ענו", "ממתינ"), _quotes),
-    (lambda t: _has(t, "מחיר") and _has(t, "מטר", "מ\"ר", "מר "), _price),
-    (lambda t: _has(t, "ייצור", "במפעל", "רצפ", "צבר"), _production),
-    (lambda t: _has(t, "משימות", "לעשות", "מעקב"), _tasks),
-    (lambda t: _has(t, "שירות", "תקלות", "קריאות"), _service),
+    (lambda t: _has(t, "מחיר") and _has(t, "מטר", 'מ"ר', "למ\"ר"), _price),
+    (lambda t: _has(t, "ייצור", "במפעל", "רצפת", "צבר"), _production),
+    (lambda t: _has(t, "משימות", "משימה", "מעקב"), _tasks),
+    (lambda t: _has(t, "שירות", "תקלות", "תקלה", "קריאות"), _service),
     (lambda t: _has(t, "מכרנו", "מכירות", "הכנסות", "סגרנו", "נסגרו"), _sales),
 )
 
@@ -340,11 +392,20 @@ def answer(question: str, context: dict[str, Any] | None = None, *,
         from .insights import gather_context
 
         context = gather_context()
+    unread = set(context.get("unread") or [])
     for fits, reply in _RULES:
         if fits(text):
+            if reply in _NEEDS_CHEQUES and "cheques" in unread:
+                # A book that could not be read is never answered as empty.
+                return Answer("ספר הצ׳קים לא נקרא — אין תשובה עד שהוא משוחזר",
+                              "הקובץ פגום ולא שוחזר מהעותק הקודם. מערכת ← גיבוי ושחזור.",
+                              page="System", go="למערכת")
             return reply(context, today, text)
     return _customer(context, today, text)
 
+
+#: The answers read from the cheque book.
+_NEEDS_CHEQUES = (_drawer, _bankable, _bounced, _owed, _incoming, _to_pay)
 
 #: Shown under the search box, so people know they may ask.
 EXAMPLES = ("כמה כסף יש במגירה?", "מי חייב לי הכי הרבה?", "מה יש מחר בשטח?",

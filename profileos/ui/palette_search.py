@@ -241,6 +241,14 @@ class CommandPalette(QDialog):
     def keyPressEvent(self, event: Any) -> None:  # noqa: N802 - Qt naming
         key = event.key()
         if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            # A page or action named as it is called: that one, whatever an
+            # answer would say ("גבייה" is the collection page).
+            typed = self.search.text().strip().lower()
+            for row in range(self.results.count()):
+                item = self.results.item(row)
+                if item.text().strip().lower() == typed:
+                    self._run_item(item)
+                    return
             # A question asked: Enter goes where it is dealt with.
             self._asking.stop()
             self._ask()

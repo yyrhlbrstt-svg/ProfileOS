@@ -11,6 +11,7 @@ def showroom(tmp_path, monkeypatch):
 
     monkeypatch.setenv("PROFILEOS_DATA_DIR", str(tmp_path / "show" / "data"))
     monkeypatch.setenv("PROFILEOS_CONFIG_DIR", str(tmp_path / "show" / "config"))
+    monkeypatch.setenv("PROFILEOS_SHOWROOM", "1")
     reload_settings()
     yield tmp_path / "show"
     monkeypatch.delenv("PROFILEOS_DATA_DIR", raising=False)
@@ -40,11 +41,42 @@ def test_the_showroom_has_a_shops_month_in_it(showroom):
     assert not any(key.startswith("backup") for key in keys)
 
 
-def test_it_is_built_only_in_its_own_folder(showroom, tmp_path):
+def test_it_is_built_only_in_its_own_folder(showroom, tmp_path, monkeypatch):
+    from profileos.projects import default_store
     from profileos.showroom import build
 
     with pytest.raises(RuntimeError):
         build(tmp_path / "somewhere-else")
+    with pytest.raises(RuntimeError):
+        build(tmp_path)                          # an ancestor of the data folder
+    build(showroom)
+    jobs = len(default_store().all())
+    with pytest.raises(RuntimeError, match="already holds records"):
+        build(showroom)                          # never twice over the same folder
+    assert len(default_store().all()) == jobs
+    monkeypatch.delenv("PROFILEOS_SHOWROOM")
+    with pytest.raises(RuntimeError):
+        build(showroom)                          # only in a showroom window
+
+
+def test_an_old_showroom_is_replaced_and_a_strange_folder_is_kept(tmp_path):
+    from datetime import date, timedelta
+
+    from profileos.core.storage import write_json
+    from profileos.showroom import MARKER, _prepare
+
+    folder = tmp_path / "ProfileOS הדגמה"
+    folder.mkdir()
+    write_json(folder / MARKER, {"built_on": date.today().isoformat()})
+    assert _prepare(folder, date.today()) is False                 # today's: opened as is
+    write_json(folder / MARKER, {"built_on": (date.today() - timedelta(days=3)).isoformat()})
+    assert _prepare(folder, date.today()) is True
+    assert (tmp_path / "ProfileOS הדגמה (ישן)" / MARKER).is_file() and not folder.exists()
+    folder.mkdir()
+    (folder / "something.txt").write_text("not ours")
+    assert _prepare(folder, date.today()) is True
+    kept = [p for p in tmp_path.iterdir() if "לא הושלם" in p.name]
+    assert kept and (kept[0] / "something.txt").read_text() == "not ours"
 
 
 def test_the_showroom_window_says_so(showroom, monkeypatch):

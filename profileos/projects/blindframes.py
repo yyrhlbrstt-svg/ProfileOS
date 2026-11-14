@@ -199,7 +199,7 @@ def describe(job: Any) -> str:
         return "התקנה בשלב אחד"
     found = frames(job)
     installed = sum(1 for _o, frame in found if frame.installed)
-    checked = sum(1 for _o, frame in found if frame.check_ok)
+    checked = sum(1 for _o, frame in found if frame.checked)
     return (f"{current.hebrew} · הותקנו ⁦{installed}⁩ מתוך ⁦{len(found)}⁩"
             + (f" · נבדקו אחרי הטיח ⁦{checked}⁩" if installed else ""))
 

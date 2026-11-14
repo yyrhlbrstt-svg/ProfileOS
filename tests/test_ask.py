@@ -41,7 +41,7 @@ def _context():
     ("מי חייב לי הכי הרבה?", "⁦11,800 ₪⁩ לגבייה מפרויקט אחד"),
     ("מה יש מחר בשטח?", "ביקור אחד מחר"),
     ("אילו הצעות פתוחות יותר משבוע?", "הצעה פתוחה אחת בשווי ⁦30,000 ₪⁩"),
-    ("מה עם משפחת ברק", "משפחת ברק: ⁦1⁩ פרויקטים"),
+    ("מה עם משפחת ברק", "משפחת ברק: פרויקט אחד, חייבים ⁦11,800 ₪⁩"),
     ("כמה כסף ייכנס החודש?", "⁦14,000 ₪⁩ נכנסים ב־30 הימים הקרובים"),
     ("כמה אני צריך לשלם לספקים?", "⁦5,000 ₪⁩ בצ׳קים שנתתם"),
     ("מה יש השבוע בשטח?", "ביקור אחד בשבוע הקרוב"),
@@ -79,6 +79,51 @@ def test_the_palette_shows_the_answer_and_enter_goes_there(tmp_path, monkeypatch
     assert palette.answer_card.isVisibleTo(palette) and "לגבייה" in palette.answer_title.text()
     QTest.keyClick(palette, Qt.Key.Key_Return)
     assert window.stack.currentWidget() is window.page("Projects")
+    window.close(); window.deleteLater(); QCoreApplication.processEvents()
+    monkeypatch.delenv("PROFILEOS_DATA_DIR", raising=False)
+    reload_settings()
+
+
+@pytest.mark.parametrize("question", [
+    "באיזה רחוב הם גרים", "אני חייב להזמין פרופילים", "מה אחוז הרווח שלי?",
+    "כמה מכרנו בחודש שעבר?", "איך מדפיסים ברקוד?", "כמה עולה הובלה למרכז?",
+])
+def test_a_question_it_does_not_know_is_not_answered_wrongly(question):
+    assert answer(question, _context(), today=TODAY) is None
+
+
+def test_who_pays_me_is_the_customers_not_the_suppliers():
+    found = answer("מי הלקוחות שצריכים לשלם לי?", _context(), today=TODAY)
+    assert "לגבייה" in found.title
+
+
+def test_a_cheque_book_that_could_not_be_read_is_said_not_answered_as_empty():
+    context = {**_context(), "unread": ["cheques"]}
+    found = answer("כמה כסף יש במגירה?", context, today=TODAY)
+    assert "לא נקרא" in found.title
+
+
+def test_a_page_named_in_the_palette_is_the_page_enter_opens(tmp_path, monkeypatch):
+    pytest.importorskip("PySide6")
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtCore import QCoreApplication, Qt
+    from PySide6.QtTest import QTest
+    from PySide6.QtWidgets import QApplication
+
+    from profileos.core.config import reload_settings
+    from profileos.ui.main_window import MainWindow
+    from profileos.ui.palette_search import CommandPalette
+    from profileos.ui.theme import LIGHT
+
+    monkeypatch.setenv("PROFILEOS_DATA_DIR", str(tmp_path / "data"))
+    reload_settings()
+    QApplication.instance() or QApplication([])
+    window = MainWindow(LIGHT)
+    palette = CommandPalette(window)
+    palette._context = _context()
+    palette.search.setText("גבייה")
+    QTest.keyClick(palette, Qt.Key.Key_Return)
+    assert window.stack.currentWidget() is window.page("Collection")
     window.close(); window.deleteLater(); QCoreApplication.processEvents()
     monkeypatch.delenv("PROFILEOS_DATA_DIR", raising=False)
     reload_settings()

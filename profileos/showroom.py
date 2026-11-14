@@ -22,6 +22,9 @@ from typing import Any
 
 #: The variable a showroom window is started with.
 ENV = "PROFILEOS_SHOWROOM"
+#: Written last into a finished showroom: proof the folder is a showroom's,
+#: and the day it was built (a showroom's "today" is the day it was built).
+MARKER = "showroom.json"
 
 _CUSTOMERS = (
     ("C-0101", "משפחת אורן", "052-4410023", "עפרה", "רחוב הגפן 12"),
@@ -114,8 +117,16 @@ def build(folder: Path, *, today: date | None = None) -> Path:
 
     today = today or date.today()
     data = Path(get_settings().data_dir)
-    if Path(folder).resolve() not in (data.resolve(), *data.resolve().parents):
+    folder = Path(folder)
+    # Only ever into an empty showroom folder whose data folder is the one in
+    # force: never over a shop's books, never twice over the same folder.
+    if not is_showroom():
+        raise RuntimeError("a showroom is built only in a showroom window's own folder")
+    if data.resolve() != (folder / "data").resolve():
         raise RuntimeError("the showroom is built only in its own folder")
+    # (The settings may already have made empty working folders in it.)
+    if data.exists() and (any(data.glob("*.json")) or (data / "jobs").exists()):
+        raise RuntimeError("the showroom folder already holds records — nothing was written")
     data.mkdir(parents=True, exist_ok=True)
     system = "klil-7300"
 
@@ -162,6 +173,7 @@ def build(folder: Path, *, today: date | None = None) -> Path:
             job.advance(JobStatus.QUOTED, "הדגמה")
             job.lost_reason = "מחיר"
             job.advance(JobStatus.LOST, "הדגמה")
+            _backdate(job, opened, today)
             jobs[job_id] = job
             continue
         for step in order[1:order.index(target) + 1]:
@@ -169,6 +181,7 @@ def build(folder: Path, *, today: date | None = None) -> Path:
                 job.record_quote(float(net))
                 job.quoted_on = (opened + timedelta(days=2)).isoformat()
             job.advance(step, "הדגמה")
+        _backdate(job, opened, today)
         if net and not job.quote_total:
             job.record_quote(float(net))
         if target in (JobStatus.WON, JobStatus.IN_PRODUCTION, JobStatus.INSTALLED):
@@ -197,16 +210,17 @@ def build(folder: Path, *, today: date | None = None) -> Path:
             cheque = Cheque(customer=job.customer_name, amount=part, due=due,
                             received=today - timedelta(days=8), bank=banks[index % 4],
                             number=f"{number:07d}", job_id=job_id)
+            if job_id == "J-2026-0141" and month == 1:
+                # The second of the plan came back: the job is owed that again.
+                cheque.due = today - timedelta(days=6)
+                drawer.add(cheque)
+                cheque.deposit(today - timedelta(days=6))
+                cheque.bounce(today - timedelta(days=3), "אין כיסוי מספיק")
+                continue
             drawer.add(cheque)
             if job.status is JobStatus.INSTALLED and month == 0:
                 cheque.deposit(due)
                 cheque.clear(due + timedelta(days=2))
-    returned = Cheque(customer="משפחת אורן", amount=6_200, due=today - timedelta(days=6),
-                      received=today - timedelta(days=40), bank="הפועלים",
-                      number="0003187", job_id="J-2026-0141")
-    drawer.add(returned)
-    returned.deposit(today - timedelta(days=6))
-    returned.bounce(today - timedelta(days=3), "אין כיסוי מספיק")
     supplier = Cheque(customer="קליל — אספקת פרופילים", amount=38_400,
                       due=today + timedelta(days=9), number="0000612", outgoing=True)
     drawer.add(supplier)
@@ -300,7 +314,56 @@ def build(folder: Path, *, today: date | None = None) -> Path:
     settings.backup_folder = Path(folder) / "backups"
     save_settings(settings)
     write_backup(settings.backup_folder)
+    from .core.storage import write_json
+
+    write_json(folder / MARKER, {"built_on": today.isoformat()})
     return data
+
+
+def _backdate(job: Any, opened: date, today: date) -> None:
+    """Each step of the job's story on its own day, between the day it was
+    opened and today — not all at the moment the showroom was built."""
+    from datetime import datetime
+
+    steps = len(job.history)
+    if not steps:
+        return
+    span = max((today - opened).days - 1, steps)
+    for index, event in enumerate(job.history):
+        day = opened + timedelta(days=round(span * (index + 1) / (steps + 1)))
+        event.at = datetime.combine(min(day, today), datetime.min.time()).replace(
+            hour=10).isoformat(timespec="seconds")
+    job.created = opened.isoformat()
+    job.updated = job.history[-1].at[:10]
+
+
+def _prepare(folder: Path, today: date) -> bool:
+    """Whether the showroom must be built. One built today is opened as it
+    is; an older one (ours: it has the marker) is replaced, so its "today"
+    is today; a folder without the marker is never deleted — it is moved
+    aside and a fresh showroom is built."""
+    import json
+    import shutil
+    from datetime import datetime
+
+    marker = folder / MARKER
+    if marker.is_file():
+        try:
+            built = json.loads(marker.read_text(encoding="utf-8")).get("built_on", "")
+        except (OSError, ValueError):
+            built = ""
+        if built == today.isoformat():
+            return False
+        old = folder.with_name(folder.name + " (ישן)")
+        if old.exists() and (old / MARKER).is_file():
+            shutil.rmtree(old)
+        if not old.exists():
+            folder.rename(old)
+            return True
+    if folder.exists() and any(folder.iterdir()):
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        folder.rename(folder.with_name(f"{folder.name} (לא הושלם {stamp})"))
+    return True
 
 
 def open_showroom(folder: Path | None = None) -> subprocess.Popen:
@@ -314,9 +377,15 @@ def open_showroom(folder: Path | None = None) -> subprocess.Popen:
     # The shop's own window already runs under the update launcher; a second
     # launcher would wait on its lock. The showroom installs nothing.
     env["PROFILEOS_NO_LAUNCHER"] = "1"
-    fresh = not (folder / "data" / "jobs").is_dir()
+    fresh = _prepare(folder, date.today())
+    folder.mkdir(parents=True, exist_ok=True)
     args = [sys.executable, "-m", "profileos.showroom"] + (["--build"] if fresh else [])
-    return subprocess.Popen(args, env=env, cwd=str(Path(__file__).resolve().parents[1]))
+    # What the window says if it fails to open, kept where it can be read.
+    log = open(folder / "showroom.log", "w", encoding="utf-8")  # noqa: SIM115
+    process = subprocess.Popen(args, env=env, stdout=log, stderr=subprocess.STDOUT,
+                               cwd=str(Path(__file__).resolve().parents[1]))
+    process.log_path = folder / "showroom.log"  # type: ignore[attr-defined]
+    return process
 
 
 def main(argv: list[str]) -> int:

@@ -1081,13 +1081,33 @@ class MainWindow(QMainWindow):
         from ..showroom import open_showroom, showroom_dir
 
         try:
-            open_showroom()
+            process = open_showroom()
         except Exception as exc:  # noqa: BLE001 - said, not only logged
             QMessageBox.warning(self, "חלון ההדגמה לא נפתח", str(exc))
             return False
         self.statusBar().showMessage(
-            f"חלון ההדגמה נפתח (בפעם הראשונה זה לוקח כמה שניות) — הנתונים בתיקייה "
+            f"חלון ההדגמה נפתח — בפעם הראשונה זה לוקח כמה שניות. הנתונים בתיקייה "
             f"⁨{showroom_dir()}⁩, לא בנתונים שלכם", 15000)
+        from PySide6.QtCore import QTimer
+
+        # A window that fell over on the way up is said, with why — not
+        # left as "opened".
+        def check() -> None:
+            code = process.poll()
+            if code is None or code == 0:
+                return
+            said = ""
+            log = getattr(process, "log_path", None)
+            if log is not None:
+                try:
+                    said = "\n".join(log.read_text(encoding="utf-8").strip().splitlines()[-6:])
+                except OSError:
+                    said = ""
+            QMessageBox.warning(self, "חלון ההדגמה לא נפתח",
+                                "חלון ההדגמה נסגר מיד אחרי שנפתח. הנתונים שלכם לא נפגעו."
+                                + (f"\n\n{said}" if said else ""))
+
+        QTimer.singleShot(8000, check)
         return True
 
     def toggle_theme(self) -> None:
