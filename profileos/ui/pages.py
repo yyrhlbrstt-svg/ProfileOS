@@ -4399,7 +4399,9 @@ class DrawingsPage(Page):
         picker.addWidget(caption)
         self.sheet_picker = QComboBox()
         self.sheet_picker.currentIndexChanged.connect(self._show_sheet)
-        picker.addWidget(self.sheet_picker, 1)
+        self.sheet_picker.setMinimumWidth(280)
+        picker.addWidget(self.sheet_picker)
+        picker.addStretch(1)
         self.body.addLayout(picker)
 
         self.canvas = QSvgWidget()
@@ -6313,7 +6315,9 @@ class GlassPage(Page):
         caption = QLabel("מפרט מוצג")
         caption.setObjectName("FieldLabel")
         picker.addWidget(caption)
-        picker.addWidget(self.material, 1)
+        self.material.setMinimumWidth(280)
+        picker.addWidget(self.material)
+        picker.addStretch(1)
         self.body.addLayout(picker)
 
     def refresh(self) -> None:

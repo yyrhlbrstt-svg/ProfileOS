@@ -53,13 +53,16 @@ def _paint_ground(widget: QWidget, painter: QPainter, palette: Palette) -> None:
     Filling the whole rectangle painted over that rule, so drawings and
     charts were the only square, frameless blocks on their pages.
     """
-    radius = 14.0
+    radius = 18.0
     outer = QRectF(widget.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
     path = QPainterPath()
     path.addRoundedRect(outer, radius, radius)
     painter.fillPath(path, _colour(palette.surface_sunken))
-    painter.setPen(QPen(_colour(palette.border), 1.0))
-    painter.drawPath(path)
+    # On the light theme the white ground needs no line round it (the card
+    # is the frame); on the dark one a hairline keeps the well's edge.
+    if palette.mode.value != "light":
+        painter.setPen(QPen(_colour(palette.border), 1.0))
+        painter.drawPath(path)
     inner = QPainterPath()
     inner.addRoundedRect(outer.adjusted(1, 1, -1, -1), radius - 1, radius - 1)
     painter.setClipPath(inner)
