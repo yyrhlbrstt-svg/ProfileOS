@@ -7489,19 +7489,22 @@ class CollectionPage(Page):
         pay.clicked.connect(lambda: self.new_cheque(outgoing=True))
         self.header.add_action(pay)
 
-        deposit = QPushButton("הפקדה")
-        deposit.clicked.connect(self.deposit)
-        self.header.add_action(deposit)
+        # What is done to the cheque chosen in the list: one menu, so the
+        # header keeps the few things started from here. Money that landed is
+        # told apart from money that is only promised.
+        from PySide6.QtWidgets import QMenu, QToolButton
 
-        # Money that landed is told apart from money that is only promised.
-        cleared = QPushButton("נפרע")
-        cleared.setToolTip("הכסף נכנס לחשבון — או, לצ׳ק שכתבתם, ירד ממנו")
-        cleared.clicked.connect(self.mark_cleared)
-        self.header.add_action(cleared)
-
-        bounce = QPushButton("סימון כחוזר")
-        bounce.clicked.connect(self.bounce)
-        self.header.add_action(bounce)
+        chosen = QToolButton()
+        chosen.setText("הצ׳ק שנבחר")
+        chosen.setObjectName("MoreButton")
+        chosen.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        menu = QMenu(chosen)
+        menu.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
+        menu.addAction("הפקדה", self.deposit)
+        menu.addAction("נפרע — הכסף נכנס (או ירד)", self.mark_cleared)
+        menu.addAction("סימון כחוזר", self.bounce)
+        chosen.setMenu(menu)
+        self.header.add_action(chosen)
 
         remind = QPushButton("תזכורת בוואטסאפ")
         remind.setObjectName("WhatsApp")
