@@ -171,6 +171,12 @@ LIGHT = Palette(
 )
 
 
+#: The sidebar is graphite in both themes — the frame of the product, the way
+#: a window's anodised frame holds the glass. Its glyphs are painted, so they
+#: take this colour directly.
+SIDEBAR_ICON = "#9BA1AC"
+
+
 @dataclass
 class Metrics:
     """Spacing on the 8-point grid; radii and type from the tokens."""
@@ -339,8 +345,14 @@ def stylesheet(palette: Palette, metrics: Metrics = METRICS) -> str:
     # carries it at 4.7:1. Filled surfaces with white text use this one.
     accent_fill = p.accent if light else p.accent_pressed
     # Derived shades, so each palette only has to state its base colours.
-    sidebar_bg = "#ECECEF" if light else "#232325"
-    nav_hover = "rgba(0,0,0,0.05)" if light else "rgba(255,255,255,0.07)"
+    sidebar_top, sidebar_bottom = ("#1E2128", "#14161B") if light else ("#17191E", "#0F1013")
+    sidebar_text = "#E7E9EE"
+    sidebar_muted = "#8D939E"
+    sidebar_line = "rgba(255,255,255,0.08)"
+    nav_hover = "rgba(255,255,255,0.07)"
+    card_line = "#E6E7EB" if light else "#38383A"
+    header_bg = p.surface if light else "#202022"
+    primary_top = "#1A84F0" if light else "#2A8CFF"
     row_line = "#F0F0F3" if light else "#333336"
     row_hover = "#F7F7F9" if light else "#323235"
     segment_bg = "#E8E8ED" if light else "#2C2C2E"
@@ -377,75 +389,85 @@ QToolTip {{
 
 /* ---------- sidebar ---------- */
 #Sidebar {{
-    background: {sidebar_bg};
-    border-left: {m.border_width}px solid {p.border};
+    background: {sidebar_top};
+    border-left: {m.border_width}px solid {sidebar_bottom};
 }}
+#Sidebar QScrollArea, #Sidebar QScrollArea > QWidget, #Sidebar QScrollArea > QWidget > QWidget {{
+    background: {sidebar_top};
+}}
+#Sidebar QLabel {{ color: {sidebar_text}; }}
 #SidebarLogo {{
-    font-size: {m.font_size_large + 3}px; font-weight: 700;
-    color: {p.text}; padding: {m.space(4)}px {m.space(5)}px 2px;
+    font-size: {m.font_size_large + 5}px; font-weight: 800;
+    color: #FFFFFF; padding: {m.space(5)}px {m.space(5)}px 2px;
 }}
 #SidebarVersion {{
-    font-size: {m.font_size_small}px; color: {p.text_muted};
+    font-size: {m.font_size_small}px; color: {sidebar_muted};
     padding: 0 {m.space(5)}px {m.space(4)}px;
+    border-bottom: {m.border_width}px solid {sidebar_line};
 }}
 #SidebarSection {{
-    font-size: {m.font_size_small}px; font-weight: 600;
-    color: {p.text_muted};
-    padding: {m.space(1)}px {m.space(5)}px 0;
+    font-size: {m.font_size_small - 1}px; font-weight: 700;
+    color: {sidebar_muted}; letter-spacing: 1px;
+    padding: {m.space(3)}px {m.space(5)}px {m.space(1)}px;
 }}
 #SidebarScroll, #SidebarScroll > QWidget > QWidget, #SidebarNavBody {{
     background: transparent; border: none;
 }}
 QPushButton#NavButton {{
     background: transparent; border: none; border-radius: 8px;
-    color: {p.text}; text-align: right;
+    color: {sidebar_text}; text-align: right;
     padding: 0; margin: 0 {m.space(2)}px; min-height: {m.row_height}px;
     font-size: {m.font_size}px; font-weight: 400;
 }}
-QLabel#NavLabel {{ font-size: {m.font_size}px; }}
+QLabel#NavLabel {{ font-size: {m.font_size}px; color: {sidebar_text}; }}
 QPushButton#NavButton:hover {{ background: {nav_hover}; }}
 QPushButton#NavButton:checked {{
-    background: {accent_fill}; color: #FFFFFF; font-weight: 600;
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                                stop:0 {primary_top}, stop:1 {accent_fill});
+    color: #FFFFFF; font-weight: 600;
 }}
+QPushButton#NavButton:checked QLabel#NavLabel {{ color: #FFFFFF; font-weight: 600; }}
 QPushButton#SidebarTheme {{
     background: transparent; border: none;
-    border-top: {m.border_width}px solid {p.border};
+    border-top: {m.border_width}px solid {sidebar_line};
     border-radius: 0;
-    color: {p.text_muted}; font-size: {m.font_size_small + 1}px;
+    color: {sidebar_muted}; font-size: {m.font_size_small + 1}px;
     padding: {m.space(3)}px {m.space(4)}px;
 }}
-QPushButton#SidebarTheme:hover {{ color: {p.text}; background: {nav_hover}; }}
-#SidebarFooter {{
-    font-size: {m.font_size_small}px; color: {p.text_faint};
+QPushButton#SidebarTheme:hover {{ color: #FFFFFF; background: {nav_hover}; }}
+#Sidebar #SidebarFooter {{
+    font-size: {m.font_size_small}px; color: #6B717C;
     padding: {m.space(2)}px {m.space(4)}px {m.space(3)}px;
 }}
-#SidebarSafety {{
-    font-size: {m.font_size_small}px; color: {p.success};
+#Sidebar #SidebarSafety {{
+    font-size: {m.font_size_small}px; color: #4ADE80;
     padding: {m.space(2)}px {m.space(4)}px 0;
 }}
-#SidebarSafety[state="warn"] {{ color: {p.warning}; }}
-#SidebarSafety[state="danger"] {{ color: {p.danger}; }}
+#Sidebar #SidebarSafety[state="warn"] {{ color: #FBBF24; }}
+#Sidebar #SidebarSafety[state="danger"] {{ color: #F87171; }}
+#Sidebar QScrollBar:vertical {{ background: transparent; width: 8px; }}
+#Sidebar QScrollBar::handle:vertical {{ background: rgba(255,255,255,0.18); border-radius: 4px; }}
 
 /* ---------- header: a large title on the canvas, like Settings ---------- */
 #PageHeader {{
-    background: {p.canvas};
-    border-bottom: {m.border_width}px solid {p.border};
+    background: {header_bg};
+    border-bottom: {m.border_width}px solid {card_line};
 }}
-#PageTitle {{ font-size: {m.font_size_title + 5}px; font-weight: 700; color: {p.text}; }}
+#PageTitle {{ font-size: {m.font_size_title + 9}px; font-weight: 800; color: {p.text}; }}
 #PageSubtitle {{ font-size: {m.font_size_small + 1}px; color: {p.text_muted}; }}
 
 /* ---------- cards ---------- */
 #Card {{
     background: {p.surface};
-    border: {m.border_width}px solid {p.border};
-    border-radius: 14px;
+    border: {m.border_width}px solid {card_line};
+    border-radius: 16px;
 }}
 #CardTitle {{
     font-size: {m.font_size}px; font-weight: 600; color: {p.text};
 }}
 #StatValue[empty="true"] {{ color: {p.text_faint}; }}
 #StatValue {{
-    font-size: 26px; font-weight: 600; color: {p.text};
+    font-size: 30px; font-weight: 700; color: {p.text};
 }}
 #StatLabel {{ font-size: {m.font_size_small + 1}px; color: {p.text_muted}; }}
 /* The one figure on a page that matters most (what the customer pays). */
@@ -492,7 +514,9 @@ QPushButton:hover {{ background: {p.surface_raised}; }}
 QPushButton:pressed {{ background: {p.border}; }}
 QPushButton:disabled {{ color: {p.text_faint}; background: {p.surface}; border-color: {p.border}; }}
 QPushButton#Primary {{
-    background: {accent_fill}; border: none; color: #FFFFFF; font-weight: 600;
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                                stop:0 {primary_top}, stop:1 {accent_fill});
+    border: none; color: #FFFFFF; font-weight: 600;
 }}
 QPushButton#Primary:hover {{ background: {p.accent_hover}; }}
 QPushButton#Primary:pressed {{ background: {p.accent_pressed}; }}

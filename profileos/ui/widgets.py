@@ -72,8 +72,9 @@ class StatTile(QFrame):
     ) -> None:
         super().__init__(parent)
         self.setObjectName("Card")
+        self.setProperty("stat", True)
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(METRICS.space(4), METRICS.space(3), METRICS.space(4), METRICS.space(3))
+        layout.setContentsMargins(METRICS.space(5), METRICS.space(4), METRICS.space(5), METRICS.space(4))
         layout.setSpacing(2)
 
         self.label = QLabel(label.upper())

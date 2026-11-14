@@ -39,8 +39,32 @@ Item {
     property real openAmount: 0
     Behavior on openAmount { NumberAnimation { duration: 900; easing.type: Easing.InOutCubic } }
 
+    // -- the studio: a sweep from a bright top to the floor's own tone ------
+    // A product shot is never on flat white: the ground darkens a little
+    // towards the viewer, so the shadow has something to fall on and the
+    // metal something to stand out against.
+    readonly property bool lightGround: root.background.hslLightness > 0.5
+    readonly property color studioTop: lightGround ? Qt.lighter(root.background, 1.04)
+                                                   : Qt.lighter(root.background, 1.55)
+    readonly property color studioMiddle: lightGround ? Qt.darker(root.background, 1.03)
+                                                      : root.background
+    readonly property color studioBottom: lightGround ? Qt.darker(root.background, 1.16)
+                                                      : Qt.darker(root.background, 1.08)
+    //: The floor is lit by the key light and the studio; its own colour is
+    //: set darker so that, lit, it lands on the backdrop's tone and only the
+    //: shadow shows where the ground is.
+    property real floorTone: lightGround ? 0.38 : 0.42
+    Rectangle {
+        anchors.fill: parent
+        gradient: Gradient {
+            GradientStop { position: 0.0; color: root.studioTop }
+            GradientStop { position: 0.62; color: root.studioMiddle }
+            GradientStop { position: 1.0; color: root.studioBottom }
+        }
+    }
+
     readonly property var finishes: ({
-        "natural":    { colour: "#C9CDD2", metal: 1.0,  rough: 0.30 },
+        "natural":    { colour: "#CDD1D6", metal: 1.0,  rough: 0.24 },
         "silver":     { colour: "#D9DCDF", metal: 1.0,  rough: 0.18 },
         "bronze":     { colour: "#6B4C31", metal: 0.85, rough: 0.36 },
         "champagne":  { colour: "#BFA77F", metal: 0.9,  rough: 0.32 },
@@ -61,10 +85,10 @@ Item {
     }
     PrincipledMaterial {
         id: glass
-        baseColor: "#D7ECEF"
+        baseColor: "#C9E4EA"
         metalness: 0.0
-        roughness: 0.03
-        opacity: 0.22
+        roughness: 0.02
+        opacity: 0.30
         alphaMode: PrincipledMaterial.Blend
         specularAmount: 1.0
         cullMode: Material.NoCulling
@@ -96,8 +120,8 @@ Item {
         camera: camera
 
         environment: ExtendedSceneEnvironment {
-            backgroundMode: SceneEnvironment.Color
-            clearColor: root.background
+            backgroundMode: SceneEnvironment.Transparent
+            clearColor: "transparent"
             antialiasingMode: SceneEnvironment.MSAA
             antialiasingQuality: SceneEnvironment.VeryHigh
             specularAAEnabled: true
@@ -108,16 +132,19 @@ Item {
             aoSoftness: 40
             lightProbe: Texture {
                 textureData: ProceduralSkyTextureData {
-                    skyTopColor: "#B8C4D0"
-                    skyHorizonColor: "#F2F2F2"
-                    groundHorizonColor: "#E6E6E6"
-                    groundBottomColor: "#9A9A9A"
-                    sunColor: "#FFFFFF"
-                    sunLatitude: 35
+                    // A studio: a cool sky for the glass to mirror, a bright
+                    // horizon for the long highlight down every aluminium face.
+                    skyTopColor: "#9FB6CC"
+                    skyHorizonColor: "#FFFFFF"
+                    groundHorizonColor: "#EDEDED"
+                    groundBottomColor: "#7E8288"
+                    sunColor: "#FFF8EC"
+                    sunLatitude: 38
                     sunLongitude: -40
+                    sunEnergy: 1.4
                 }
             }
-            probeExposure: 0.75
+            probeExposure: 1.05
             probeOrientation: Qt.vector3d(0, -30, 0)
         }
 
@@ -137,7 +164,7 @@ Item {
         // -- light ----------------------------------------------------------
         DirectionalLight {
             eulerRotation: Qt.vector3d(-42, -32, 0)
-            brightness: 1.6
+            brightness: 2.0
             castsShadow: true
             shadowMapQuality: Light.ShadowMapQualityVeryHigh
             shadowFactor: 78
@@ -161,7 +188,9 @@ Item {
             receivesShadows: true
             castsShadows: false
             materials: PrincipledMaterial {
-                baseColor: root.floorColour
+                baseColor: Qt.rgba(root.studioBottom.r * root.floorTone,
+                                   root.studioBottom.g * root.floorTone,
+                                   root.studioBottom.b * root.floorTone, 1)
                 roughness: 1.0
                 specularAmount: 0
                 alphaMode: PrincipledMaterial.Blend

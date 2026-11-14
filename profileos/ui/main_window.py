@@ -26,7 +26,7 @@ from .icons import app_icon
 from .pages import PAGES, Page
 from .session import Session
 from ..design import BRAND
-from .theme import DARK, LIGHT, METRICS, Palette, stylesheet
+from .theme import DARK, LIGHT, METRICS, SIDEBAR_ICON, Palette, stylesheet
 
 _log = get_logger("ui.window")
 
@@ -157,7 +157,7 @@ class Sidebar(QWidget):
         self._collapsed = False
         # Painted icons cannot read the stylesheet, so the sidebar keeps the two
         # colours it draws them in and re-renders them when the theme changes.
-        self._icon_colour = DARK.text_muted
+        self._icon_colour = SIDEBAR_ICON
         # The selected item is a filled accent pill, so its glyph is white.
         self._icon_active = "#FFFFFF"
         self._layout = layout
@@ -629,7 +629,8 @@ class MainWindow(QMainWindow):
             if application.property("profileos_stylesheet") != sheet:
                 application.setStyleSheet(sheet)
                 application.setProperty("profileos_stylesheet", sheet)
-        self.sidebar.restyle_icons(palette.text_muted, "#FFFFFF")
+        # The sidebar is graphite in both themes: its glyphs stay light.
+        self.sidebar.restyle_icons(SIDEBAR_ICON, "#FFFFFF")
         # Painted views hold their own colours, so they need telling directly.
         for page in self.pages:
             page.colours = palette

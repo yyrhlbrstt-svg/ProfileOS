@@ -294,7 +294,7 @@ class Viewer3D(QWidget):
         # camera's 32° field of view — kept when only a dimension changed,
         # so typing does not throw the view around.
         extent = max(size[0], size[1], 600.0)
-        radius = extent * 0.62 / math.tan(math.radians(16.0)) * 1.08
+        radius = extent * 0.56 / math.tan(math.radians(16.0)) * 1.04
         key = (round(size[0], -1), round(size[1], -1))
         root.setProperty("radius", float(radius))
         if not keep_camera or self._scene_key is None:
