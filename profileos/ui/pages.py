@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDialog,
+    QGridLayout,
     QInputDialog,
     QDoubleSpinBox,
     QFileDialog,
@@ -368,6 +369,17 @@ class HomePage(Page):
         self.body.addWidget(self.insights_card)
         self._insights: list[Any] = []
 
+        # -- what the program learned from this shop's own records ------- #
+        self.learning_card = Card("מה התוכנה למדה מהמפעל שלכם")
+        self.learning_grid = QGridLayout()
+        self.learning_grid.setHorizontalSpacing(METRICS.space(6))
+        self.learning_grid.setVerticalSpacing(METRICS.space(3))
+        self.learning_card.add_layout(self.learning_grid)
+        self.body.addWidget(self.learning_card)
+        from PySide6.QtCore import QTimer
+
+        QTimer.singleShot(0, self.show_learning)
+
         # -- the pipeline ------------------------------------------------- #
         pipeline = Card("קו הייצור")
         row = QHBoxLayout()
@@ -552,6 +564,7 @@ class HomePage(Page):
         try:
             self.show_business()
             self.scan_insights()
+            self.show_learning()
             self.show_today()
             self.show_field()
         except Exception:  # noqa: BLE001 - a refresh that fails waits for the next one
@@ -585,6 +598,40 @@ class HomePage(Page):
             page = window.go_to_page("Profile")
             if hasattr(page, "load_sample"):
                 page.load_sample()
+
+    def show_learning(self) -> None:
+        """Each lesson in two lines: what was learned, and from how much."""
+        from ..learning import lessons
+
+        try:
+            from ..erp.timesheets import default_timebook
+            from ..projects import default_store
+
+            found = lessons(default_store().all(), timebook=default_timebook())
+        except Exception:  # noqa: BLE001 - the home page opens regardless
+            _log.exception("Lessons not read")
+            self.learning_card.setVisible(False)
+            return
+        while self.learning_grid.count():
+            item = self.learning_grid.takeAt(0)
+            if item.widget() is not None:
+                item.widget().deleteLater()
+        for index, lesson in enumerate(found):
+            cell = QWidget()
+            cell.setObjectName("LessonCell")
+            box = QVBoxLayout(cell)
+            box.setContentsMargins(0, 0, 0, 0)
+            box.setSpacing(2)
+            title = QLabel(("✦ " if lesson.learned else "◌ ") + lesson.title)
+            title.setObjectName("LessonTitle")
+            title.setProperty("learned", lesson.learned)
+            detail = QLabel(lesson.detail)
+            detail.setObjectName("InsightDetail")
+            detail.setWordWrap(True)
+            box.addWidget(title)
+            box.addWidget(detail)
+            self.learning_grid.addWidget(cell, index // 2, index % 2)
+        self.learning_card.setVisible(True)
 
     def scan_insights(self) -> None:
         from ..insights import dismissed, scan
@@ -1051,6 +1098,7 @@ class HomePage(Page):
         self.header.title.setText(self.greeting.text())
         self.show_business()
         self.scan_insights()
+        self.show_learning()
         self.show_readiness()
         self.show_today()
         self.show_field()

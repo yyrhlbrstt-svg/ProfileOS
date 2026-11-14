@@ -28,7 +28,7 @@ def test_the_showroom_has_a_shops_month_in_it(showroom):
 
     build(showroom)
     jobs = default_store().all()
-    assert {job.status for job in jobs} == set(JobStatus) - {JobStatus.LOST}
+    assert {job.status for job in jobs} == set(JobStatus)
     assert any(is_two_stage(job) for job in jobs)
     cheques = list(default_cheques())
     # The won jobs are covered to the shekel: deposit and cheques.

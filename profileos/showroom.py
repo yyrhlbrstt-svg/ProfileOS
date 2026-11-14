@@ -52,6 +52,10 @@ _JOBS = (
                                          ("W2", "חלון ציר", 900, 1100, 2)], 6, 27_900),
     ("J-2026-0160", "C-0107", "quoted", [("D1", "הרמה והזזה", 4500, 2400, 1)], 4, 58_000),
     ("J-2026-0162", "C-0108", "enquiry", [("W1", "חלון הזזה", 1600, 1200, 24)], 2, 0),
+    ("J-2026-0128", "C-0106", "installed", [("W1", "חלון הזזה", 2200, 1400, 3),
+                                            ("W2", "חלון ציר", 900, 1200, 2)], 120, 29_400),
+    ("J-2026-0131", "C-0107", "lost", [("W1", "חלון הזזה", 1800, 1400, 4)], 100, 24_800),
+    ("J-2026-0136", "C-0104", "lost", [("D1", "דלת כניסה", 1000, 2200, 1)], 90, 14_500),
     ("J-2026-0163", "C-0103", "enquiry", [("W1", "חלון ציר", 600, 600, 1)], 1, 0),
 )
 
@@ -128,6 +132,13 @@ def build(folder: Path, *, today: date | None = None) -> Path:
         job.schedule = ElementSchedule(name=job.name, system_id=system, openings=[
             _opening(mark, kind, w, h, q, system) for mark, kind, w, h, q in openings])
         target = JobStatus(status)
+        if target is JobStatus.LOST:
+            job.record_quote(float(net))
+            job.advance(JobStatus.QUOTED, "הדגמה")
+            job.lost_reason = "מחיר"
+            job.advance(JobStatus.LOST, "הדגמה")
+            jobs[job_id] = job
+            continue
         for step in order[1:order.index(target) + 1]:
             if step is JobStatus.QUOTED and net:
                 job.record_quote(float(net))

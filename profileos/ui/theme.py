@@ -881,6 +881,10 @@ QHeaderView::section {{
 }}
 QTableWidget::item, QTreeWidget::item {{ border-bottom: 1px solid {hairline}; }}
 QHeaderView {{ background: transparent; border: none; }}
+#LessonCell {{ background: transparent; }}
+#LessonCell QLabel {{ background: transparent; }}
+#LessonTitle {{ font-size: {m.font_size + 2}px; font-weight: 700; color: {p.text}; }}
+#LessonTitle[learned="false"] {{ color: {p.text_muted}; font-weight: 600; }}
 QTableCornerButton::section {{ background: transparent; border: none; }}
 
 QFrame#SegmentBar, QTabBar::tab {{ background: {fill}; }}
