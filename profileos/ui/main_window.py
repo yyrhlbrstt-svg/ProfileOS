@@ -344,7 +344,9 @@ class MainWindow(QMainWindow):
         # the supplier's email to a measured section.
         self.setAcceptDrops(True)
 
-        self.statusBar().showMessage("מוכן")
+        # The status line speaks only when something happened; a permanent
+        # "ready" under the sidebar is noise.
+        self.statusBar().setSizeGripEnabled(False)
         self.session.subscribe(lambda _what: self._update_status())
         self._install_shortcuts()
         self.apply_palette(palette)
@@ -1073,6 +1075,27 @@ class MainWindow(QMainWindow):
             return True
         set_draft_aside()
         return False
+
+    def open_showcase(self, job_id: str) -> bool:
+        """A showroom window opens on one job in production, so the design,
+        3D, drawings and shop-floor pages show it from the first click."""
+        if not job_id or self.session.job is not None:
+            return False
+        try:
+            from ..projects import default_store
+
+            job = default_store().load(job_id)
+        except Exception:  # noqa: BLE001 - the showroom still opens, on no job
+            return False
+        self.session.set_job(job)
+        if job.schedule is not None:
+            self.session.load_schedule(job.schedule)
+        for page in self.pages:
+            try:
+                page.refresh()
+            except Exception:  # noqa: BLE001 - one page is not the window
+                pass
+        return True
 
     def open_showroom(self) -> bool:
         """The showroom, in a window of its own on its own folder."""

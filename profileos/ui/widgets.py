@@ -309,6 +309,9 @@ class DataTable(QTableWidget):
     ) -> None:
         super().__init__(0, len(headers), parent)
         self._empty_text = empty_text
+        # Room for the header and the empty-state line at least: a table
+        # squeezed by its splitter showed only the lower half of its words.
+        self.setMinimumHeight(METRICS.space(24))
         self.setHorizontalHeaderLabels(list(headers))
         self.setAlternatingRowColors(True)
         self.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
@@ -412,8 +415,10 @@ class DataTable(QTableWidget):
         font = painter.font()
         font.setPixelSize(METRICS.font_size)
         painter.setFont(font)
+        area = self.viewport().rect()
+        inset = 8 if area.height() > 3 * METRICS.font_size else 0
         painter.drawText(
-            self.viewport().rect().adjusted(16, 8, -16, -8),
+            area.adjusted(16, inset, -16, -inset),
             Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap,
             self._empty_text,
         )

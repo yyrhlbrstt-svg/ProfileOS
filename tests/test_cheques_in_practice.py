@@ -286,3 +286,17 @@ def test_a_cheque_dated_before_it_was_taken_is_no_wait_not_a_negative_one():
     book = ChequeBook()
     book.add(Cheque(customer="כהן", amount=1_000, due=date(2026, 1, 1), received=date(2026, 1, 10)))
     assert book.average_days_out() == 0
+
+
+def test_a_new_cheque_has_no_sum_until_someone_types_one():
+    from PySide6.QtWidgets import QApplication
+
+    from profileos.ui.dialogs import NewChequeDialog
+
+    QApplication.instance() or QApplication([])
+    dialog = NewChequeDialog()
+    assert dialog.amount.value() == 0 and dialog.amount.text() == "הזינו סכום"
+    dialog.customer.setText("משפחת לוי")
+    assert not dialog.ok_button.isEnabled()          # a payer, but no sum
+    dialog.amount.setValue(4500)
+    assert dialog.ok_button.isEnabled()

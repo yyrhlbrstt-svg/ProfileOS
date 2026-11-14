@@ -293,14 +293,14 @@ class Session:
         """One-line status summary for the status bar."""
         parts: list[str] = []
         if self.job is not None:
-            parts.append(f"{self.job.job_id} · {self.job.name}")
+            parts.append(f"⁦{self.job.job_id}⁩ · {self.job.name}")
         if self.section_path:
             parts.append(f"פרופיל {self.section_path.stem}")
         if self.builds:
-            parts.append(f"{len(self.builds)} פתחים, ⁦{self.total_area:.1f} m²⁩")
+            parts.append(f"⁦{len(self.builds)}⁩ פתחים, ⁦{self.total_area:.1f}⁩ מ״ר")
         if self.nesting_report:
             parts.append(
-                f"{self.nesting_report.total_bars} מוטות בניצולת "
+                f"⁦{self.nesting_report.total_bars}⁩ מוטות בניצולת "
                 f"⁦{self.nesting_report.overall_yield_pct:.1f}%⁩"
             )
         if self.quote:
@@ -308,8 +308,8 @@ class Session:
             net = self.quote_total if self.quote_total is not None else self.quote.net_price
             parts.append(f"הצעה ⁦{net:,.0f} {symbol}⁩ לפני מע״מ")
         if self.work_order:
-            parts.append(f"{len(self.work_order)} פריטים שוחררו")
-        return "  ·  ".join(parts) or "מוכן"
+            parts.append(f"⁦{len(self.work_order)}⁩ פריטים שוחררו")
+        return "  ·  ".join(parts)
 
 
 __all__ = ["Session"]

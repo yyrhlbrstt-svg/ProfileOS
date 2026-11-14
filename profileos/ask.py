@@ -354,6 +354,25 @@ def _week(context: dict[str, Any], today: date, text: str) -> Answer | None:
 
 #: (what the question has to contain, the answer). The first that fits wins,
 #: so the narrower ones come before the broad.
+def _when(context: dict[str, Any], today: date, text: str) -> Answer | None:
+    """"When can we install?" — the earliest honest date for a job of the
+    shop's usual size, behind the work already ordered."""
+    from .promise import promise
+
+    jobs = list(context.get("jobs") or [])
+    book = context.get("timebook")
+    if book is None:
+        return None
+    sizes = sorted(sum(job.norm_hours.values()) for job in jobs if job.norm_hours)
+    usual = sizes[len(sizes) // 2] if sizes else 0.0
+    said = promise(new_hours=usual, jobs=jobs, timebook=book, today=today)
+    lines = said.lines()
+    if usual:
+        lines.insert(0, f"לעבודה בגודל הרגיל אצלכם — כ־⁦{usual:,.0f}⁩ שעות במפעל")
+    return Answer(said.headline(), "בהצעת המחיר המועד מחושב לפי העבודה עצמה.",
+                  lines[:6], page="Quotation", go="להצעת המחיר")
+
+
 _RULES: tuple[tuple[Callable[[str], bool], Callable[..., Answer | None]], ...] = (
     (lambda t: _has(t, "צ'ק", "צ\"ק", "שיק", "צקים", "צ'קים") and _has(t, "חזר", "חוזר"), _bounced),
     (lambda t: _has(t, "להפקיד", "הפקדה"), _bankable),
@@ -370,6 +389,8 @@ _RULES: tuple[tuple[Callable[[str], bool], Callable[..., Answer | None]], ...] =
      _week),
     (lambda t: _has(t, "מחר", "היום") and _has(t, "שטח", "התקנ", "ביקור", "יומן", "מתקין", "לאן"),
      _field),
+    (lambda t: _has(t, "מתי") and _has(t, "להבטיח", "לספק", "להתקין", "אספקה", "מועד", "מוכן")
+     or _has(t, "מועד אספקה", "זמן אספקה", "תוך כמה זמן"), _when),
     (lambda t: _has(t, "משקופ"), _blind_frames),
     (lambda t: _has(t, "סגירה", "סוגרים", "נסגרות", "אחוז סגירה"), _closing),
     (lambda t: _has(t, "הצעות", "הצעה") and _has(t, "פתוח", "מחכ", "ענו", "ממתינ"), _quotes),
@@ -408,7 +429,7 @@ def answer(question: str, context: dict[str, Any] | None = None, *,
 _NEEDS_CHEQUES = (_drawer, _bankable, _bounced, _owed, _incoming, _to_pay)
 
 #: Shown under the search box, so people know they may ask.
-EXAMPLES = ("כמה כסף יש במגירה?", "מי חייב לי הכי הרבה?", "מה יש מחר בשטח?",
+EXAMPLES = ("כמה כסף יש במגירה?", "מי חייב לי הכי הרבה?", "מתי אפשר להבטיח התקנה?",
             "אילו הצעות פתוחות יותר משבוע?", "מה אחוז הסגירה?")
 
 __all__ = ["Answer", "EXAMPLES", "answer"]

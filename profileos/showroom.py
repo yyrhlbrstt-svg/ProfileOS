@@ -137,14 +137,29 @@ def build(folder: Path, *, today: date | None = None) -> Path:
 
     settings = get_settings()
     settings.estimate_rates = dict(SHOWROOM_RATES)
+    # A sample shop's own name — never the real shop's that opened the window.
+    settings.brand_id = "custom"
+    settings.company = {"name": "אלומיניום לדוגמה", "tagline": "מפעל הדגמה · נתונים לדוגמה בלבד"}
+    settings.onboarded = True
+    # The sample shop: four people, a 44-hour week; profiles and glass in a
+    # week and a half.
+    settings.workshop_hours_per_week = 176.0
+    settings.material_lead_working_days = 8
     save_settings(settings)
     from .quoting.editor import QuoteDraft
     from .quoting.rates import shop_labour, shop_rates
+
+    hours_of: dict[int, dict[str, float]] = {}
 
     def priced(openings: list[Any]) -> float:
         draft = QuoteDraft.start(openings, system_id="generic",
                                  fallback_rates=shop_rates(), labour=shop_labour())
         draft.set_margin(25.0)
+        # The workshop hours the norms give, kept on the job as a quotation
+        # does — what "when can we promise?" counts the queue in.
+        from .quoting.labour_learning import norm_hours
+
+        hours_of[id(openings)] = norm_hours(draft.variant().builds)
         return round(draft.totals()["net"], -2)
 
     customers = {cid: Customer(customer_id=cid, name=name, phone=phone, city=city,
@@ -168,8 +183,10 @@ def build(folder: Path, *, today: date | None = None) -> Path:
         target = JobStatus(status)
         if net:
             net = priced(job.schedule.openings)
+            job.norm_hours = hours_of.get(id(job.schedule.openings), {})
         if target is JobStatus.LOST:
             job.record_quote(float(net))
+            job.quoted_on = (opened + timedelta(days=2)).isoformat()
             job.advance(JobStatus.QUOTED, "הדגמה")
             job.lost_reason = "מחיר"
             job.advance(JobStatus.LOST, "הדגמה")
@@ -316,7 +333,7 @@ def build(folder: Path, *, today: date | None = None) -> Path:
     write_backup(settings.backup_folder)
     from .core.storage import write_json
 
-    write_json(folder / MARKER, {"built_on": today.isoformat()})
+    write_json(folder / MARKER, {"built_on": today.isoformat(), "open_job": production.job_id})
     return data
 
 
@@ -364,6 +381,19 @@ def _prepare(folder: Path, today: date) -> bool:
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         folder.rename(folder.with_name(f"{folder.name} (לא הושלם {stamp})"))
     return True
+
+
+def showcase_job() -> str:
+    """The job a showroom window opens on, so its design, 3D, drawings and
+    shop-floor pages have something on them from the first click."""
+    from .core.config import get_settings
+    from .core.storage import read_json
+
+    try:
+        marker = read_json(get_settings().data_dir.parent / MARKER, default=None)
+    except Exception:  # noqa: BLE001 - no marker, no job opened
+        return ""
+    return str((marker or {}).get("open_job", "")) if isinstance(marker, dict) else ""
 
 
 def open_showroom(folder: Path | None = None) -> subprocess.Popen:

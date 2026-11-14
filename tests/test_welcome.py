@@ -105,3 +105,22 @@ def test_the_installer_puts_no_sample_jobs_in_the_shop_s_books():
         encoding="utf-8")
     assert "seed" not in script
     assert "דאדי" not in script
+
+
+def test_a_new_shop_that_says_later_still_quotes_under_no_other_name(fresh, qapp, monkeypatch):
+    from PySide6.QtWidgets import QDialog
+
+    from profileos.branding import active_brand
+    from profileos.ui import welcome as module
+    from profileos.ui.main_window import MainWindow
+    from profileos.ui.theme import LIGHT
+
+    window = MainWindow(LIGHT)
+    assert "דאדי" in window.windowTitle()
+    monkeypatch.setattr(module.WelcomeDialog, "exec", lambda self: QDialog.DialogCode.Rejected)
+    assert not module.welcome(window)
+    brand = active_brand()
+    assert "דאדי" not in brand.name and brand.phone is None
+    assert window.windowTitle() == "ProfileOS"
+    assert "דאדי" not in window.sidebar.logo.text()
+    window.close()

@@ -104,3 +104,43 @@ def test_the_showroom_window_says_so(showroom, monkeypatch):
     monkeypatch.setattr(showroom_module, "open_showroom", lambda folder=None: opened.append(1))
     assert window.open_showroom() and opened
     window.close(); window.deleteLater(); QCoreApplication.processEvents()
+
+
+def test_the_showroom_window_opens_on_a_job_in_production(showroom):
+    from PySide6.QtWidgets import QApplication
+
+    from profileos.showroom import build, showcase_job
+    from profileos.ui.main_window import MainWindow
+    from profileos.ui.theme import LIGHT
+
+    QApplication.instance() or QApplication([])
+    build(showroom)
+    job_id = showcase_job()
+    assert job_id == "J-2026-0148"
+    window = MainWindow(LIGHT)
+    assert window.open_showcase(job_id)
+    assert window.session.job.job_id == job_id and window.session.builds
+    assert not window.open_showcase(job_id)       # never over a job already open
+    window.close()
+
+
+def test_lost_jobs_are_dated_when_they_were_quoted(showroom):
+    from datetime import date
+
+    from profileos.projects import JobStatus, default_store
+    from profileos.showroom import build
+
+    build(showroom)
+    lost = [job for job in default_store().all() if job.status is JobStatus.LOST]
+    assert lost and all(job.quoted_on and job.quoted_on < date.today().isoformat()
+                        for job in lost)
+
+
+def test_the_showroom_shop_is_a_sample_shop_never_the_real_one(showroom, monkeypatch):
+    import profileos.branding as branding
+    from profileos.showroom import build
+
+    monkeypatch.setattr(branding, "_active_brand_id", None)
+    build(showroom)
+    brand = branding.active_brand()
+    assert brand.name == "אלומיניום לדוגמה" and "דאדי" not in brand.window_title()

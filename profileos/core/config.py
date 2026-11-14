@@ -194,6 +194,13 @@ class Settings(BaseModel):
     #: profile ₪/kg, glass ₪/m², hardware ₪/piece, gasket ₪/m. Empty until the
     #: shop enters them — a quotation is never priced from figures nobody set.
     estimate_rates: dict[str, float] = Field(default_factory=dict)
+    #: The workshop's hours in an ordinary week (people x hours), typed by
+    #: the owner. Used for a promised date only until the shop floor has
+    #: booked enough hours to measure its own pace. 0 = not set.
+    workshop_hours_per_week: float = 0.0
+    #: Working days from an order until profiles and glass are in the shop,
+    #: as the shop knows its suppliers. 0 = not set (said, not assumed).
+    material_lead_working_days: int = 0
     #: The phones' way in, served by the office window while it is open
     #: (System ← Phones). Off until somebody turns it on.
     phone_access: bool = False

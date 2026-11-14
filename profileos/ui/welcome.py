@@ -65,6 +65,17 @@ def needs_welcome() -> bool:
         except Exception:  # noqa: BLE001 - asked again next time, no harm
             pass
         return False
+    # A new installation presents nobody else's name, even before the
+    # welcome is answered: the neutral brand until the shop types its own.
+    if settings.brand_id != "custom":
+        from ..branding import set_active_brand
+
+        settings.brand_id = "custom"
+        try:
+            save_settings(settings)
+        except Exception:  # noqa: BLE001 - still neutral for this run
+            pass
+        set_active_brand("custom")
     return True
 
 
@@ -177,10 +188,12 @@ def present(window: Any, before: str) -> None:
 def welcome(window: Any) -> bool:
     """Show the welcome if this installation needs it. Returns whether the
     shop's details were saved."""
-    if not needs_welcome():
-        return False
     from ..branding import active_brand
 
+    before = active_brand().window_title()      # the name shown until now
+    if not needs_welcome():
+        return False
+    present(window, before)            # neutral at once, answered or not
     before = active_brand().window_title()
     dialog = WelcomeDialog(window)
     if dialog.exec() != QDialog.DialogCode.Accepted:

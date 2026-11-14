@@ -897,6 +897,7 @@ QHeaderView {{ background: transparent; border: none; }}
 #SheetBody QScrollArea > QWidget > QWidget, #SheetBody QWidget[sheet="true"] {{
     background: transparent;
 }}
+#PromiseHead {{ font-size: {m.font_size + 3}px; font-weight: 700; color: {p.accent}; }}
 #LessonCell {{ background: transparent; }}
 #LessonCell QLabel {{ background: transparent; }}
 #LessonTitle {{ font-size: {m.font_size + 2}px; font-weight: 700; color: {p.text}; }}
@@ -914,6 +915,10 @@ QPushButton#NavButton {{ border-radius: 8px; min-height: {m.row_height + 2}px; b
 QPushButton#NavButton:hover {{ background: {nav_hover}; }}
 QPushButton#NavButton:checked {{ background: {accent_fill}; }}
 QPushButton#SidebarTheme {{ border-radius: 0; background: transparent; min-height: 0; font-weight: 500; }}
+/* The footer's two actions are links, in the accent — not greyed like the
+   version line, which read as disabled. */
+#Sidebar QPushButton#SidebarTheme {{ color: {p.accent}; }}
+#Sidebar QPushButton#SidebarTheme:hover {{ color: {p.accent}; background: {nav_hover}; }}
 #Sidebar #SidebarFooter {{ color: {p.text_faint}; }}
 #Sidebar #SidebarSafety {{ color: {p.success}; }}
 #Sidebar #SidebarSafety[state="warn"] {{ color: {p.warning}; }}
@@ -928,6 +933,10 @@ QMenu::item {{ border-radius: 7px; padding: 7px 18px; }}
 
 /* review: empty figures quiet, the page always visible, small fixes */
 #StatValue[empty="true"] {{ font-size: 22px; font-weight: 400; color: {p.text_faint}; }}
+/* Every headline card the same height, a "—" as tall as a figure, an empty
+   note keeping its line: a row of cards is one straight edge. */
+#Card[stat="true"] #StatValue {{ min-height: 42px; }}
+#Card[stat="true"] #StatLabel {{ min-height: 16px; }}
 #Card[hero="true"][empty="true"] {{ background: {p.surface}; }}
 #Card[hero="true"][empty="true"] #CardTitle {{ color: {p.text_muted}; }}
 #Card[hero="true"][empty="true"] #StatValue {{ color: {p.text_faint}; }}

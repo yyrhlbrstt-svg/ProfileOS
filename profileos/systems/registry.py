@@ -351,6 +351,18 @@ class UnclassifiedSystem(KeyError):
 #: The directory the application uses. Replaceable in tests.
 DIRECTORY = SystemDirectory()
 
+#: How the shop says each maker's name. A name only — no figure of theirs.
+MANUFACTURER_HEBREW: dict[str, str] = {
+    "alubin": "אלובין", "alumgold": "אלומגולד", "alumil": "אלומיל", "cortizo": "קורטיזו",
+    "deceuninck": "דקונינק", "extal": "אקסטל", "klil": "קליל", "rehau": "רהאו",
+    "reynaers": "ריינרס", "salamander": "סלמנדר", "schuco": "שוקו", "technal": "טכנאל",
+    "veka": "וקה", "wicona": "ויקונה",
+}
+
+
+def manufacturer_hebrew(code: str) -> str:
+    return MANUFACTURER_HEBREW.get((code or "").lower(), code)
+
 
 def hardware_makers() -> tuple[Manufacturer, ...]:
     return HARDWARE_MAKERS
@@ -358,6 +370,8 @@ def hardware_makers() -> tuple[Manufacturer, ...]:
 
 __all__ = [
     "DIRECTORY",
+    "MANUFACTURER_HEBREW",
+    "manufacturer_hebrew",
     "FAMILY_RULES",
     "SystemDirectory",
     "UnclassifiedSystem",

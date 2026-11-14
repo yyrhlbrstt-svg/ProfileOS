@@ -1079,9 +1079,12 @@ class NewChequeDialog(_FormDialog):
         self.count.setValue(1)
         self.count.setSuffix(" צ׳קים")
         self.amount = QDoubleSpinBox()
-        self.amount.setRange(0.01, 10_000_000)
+        # Starts empty: a cheque recorded at a sum nobody typed is a wrong
+        # balance on the customer's account.
+        self.amount.setRange(0.0, 10_000_000)
         self.amount.setDecimals(2)
-        self.amount.setValue(1000.0)
+        self.amount.setSpecialValueText("הזינו סכום")
+        self.amount.setValue(0.0)
         self.amount.setSuffix(" ₪")
         self.due = QDateEdit()
         self.due.setCalendarPopup(True)
@@ -1111,15 +1114,19 @@ class NewChequeDialog(_FormDialog):
         for signal in (self.count.valueChanged, self.amount.valueChanged,
                        self.due.dateChanged, self.number.textChanged):
             signal.connect(lambda *_: self._show_preview())
-        self.customer.textChanged.connect(
-            lambda text: self.ok_button.setEnabled(bool(text.strip()))
-        )
+        self.customer.textChanged.connect(lambda *_: self._ready())
+        self.amount.valueChanged.connect(lambda *_: self._ready())
         self.ok_button.setEnabled(False)
         if job is not None:
             self.job.setCurrentIndex(max(0, self.job.findData(job.job_id)))
             self._job_chosen()
         self._show_preview()
         self.customer.setFocus()
+
+    def _ready(self) -> None:
+        """Recorded only with someone to pay it and a sum somebody typed."""
+        self.ok_button.setEnabled(bool(self.customer.text().strip())
+                                  and self.amount.value() > 0)
 
     def _job_chosen(self) -> None:
         customer = self.job.currentData(Qt.ItemDataRole.UserRole + 1)

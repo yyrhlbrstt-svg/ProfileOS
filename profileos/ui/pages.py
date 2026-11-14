@@ -221,7 +221,7 @@ class Page(QWidget):
             told.add(what)
             self.report(
                 problem,
-                f"{what} לא נקרא — מוצג ריק לקריאה בלבד, ושום דבר לא נשמר עליו",
+                f"לא הצלחנו לקרוא את {what} — מוצג ריק לקריאה בלבד, ושום דבר לא נשמר עליו",
             )
         return book
 
@@ -2104,7 +2104,7 @@ class ProjectsPage(Page):
         try:
             from ..erp.collection import default_cheques
 
-            return list(self.checked_book(default_cheques(), "מגירת הצ׳קים"))
+            return list(self.checked_book(default_cheques(), "ספר הצ׳קים"))
         except Exception as exc:  # noqa: BLE001
             told = self.__dict__.setdefault("_told_damaged", set())
             if "cheques-load" not in told:
@@ -2424,7 +2424,7 @@ class ProjectsPage(Page):
             self.report(exc, "השמירה נכשלה — העבודה עדיין על המסך, נסה שוב")
             return
         self.refresh()
-        self.status(f"נשמרו {job.opening_count} פתחים ב{job.job_id}")
+        self.status(f"נשמרו ⁦{job.opening_count}⁩ פתחים בפרויקט ⁦{job.job_id}⁩")
 
     def advance_status(self) -> None:
         from ..projects import JobStatus
@@ -2985,6 +2985,9 @@ class ProjectsPage(Page):
             else "אין עדיין פרויקטים — לחץ ״פרויקט חדש״ כדי לפתוח את הראשון"
         )
         self.jobs_table.set_rows(rows, numeric_columns=(4, 5, 8), colours=colours)
+        # The trade column only when the list mixes trades: an aluminium-only
+        # shop gave a column of "אלומיניום" its project names' room.
+        self.jobs_table.setColumnHidden(7, len({row[7] for row in rows}) <= 1)
         # A list with a row nobody has clicked still has a most-recent job, and
         # showing its detail beats an empty panel that says nothing was chosen.
         if before is not None:
@@ -3337,10 +3340,10 @@ class ElementPage(Page):
 
         form_card = Card("פתח")
         fields = FieldGrid()
-        self.name = QComboBox(); self.name.setEditable(True); self.name.addItems(["W-04", "D-01", "CW-01"])
+        self.name = QComboBox(); self.name.setEditable(True); self.name.addItems(["W-01", "D-01", "CW-01"])
         self.width = MillimetreBox(); self.width.setRange(200, 12000); self.width.setValue(2400); self.width.setSuffix(" מ״מ")
         self.height = MillimetreBox(); self.height.setRange(200, 6000); self.height.setValue(1800); self.height.setSuffix(" מ״מ")
-        self.quantity = QSpinBox(); self.quantity.setRange(1, 999); self.quantity.setValue(4)
+        self.quantity = QSpinBox(); self.quantity.setRange(1, 999); self.quantity.setValue(1)
         self.kind = QComboBox()
         for kind_id, kind_he in [("window", "חלון"), ("door", "דלת"), ("curtain_wall", "קיר מסך"),
                                  ("shopfront", "חזית מסחרית"), ("sliding_unit", "מערכת הזזה")]:
@@ -3447,6 +3450,8 @@ class ElementPage(Page):
             kind = next((name for prefix, name in hebrew_kinds.items() if key.startswith(prefix)), "")
             self.glass.addItem(f"{kind} \u2066{unit.describe()}\u2069 · U \u2066{unit.u_value():.2f}\u2069", key)
         self.glass.setCurrentIndex(min(1, self.glass.count() - 1))
+        # The whole build-up and its U value, never cut to "J ·".
+        self.glass.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
 
         for label, widget in [
             ("שם", self.name), ("סוג", self.kind), ("רוחב", self.width),
@@ -4528,7 +4533,7 @@ class DrawingsPage(Page):
         except Exception as exc:  # noqa: BLE001
             self.report(exc, "הייצוא נכשל")
             return
-        self.status(f"נשמרו {len(written)} קבצים אל {folder}")
+        self.status(f"נשמרו ⁦{len(written)}⁩ קבצים אל ⁦{folder}⁩")
 
     def refresh(self) -> None:
         count = len(self.session.builds)
@@ -4950,7 +4955,7 @@ class MachiningPage(Page):
             return
         for result in self._results:
             result.write(directory)
-        self.status(f"נשמרו {len(self._results)} קבצים אל {directory}")
+        self.status(f"נשמרו ⁦{len(self._results)}⁩ קבצים אל ⁦{directory}⁩")
 
 
 # --------------------------------------------------------------------------- #
@@ -5082,8 +5087,23 @@ class QuotePage(Page):
 
         side = QWidget()
         side_layout = QVBoxLayout(side)
+        # Room for the options table's four columns: narrower cut every cell to "…".
+        side.setMinimumWidth(METRICS.space(110))
         side_layout.setContentsMargins(0, 0, 0, 0)
         side_layout.setSpacing(METRICS.space(3))
+
+        # "When?" — asked before the price. Worked out from the work already
+        # ordered, the shop's measured pace and the Israeli week.
+        promise_card = Card("מתי אפשר להבטיח")
+        self.promise_head = QLabel("יחושב אחרי התמחור")
+        self.promise_head.setObjectName("PromiseHead")
+        self.promise_head.setWordWrap(True)
+        self.promise_detail = QLabel("")
+        self.promise_detail.setObjectName("Hint")
+        self.promise_detail.setWordWrap(True)
+        promise_card.add(self.promise_head)
+        promise_card.add(self.promise_detail)
+        side_layout.addWidget(promise_card)
 
         options_card = Card("חלופות")
         self.options = DataTable(["חלופה", "מפרט", "לפני מע״מ", "±"], empty_text="אחרי התמחור אפשר להוסיף חלופה (סדרה, זכוכית, גוון) ולהשוות")
@@ -5474,6 +5494,7 @@ class QuotePage(Page):
             if judged:
                 warnings.insert(0, judged)
             self.notes.setPlainText("\n".join(f"• {w}" for w in warnings) or "אין אזהרות.")
+            self._show_promise(variant)
 
             self.stats.update_many({
                 "net": (
@@ -5481,7 +5502,8 @@ class QuotePage(Page):
                     "₪" if variant.policy.currency == "ILS" else variant.policy.currency,
                 ),
                 "vat": (f"{totals['vat']:,.0f}", f"{variant.policy.tax_pct:g}%"),
-                "gross": (f"{totals['gross']:,.0f}", ""),
+                "gross": (f"{totals['gross']:,.0f}",
+                          "חסרים מחירים — הסכום לא שלם" if self._incomplete(draft) else ""),
                 "margin": (f"{sheet['margin_after_edits']:,.0f}", "אחרי עריכות ידניות"),
                 "kg": (f"{variant.aluminium_kg:,.0f}", f"ק״ג · {variant.finish.hebrew}"),
             })
@@ -5512,6 +5534,36 @@ class QuotePage(Page):
             return ""
         area = sum(opening.area * max(1, opening.quantity) for opening in draft.openings)
         return bench.judge(net, area)
+
+    def _show_promise(self, variant: Any) -> None:
+        """The earliest honest installation date for this quotation."""
+        try:
+            from ..promise import promise
+            from ..quoting.labour_learning import norm_hours
+
+            hours = sum(norm_hours(variant.builds).values())
+            job = self.session.job
+            said = promise(new_hours=hours, exclude_job=job.job_id if job else "")
+        except Exception as exc:  # noqa: BLE001 - the quotation stands without it
+            self.promise_head.setText("לא ניתן לחשב מועד כרגע")
+            self.promise_detail.setText(str(exc))
+            return
+        self.promise_head.setText(said.headline())
+        self.promise_detail.setText(said.short())
+        self.promise_detail.setToolTip("\n".join(f"• {line}" for line in said.lines()))
+
+    def _incomplete(self, draft: Any) -> bool:
+        """Whether the total on screen leaves something out: a line at
+        ⁦0 ₪⁩, material nothing prices, or labour with no hourly rate. Said on
+        the total itself, so a figure that is not a price never looks like one."""
+        try:
+            quotation = draft.quotation
+            hours = sum((getattr(quotation, "labour_hours", {}) or {}).values())
+            return bool(draft.unpriced_extras()
+                        or getattr(quotation, "unpriced_codes", None)
+                        or (hours > 0 and draft.variant().labour.hourly_rate <= 0))
+        except Exception:  # noqa: BLE001 - unknown is said as incomplete
+            return True
 
     def _unpriced_ok(self) -> bool:
         """A price that leaves something out, in front of a customer, is work
@@ -6460,7 +6512,7 @@ class GlassPage(Page):
                 path = target / f"{safe}-sheet{layout.sheet_index + 1:02d}.svg"
                 path.write_text(render_layout_svg(layout), encoding="utf-8")
                 written += 1
-        self.status(f"נשמרו {written} מפות חיתוך אל {target}")
+        self.status(f"נשמרו ⁦{written}⁩ מפות חיתוך אל ⁦{target}⁩")
 
 
     def export_glass_order(self) -> None:
@@ -6695,7 +6747,7 @@ class PlumbingPage(Page):
         )
         self.stats.set("fixtures", str(schedule.fixture_count), "מחוברים")
         self.stats.set("demand", f"⁦{schedule.total_demand():.2f}⁩", "ל'/שנ' בו-זמנית")
-        self.stats.set("dfu", f"{schedule.dfu:g}", "יחידות ניקוז")
+        self.stats.set("dfu", f"{schedule.dfu:g}", "סך הכלים בבניין")
 
     # -- supply -------------------------------------------------------------- #
     def _supply_tab(self) -> QWidget:
@@ -7602,7 +7654,7 @@ class CollectionPage(Page):
 
         if self._book is None:
             try:
-                self._book = self.checked_book(default_cheques(), "מגירת הצ׳קים")
+                self._book = self.checked_book(default_cheques(), "ספר הצ׳קים")
             except Exception as exc:  # noqa: BLE001 - say so, never silently lose
                 _log.exception("Cheque drawer unreadable")
                 self.report(exc, "לא ניתן לקרוא את מגירת הצ׳קים")
@@ -7956,7 +8008,8 @@ class CollectionPage(Page):
             "in_hand": (f"{summary['in_hand']:,.0f}", f"⁦{summary['in_hand_count']}⁩ צ׳קים"),
             "bankable": (f"{summary['bankable_today']:,.0f}", ""),
             "bounced": (f"{summary['bounced']:,.0f}", ""),
-            "days": (f"{summary['average_days_out']:.0f}", "ימים"),
+            "days": ((f"{summary['average_days_out']:.0f}", "ימים") if summary["count"]
+                     else ("—", "עוד אין צ׳קים")),
         })
 
 
@@ -9423,6 +9476,7 @@ class CataloguePage(Page):
 
     def _refresh_systems(self) -> None:
         from ..systems import DIRECTORY
+        from ..systems.registry import manufacturer_hebrew
 
         entries = sorted(DIRECTORY, key=lambda e: (e.manufacturer, e.series))
         self._system_ids = [entry.id for entry in entries]
@@ -9448,7 +9502,7 @@ class CataloguePage(Page):
             quotable += bool(readiness.may_quote)
             cuttable += bool(readiness.may_cut)
             rows.append([
-                entry.series, entry.manufacturer,
+                entry.series, manufacturer_hebrew(entry.manufacturer),
                 entry.hebrew or entry.display,
                 entry.family.label("he") if entry.family else "לא סווגה",
                 "כן" if readiness.may_quote else "לא",
@@ -10489,6 +10543,19 @@ class SystemPage(Page):
         self.show_pace()
         self.status(f"הצעות חדשות יחושבו לפי ⁦{calibration.factor:.2f}⁩ מהנורמה")
 
+    def save_timing(self) -> None:
+        from ..core.config import get_settings, save_settings
+
+        settings = get_settings()
+        settings.workshop_hours_per_week = float(self.week_hours.value())
+        settings.material_lead_working_days = int(self.lead_days.value())
+        try:
+            save_settings(settings)
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "הקצב והמועדים לא נשמרו")
+            return
+        self.status("נשמר — הצעות המחיר יחשבו את המועד לפי זה")
+
     def save_rates(self) -> None:
         from ..core.config import get_settings, save_settings
 
@@ -10671,6 +10738,34 @@ class SystemPage(Page):
         rates_card.add(self.apply_pace)
         self.show_pace()
         layout.addWidget(rates_card)
+
+        # What a promised date rests on until the shop floor has measured it.
+        timing = Card("קצב ומועדים")
+        timing_hint = QLabel(
+            "לחישוב ״מתי אפשר להבטיח״ בהצעת המחיר. אחרי שנרשמות שעות ברצפת הייצור "
+            "(⁦10⁩ ימים בחודש האחרון), הקצב נמדד מהן ולא מהמספר כאן.")
+        timing_hint.setObjectName("Hint")
+        timing_hint.setWordWrap(True)
+        timing.add(timing_hint)
+        timing_grid = FieldGrid()
+        self.week_hours = QDoubleSpinBox()
+        self.week_hours.setRange(0, 2000)
+        self.week_hours.setDecimals(0)
+        self.week_hours.setSuffix(" שעות")
+        self.week_hours.setSpecialValueText("לא הוזן")
+        self.week_hours.setValue(float(getattr(settings, "workshop_hours_per_week", 0) or 0))
+        self.lead_days = QSpinBox()
+        self.lead_days.setRange(0, 120)
+        self.lead_days.setSuffix(" ימי עבודה")
+        self.lead_days.setSpecialValueText("לא הוזן")
+        self.lead_days.setValue(int(getattr(settings, "material_lead_working_days", 0) or 0))
+        timing_grid.add("שעות עבודה במפעל בשבוע (אנשים × שעות)", self.week_hours)
+        timing_grid.add("עד שפרופילים וזכוכית מגיעים", self.lead_days)
+        timing.add(timing_grid)
+        save_timing = QPushButton("שמור")
+        save_timing.clicked.connect(self.save_timing)
+        timing.add(save_timing)
+        layout.addWidget(timing)
 
         note = QLabel(
             "הפרטים האלה מופיעים על הצעות מחיר, כרטיסי עבודה ובכותרת של כל "
@@ -11962,8 +12057,8 @@ class ReportsPage(Page):
                 f"⁦{report.won_count}⁩ תיקים · לפני מע״מ, עם תוספות שאושרו",
             ),
             "rate": (
-                f"⁦{rate.value:.0f}%⁩",
-                f"מתוך ⁦{report.decided}⁩ שהוכרעו" if report.decided else "טרם הוכרע",
+                f"⁦{rate.value:.0f}%⁩" if report.decided else "—",
+                f"מתוך ⁦{report.decided}⁩ שהוכרעו" if report.decided else "עוד אין הצעות שהוכרעו",
             ),
             "average": (f"⁦{average.value:,.0f} ₪⁩", ""),
             "backlog": (
@@ -11994,8 +12089,8 @@ class ReportsPage(Page):
         )
         self.sales_note.setText(
             " · ".join(report.warnings())
-            or f"{report.describe()} · {report.value_win_rate().label}: "
-               f"{report.value_win_rate().format()}"
+            or (f"{report.describe()} · {report.value_win_rate().label}: "
+                f"{report.value_win_rate().format()}" if report.decided else report.describe())
         )
 
         customers = reports.by_customer(jobs, costs=self._booked_costs(jobs))
@@ -12473,7 +12568,7 @@ class ViewPage(Page):
         )
         write_gltf(self._scene, target / f"{stem}.gltf")
         write_gltf(self._scene, target / f"{stem}.glb")
-        self.status(f"נשמרו {written + 3} קבצים אל {target}")
+        self.status(f"נשמרו ⁦{written + 3}⁩ קבצים אל ⁦{target}⁩")
 
 
 # --------------------------------------------------------------------------- #

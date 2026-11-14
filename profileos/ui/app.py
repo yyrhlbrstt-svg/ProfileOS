@@ -170,6 +170,10 @@ def run(argv: Sequence[str] | None = None, *, theme: str | None = None) -> int:
     # falls over on the first refresh is not a working one.
     from ..core.selfupdate import PROVEN_AFTER_S, mark_started
 
+    if showroom:
+        from ..showroom import showcase_job
+
+        QTimer.singleShot(300, lambda: window.open_showcase(showcase_job()))
     if not showroom:
         QTimer.singleShot(PROVEN_AFTER_S * 1000, mark_started)
         QTimer.singleShot(1500, window.announce_update)

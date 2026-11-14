@@ -169,7 +169,7 @@ def test_the_window_opens_with_damaged_books_and_leaves_them_alone(shop, monkeyp
     for name in names:
         assert (shop / name).read_text(encoding="utf-8") == "{ cut off"
     # And the person is told, not only the log.
-    assert any("לא נקרא" in title for title in told)
+    assert any("לא הצלחנו לקרוא" in title for title in told)
 
 
 def test_a_damaged_book_refuses_to_save(shop):

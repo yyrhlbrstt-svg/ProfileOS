@@ -196,7 +196,9 @@ class SalesReport:
     def describe(self) -> str:
         return (
             f"{self.period.describe()}: הוזמנו ⁦{self.won_count}⁩ תיקים "
-            f"בשווי ⁦{self.won_value:,.0f} ₪⁩ · {self.win_rate().format()}"
+            f"בשווי ⁦{self.won_value:,.0f} ₪⁩ · "
+            + (f"אחוז סגירה {self.win_rate().format()}" if self.decided
+               else "עוד אין הצעות שהוכרעו")
         )
 
 
