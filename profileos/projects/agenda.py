@@ -16,7 +16,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import date, timedelta
 from enum import StrEnum
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 from uuid import uuid4
 
 from ..core.errors import ProfileOSError
@@ -248,6 +248,61 @@ def reminder_text(appointment: Appointment, *, brand_name: str, phone: str = "",
     )
 
 
+#: Visits that take a crew for the day: two on one day is a clash, not a plan.
+DAY_LONG = (VisitKind.INSTALLATION, VisitKind.BLIND_FRAMES, VisitKind.DELIVERY,
+            VisitKind.PLUMBING)
+
+
+@dataclass(frozen=True)
+class Clash:
+    """Something on the agenda that cannot happen as written."""
+
+    on: date
+    crew: str
+    visits: tuple[Appointment, ...]
+    reason: str
+
+    def describe(self) -> str:
+        who = ", ".join(v.customer_name or v.job_id or v.kind.hebrew for v in self.visits[:3])
+        return f"⁦{self.on:%d/%m}⁩ · {self.reason}: {who}"
+
+
+def closed_day(day: date) -> str:
+    """Why nobody goes out on ``day`` — Shabbat or a festival — or ``""``."""
+    if day.weekday() == 5:
+        return "שבת"
+    try:
+        from ..hebrew_calendar import holiday_on
+
+        festival = holiday_on(day)
+    except Exception:  # noqa: BLE001 - without the calendar, only Shabbat is known
+        return ""
+    if festival is not None and festival.kind.working_fraction <= 0:
+        return festival.hebrew
+    return ""
+
+
+def clashes(visits: Iterable[Appointment], start: date, days: int = 14) -> list[Clash]:
+    """Double bookings and closed days among the open visits from ``start``
+    for ``days`` days: one crew sent to two day-long jobs on the same day,
+    or a visit set on Shabbat or a festival."""
+    end = start + timedelta(days=days)
+    open_visits = [v for v in visits if not v.done and start <= v.on < end]
+    found: list[Clash] = []
+    by_crew: dict[tuple[date, str], list[Appointment]] = {}
+    for visit in open_visits:
+        closed = closed_day(visit.on)
+        if closed:
+            found.append(Clash(visit.on, visit.crew, (visit,), f"נקבע ביום סגור ({closed})"))
+        if visit.crew.strip() and visit.kind in DAY_LONG:
+            by_crew.setdefault((visit.on, visit.crew.strip()), []).append(visit)
+    for (day, crew), booked in sorted(by_crew.items(), key=lambda item: item[0]):
+        if len(booked) > 1:
+            found.append(Clash(day, crew, tuple(booked),
+                               f"הצוות של {crew} נשלח ל־⁦{len(booked)}⁩ עבודות באותו יום"))
+    return sorted(found, key=lambda clash: clash.on)
+
+
 def default_agenda() -> Agenda:
     from ..core.config import get_settings
 
@@ -256,6 +311,10 @@ def default_agenda() -> Agenda:
 
 __all__ = [
     "Agenda",
+    "Clash",
+    "DAY_LONG",
+    "clashes",
+    "closed_day",
     "Appointment",
     "VisitKind",
     "day_word",

@@ -25,8 +25,9 @@ def fresh(tmp_path, monkeypatch):
     reload_settings()
     yield tmp_path
     branding._active_brand_id = None
-    monkeypatch.delenv("PROFILEOS_DATA_DIR", raising=False)
-    monkeypatch.delenv("PROFILEOS_CONFIG_DIR", raising=False)
+    # The environment back as it was (the run's own settings folder), then
+    # re-read: removing the variable alone keeps the folder last read.
+    monkeypatch.undo()
     reload_settings()
 
 

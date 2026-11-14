@@ -15,8 +15,7 @@ def clean(tmp_path, monkeypatch):
     monkeypatch.setenv("PROFILEOS_CONFIG_DIR", str(tmp_path / "cfg"))
     reload_settings()
     yield tmp_path
-    monkeypatch.delenv("PROFILEOS_DATA_DIR", raising=False)
-    monkeypatch.delenv("PROFILEOS_CONFIG_DIR", raising=False)
+    monkeypatch.undo()
     reload_settings()
 
 

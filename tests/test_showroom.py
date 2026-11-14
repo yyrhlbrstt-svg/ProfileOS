@@ -14,8 +14,9 @@ def showroom(tmp_path, monkeypatch):
     monkeypatch.setenv("PROFILEOS_SHOWROOM", "1")
     reload_settings()
     yield tmp_path / "show"
-    monkeypatch.delenv("PROFILEOS_DATA_DIR", raising=False)
-    monkeypatch.delenv("PROFILEOS_CONFIG_DIR", raising=False)
+    # The environment back as it was (the run's own settings folder), then
+    # re-read: removing the variable alone keeps the folder last read.
+    monkeypatch.undo()
     reload_settings()
 
 

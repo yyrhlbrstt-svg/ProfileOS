@@ -1645,8 +1645,132 @@ class WatchSourceDialog(_FormDialog):
         }
 
 
+
+class CrewWeekDialog(QDialog):
+    """The installation week on one board: a row per crew, a column per day.
+
+    A cell is the crew's visits that day. A clash — one crew sent to two
+    day-long jobs, or a visit on Shabbat or a festival — is marked in the
+    danger colour; an installation whose job is not ready (material, the
+    payment before installation, blind frames) in the warning colour, with
+    what is missing in its tooltip.
+    """
+
+    def __init__(self, parent: QWidget | None = None, *, visits: list[Any],
+                 palette: Any, start: Any = None, jobs: dict[str, Any] | None = None,
+                 cheques: list[Any] | None = None, days: int = 7) -> None:
+        super().__init__(parent)
+        from datetime import date, timedelta
+
+        from PySide6.QtWidgets import QTableWidget, QTableWidgetItem
+
+        from ..projects.agenda import VisitKind, clashes, closed_day
+
+        self.setWindowTitle("לוח ההתקנות של השבוע")
+        self.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
+        self.resize(1100, 520)
+        start = start or date.today()
+        # Working days only: a column of Shabbat is a column nobody fills —
+        # a visit set on one is a clash, and the home page says so.
+        week = [start + timedelta(days=offset) for offset in range(days)
+                if not closed_day(start + timedelta(days=offset))]
+        end = start + timedelta(days=days)
+        open_visits = [v for v in visits if not v.done and start <= v.on < end]
+        crews = sorted({v.crew.strip() for v in open_visits if v.crew.strip()})
+        if any(not v.crew.strip() for v in open_visits):
+            crews.append("")
+        clashed = {v.appointment_id for clash in clashes(open_visits, start, days)
+                   for v in clash.visits}
+        self.clashes = clashes(open_visits, start, days)
+
+        layout = QVBoxLayout(self)
+        heading = QLabel("לוח ההתקנות — מי נמצא איפה השבוע")
+        heading.setObjectName("CardTitle")
+        layout.addWidget(heading)
+        summary = QLabel(
+            (f"⚠ ⁦{len(self.clashes)}⁩ התנגשויות ביומן — מסומנות באדום" if self.clashes
+             else "אין התנגשויות: אף צוות לא נשלח לשני מקומות באותו יום")
+            + " · כתום = התקנה שעוד לא מוכנה (העבירו את העכבר לפרטים)")
+        summary.setObjectName("Hint")
+        summary.setWordWrap(True)
+        layout.addWidget(summary)
+
+        days_words = ("שני", "שלישי", "רביעי", "חמישי", "שישי", "שבת", "ראשון")
+        self.table = QTableWidget(max(1, len(crews)), len(week))
+        self.table.setHorizontalHeaderLabels(
+            [f"{days_words[d.weekday()]} ⁦{d:%d/%m}⁩" for d in week])
+        self.table.setVerticalHeaderLabels([crew or "בלי צוות" for crew in crews] or ["—"])
+        self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.table.setWordWrap(True)
+        self.table.horizontalHeader().setSectionResizeMode(
+            self.table.horizontalHeader().ResizeMode.Stretch)
+        from ..projects.install_check import not_ready
+
+        jobs = jobs or {}
+        for column, day in enumerate(week):
+            for row, crew in enumerate(crews or [""]):
+                here = sorted((v for v in open_visits if v.on == day and v.crew.strip() == crew),
+                              key=lambda v: v.time or "99")
+                lines, tips = [], []
+                state = ""
+                for visit in here:
+                    who = visit.customer_name or visit.job_id or "—"
+                    lines.append(f"{('⁦' + visit.time + '⁩ ') if visit.time else ''}"
+                                 f"{visit.kind.hebrew} · {who}")
+                    if visit.appointment_id in clashed:
+                        state = "danger"
+                        tips.append(f"{who}: התנגשות ביומן")
+                    if visit.kind in (VisitKind.INSTALLATION, VisitKind.DELIVERY):
+                        job = jobs.get(visit.job_id)
+                        if job is not None:
+                            missing = not_ready(job, cheques=cheques or [])
+                            if missing:
+                                state = state or "warning"
+                                tips.append(f"{who}: " + "; ".join(missing))
+                text = "\n".join(lines)
+                if state == "danger":
+                    text = "⚠ התנגשות\n" + text
+                elif state == "warning":
+                    text = "● עוד לא מוכן\n" + text
+                item = QTableWidgetItem("")
+                item.setData(Qt.ItemDataRole.UserRole, text)
+                if tips:
+                    item.setToolTip("\n".join(tips))
+                self.table.setItem(row, column, item)
+                # A label on the cell, styled by the theme: under a style sheet
+                # an item's own background is not painted.
+                cell = QLabel(text)
+                cell.setObjectName("BoardCell")
+                cell.setProperty("state", state)
+                cell.setWordWrap(True)
+                cell.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop)
+                if tips:
+                    cell.setToolTip("\n".join(tips))
+                self.table.setCellWidget(row, column, cell)
+        # Tall enough for the busiest day of each crew: its lines, wrapped at
+        # the width a day column has.
+        import math
+
+        for row in range(self.table.rowCount()):
+            tallest = 2
+            for column in range(self.table.columnCount()):
+                cell = self.table.cellWidget(row, column)
+                if cell is not None and cell.text():
+                    tallest = max(tallest, sum(max(1, math.ceil(len(line) / 16))
+                                               for line in cell.text().split("\n")))
+            self.table.setRowHeight(row, 22 * tallest + 24)
+        layout.addWidget(self.table, 1)
+        if not open_visits:
+            empty = QLabel("אין ביקורים ביומן בשבוע הקרוב — קובעים ב״קבע ביקור״ בדף הבית")
+            empty.setObjectName("Hint")
+            layout.addWidget(empty)
+        close = QPushButton("סגור")
+        close.clicked.connect(self.accept)
+        layout.addWidget(close, 0, Qt.AlignmentFlag.AlignLeft)
+
 __all__ = [
     "CloseServiceCallDialog",
+    "CrewWeekDialog",
     "ConfirmSystemDialog",
     "NewChequeDialog",
     "NewCustomerDialog",

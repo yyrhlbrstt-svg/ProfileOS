@@ -480,6 +480,10 @@ class HomePage(Page):
         crew.setToolTip("כל הביקורים של היום הבא, לפי הסדר, עם קישור ניווט בווייז")
         crew.clicked.connect(self.send_crew_plan)
         field_bar.addWidget(crew)
+        board = QPushButton("לוח השבוע")
+        board.setToolTip("כל הצוותים והביקורים של השבוע — עם התנגשויות והתקנות שעוד לא מוכנות")
+        board.clicked.connect(self.show_week_board)
+        field_bar.addWidget(board)
         field_bar.addStretch(1)
         field_card.add_layout(field_bar)
         self._field: list[Any] = []
@@ -771,6 +775,26 @@ class HomePage(Page):
             if count else f"{day_word(upcoming, today)} אין ביקורים ביומן"
         )
 
+    def show_week_board(self) -> None:
+        """The week's visits by crew, clashes and unready installations marked."""
+        from datetime import date as _date
+
+        from ..erp.collection import default_cheques
+        from ..projects import default_store
+        from .dialogs import CrewWeekDialog
+
+        try:
+            agenda = self._agenda()
+            if agenda.damaged is not None:
+                raise agenda.damaged
+            jobs = {job.job_id: job for job in default_store().all()}
+            cheques = list(self.checked_book(default_cheques(), "ספר הצ׳קים"))
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "לוח השבוע לא נפתח")
+            return
+        CrewWeekDialog(self, visits=list(agenda), palette=self.colours,
+                       start=_date.today(), jobs=jobs, cheques=cheques).exec()
+
     def _selected_visit(self) -> Any:
         row = self.field_table.currentRow()
         return self._field[row] if 0 <= row < len(self._field) else None
@@ -792,11 +816,22 @@ class HomePage(Page):
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         try:
-            self._agenda().add(dialog.appointment())
+            agenda = self._agenda()
+            visit = agenda.add(dialog.appointment())
         except Exception as exc:  # noqa: BLE001
             self.report(exc, "הביקור לא נשמר")
             return
         self.show_field()
+        # Said at once, while the customer is still on the phone.
+        from ..projects.agenda import clashes
+
+        clash = next((c for c in clashes(agenda, visit.on, 1)
+                      if any(v.appointment_id == visit.appointment_id for v in c.visits)), None)
+        if clash is not None:
+            self.report(ProfileOSError(
+                "הביקור נשמר, אבל: " + clash.describe()
+                + ". אפשר להזיז אותו או לשבץ צוות אחר."), "התנגשות ביומן")
+            return
         self.status("הביקור נקבע ביומן")
 
     def remind_visit(self) -> None:

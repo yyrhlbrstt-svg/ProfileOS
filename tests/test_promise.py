@@ -138,6 +138,5 @@ def test_the_quotation_page_says_when(tmp_path, monkeypatch):
         assert "קצב המפעל" in page.promise_detail.toolTip()
         window.close()
     finally:
-        monkeypatch.delenv("PROFILEOS_DATA_DIR", raising=False)
-        monkeypatch.delenv("PROFILEOS_CONFIG_DIR", raising=False)
+        monkeypatch.undo()
         reload_settings()

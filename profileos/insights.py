@@ -568,6 +568,28 @@ def _pace(context: dict[str, Any], today: date) -> list[Insight]:
     )]
 
 
+def _clashes(context: dict[str, Any], today: date) -> list[Insight]:
+    """A crew booked twice on one day, or a visit on Shabbat or a festival,
+    in the next two weeks — found while there is still time to move it."""
+    from .projects.agenda import clashes
+
+    agenda = context.get("agenda")
+    if agenda is None:
+        return []
+    found = []
+    for clash in clashes(agenda, today, 14):
+        soon = (clash.on - today).days <= 2
+        found.append(Insight(
+            "danger" if soon else "warning",
+            "ביומן: " + clash.describe(),
+            "צוות אחד לא יכול להיות בשני אתרים, ובשבת ובחג לא יוצאים. "
+            "להזיז ביקור או לשבץ צוות אחר — ולעדכן את הלקוח.",
+            "Home", "clash:" + clash.on.isoformat() + ":" + clash.crew + ":"
+            + ",".join(sorted(v.appointment_id for v in clash.visits)),
+        ))
+    return found
+
+
 def _install_ready(context: dict[str, Any], today: date) -> list[Insight]:
     """Installations in the next two working days whose job is not ready."""
     from .projects.agenda import VisitKind, day_word, next_working_day
@@ -1214,7 +1236,7 @@ def _blind_frames(context: dict[str, Any], today: date) -> list[Insight]:
 
 RULES: tuple[Callable[[dict[str, Any], date], list[Insight]], ...] = (
     _data_safety, _jobs, _accounts, _field, _customers, _money, _service, _tasks,
-    _paperwork, _draft, _catalogue, _price_lists, _material, _remeasured, _install_ready,
+    _paperwork, _draft, _catalogue, _price_lists, _material, _remeasured, _install_ready, _clashes,
     _pace, _blind_frames,
 )
 

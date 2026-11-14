@@ -319,6 +319,13 @@ def _tick_file(colour: str) -> str:
     return path.as_posix()
 
 
+def _soft(colour: str, alpha: float) -> str:
+    """A palette colour as a tint: ``#D70015`` at 14% → ``rgba(215,0,21,0.14)``."""
+    value = colour.lstrip("#")
+    red, green, blue = (int(value[i:i + 2], 16) for i in (0, 2, 4))
+    return f"rgba({red},{green},{blue},{alpha})"
+
+
 def stylesheet(palette: Palette, metrics: Metrics = METRICS) -> str:
     """Build the Qt stylesheet for a palette.
 
@@ -898,6 +905,10 @@ QHeaderView {{ background: transparent; border: none; }}
     background: transparent;
 }}
 #PromiseHead {{ font-size: {m.font_size + 3}px; font-weight: 700; color: {p.accent}; }}
+/* The crew board: a cell's state in a tint of the palette's own colour. */
+QLabel#BoardCell {{ background: transparent; padding: 6px 8px; border-radius: 8px; }}
+QLabel#BoardCell[state="danger"] {{ background: {_soft(p.danger, 0.14)}; color: {p.text}; }}
+QLabel#BoardCell[state="warning"] {{ background: {_soft(p.warning, 0.16)}; color: {p.text}; }}
 #LessonCell {{ background: transparent; }}
 #LessonCell QLabel {{ background: transparent; }}
 #LessonTitle {{ font-size: {m.font_size + 2}px; font-weight: 700; color: {p.text}; }}

@@ -290,10 +290,15 @@ def build(folder: Path, *, today: date | None = None) -> Path:
                     address="רחוב התאנה 8, כוכב יעקב", crew="צוות א׳"),
         Appointment(on=first, time="13:00", kind=VisitKind.SURVEY,
                     customer_name="מוסדות חינוך ההר", job_id="J-2026-0162",
-                    address="קריית החינוך, בית אל", crew="דאדי"),
+                    address="קריית החינוך, בית אל", crew="צוות ב׳"),
         Appointment(on=second, time="08:00", kind=VisitKind.INSTALLATION,
                     customer_name="משפחת ברק", job_id="J-2026-0148",
                     address="רחוב הארזים 4, בית אל", crew="צוות א׳"),
+        # Booked by someone else on the phone: the same crew, the same day —
+        # the board and the home page say so (part of what the showroom shows).
+        Appointment(on=second, time="12:00", kind=VisitKind.BLIND_FRAMES,
+                    customer_name="מוסדות חינוך ההר", job_id="J-2026-0152",
+                    address="קריית החינוך, בית אל", crew="צוות א׳"),
         Appointment(on=next_working_day(second), time="09:00", kind=VisitKind.SERVICE,
                     customer_name="משפחת אורן", job_id="J-2026-0141",
                     address="רחוב הגפן 12, עפרה", crew="יוסי"),
@@ -304,11 +309,11 @@ def build(folder: Path, *, today: date | None = None) -> Path:
     tasks = default_tasks()
     for task in (
         Task(kind=Kind.CHASE_QUOTE, what="לשאול אם יש החלטה על החזית", about="job:J-2026-0157",
-             subject_name="מרכז רפואי הגבעה", due=today - timedelta(days=1), assigned_to="דאדי"),
+             subject_name="מרכז רפואי הגבעה", due=today - timedelta(days=1), assigned_to="אבי"),
         Task(kind=Kind.CHASE_QUOTE, what="להתקשר לגבי ההצעה", about="job:J-2026-0159",
-             subject_name="משפחת שגיא", due=today, assigned_to="דאדי"),
+             subject_name="משפחת שגיא", due=today, assigned_to="אבי"),
         Task(kind=Kind.CHASE_PAYMENT, what="צ׳ק שחזר — לבקש צ׳ק חדש", about="job:J-2026-0141",
-             subject_name="משפחת אורן", due=today, assigned_to="דאדי"),
+             subject_name="משפחת אורן", due=today, assigned_to="אבי"),
     ):
         tasks.add(task, save=False)
     tasks.save()
