@@ -8016,7 +8016,10 @@ class DeliveryPage(Page):
             controls.addWidget(caption)
             controls.addWidget(widget)
         controls.addStretch(1)
-        self.body.addLayout(controls)
+        # The choices sit in a card of their own, like every form here.
+        site = Card("הובלה ואתר")
+        site.add_layout(controls)
+        self.body.addWidget(site)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
 

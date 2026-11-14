@@ -21,6 +21,8 @@ def _context():
     book.add(Cheque(customer="לוי", amount=4_000, due=TODAY + timedelta(days=20), number="12"))
     back = book.add(Cheque(customer="דוד", amount=2_500, due=TODAY - timedelta(days=9), number="13"))
     back.state = ChequeState.BOUNCED
+    book.add(Cheque(customer="קליל", amount=5_000, due=TODAY + timedelta(days=9), number="14",
+                    outgoing=True))
     owing = JobFile(job_id="J-1", name="וילה", customer_name="משפחת ברק",
                     status=JobStatus.INSTALLED, quote_total=10_000)
     quoted = JobFile(job_id="J-2", name="דירה", customer_name="שגיא",
@@ -40,6 +42,9 @@ def _context():
     ("מה יש מחר בשטח?", "ביקור אחד מחר"),
     ("אילו הצעות פתוחות יותר משבוע?", "הצעה פתוחה אחת בשווי ⁦30,000 ₪⁩"),
     ("מה עם משפחת ברק", "משפחת ברק: ⁦1⁩ פרויקטים"),
+    ("כמה כסף ייכנס החודש?", "⁦14,000 ₪⁩ נכנסים ב־30 הימים הקרובים"),
+    ("כמה אני צריך לשלם לספקים?", "⁦5,000 ₪⁩ בצ׳קים שנתתם"),
+    ("מה יש השבוע בשטח?", "ביקור אחד בשבוע הקרוב"),
 ])
 def test_a_question_is_answered_from_the_books(question, says):
     found = answer(question, _context(), today=TODAY)

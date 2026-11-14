@@ -247,17 +247,22 @@ def build(folder: Path, *, today: date | None = None) -> Path:
     save_work_order(floor, production.job_id, store)
 
     agenda = default_agenda()
+    # Visits on the shop's working days only: nobody installs on Shabbat.
+    from .projects.agenda import next_working_day
+
+    first = today if today.weekday() not in (4, 5) else next_working_day(today)
+    second = next_working_day(first)
     for visit in (
-        Appointment(on=today, time="07:30", kind=VisitKind.INSTALLATION,
+        Appointment(on=first, time="07:30", kind=VisitKind.INSTALLATION,
                     customer_name="דנה ואבי לוין", job_id="J-2026-0155",
                     address="רחוב התאנה 8, כוכב יעקב", crew="צוות א׳"),
-        Appointment(on=today, time="13:00", kind=VisitKind.SURVEY,
+        Appointment(on=first, time="13:00", kind=VisitKind.SURVEY,
                     customer_name="מוסדות חינוך ההר", job_id="J-2026-0162",
                     address="קריית החינוך, בית אל", crew="דאדי"),
-        Appointment(on=today + timedelta(days=1), time="08:00", kind=VisitKind.INSTALLATION,
+        Appointment(on=second, time="08:00", kind=VisitKind.INSTALLATION,
                     customer_name="משפחת ברק", job_id="J-2026-0148",
                     address="רחוב הארזים 4, בית אל", crew="צוות א׳"),
-        Appointment(on=today + timedelta(days=2), time="09:00", kind=VisitKind.SERVICE,
+        Appointment(on=next_working_day(second), time="09:00", kind=VisitKind.SERVICE,
                     customer_name="משפחת אורן", job_id="J-2026-0141",
                     address="רחוב הגפן 12, עפרה", crew="יוסי"),
     ):

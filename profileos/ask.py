@@ -261,6 +261,50 @@ def _customer(context: dict[str, Any], today: date, text: str) -> Answer | None:
         "", rows[:SHOWN], page="Projects", go="לפרויקטים")
 
 
+def _incoming(context: dict[str, Any], today: date, text: str) -> Answer | None:
+    """What comes in and goes out over the next weeks — the cash flow."""
+    book = context.get("cheques")
+    if book is None:
+        return None
+    horizon = today + timedelta(days=30)
+    coming = [c for c in book.expected(today) if c.due <= horizon]
+    going = [c for c in book.to_pay() if c.due <= horizon]
+    net = sum(c.amount for c in coming) - sum(c.amount for c in going)
+    return Answer(
+        f"{_money(sum(c.amount for c in coming))} נכנסים ב־30 הימים הקרובים",
+        f"בצ׳קים של לקוחות · יוצאים {_money(sum(c.amount for c in going))} בצ׳קים לספקים · "
+        f"נטו {_money(net)}.",
+        page="Collection", go="לתזרים")
+
+
+def _to_pay(context: dict[str, Any], today: date, text: str) -> Answer | None:
+    book = context.get("cheques")
+    if book is None:
+        return None
+    going = sorted(book.to_pay(), key=lambda c: c.due)
+    rows = [f"{c.customer} · {_money(c.amount)} · ⁦{c.due:%d/%m}⁩" for c in going[:SHOWN]]
+    return Answer(
+        f"{_money(sum(c.amount for c in going))} בצ׳קים שנתתם וטרם ירדו"
+        if going else "אין צ׳קים לספקים שעוד לא ירדו",
+        "לפי תאריך הפירעון — הקרוב ראשון." if going else "",
+        _more(rows, len(going)), page="Collection", go="לגבייה")
+
+
+def _week(context: dict[str, Any], today: date, text: str) -> Answer | None:
+    agenda = context.get("agenda")
+    if agenda is None:
+        return None
+    visits = []
+    for offset in range(7):
+        day = today + timedelta(days=offset)
+        visits += [v for v in agenda.on_day(day) if not v.done]
+    rows = [f"⁦{v.on:%d/%m}⁩ · {v.describe()}" for v in visits[:SHOWN]]
+    return Answer(
+        f"{_n(len(visits), 'ביקור אחד', 'ביקורים')} בשבוע הקרוב" if visits
+        else "אין ביקורים ביומן בשבוע הקרוב",
+        "", _more(rows, len(visits)), page="Home", go="לדף הבית")
+
+
 #: (what the question has to contain, the answer). The first that fits wins,
 #: so the narrower ones come before the broad.
 _RULES: tuple[tuple[Callable[[str], bool], Callable[..., Answer | None]], ...] = (
@@ -268,7 +312,10 @@ _RULES: tuple[tuple[Callable[[str], bool], Callable[..., Answer | None]], ...] =
     (lambda t: _has(t, "להפקיד", "הפקדה", "להפקדה"), _bankable),
     (lambda t: _has(t, "מגירה", "במגירה") or (_has(t, "צ'ק", "שיק", "צקים") and _has(t, "כמה", "סך")),
      _drawer),
+    (lambda t: _has(t, "לשלם", "לספקים", "לספק", "צ'קים שנתתי", "שנתתי"), _to_pay),
+    (lambda t: _has(t, "ייכנס", "יכנס", "נכנס", "תזרים", "יגיע כסף", "כסף ייכנס"), _incoming),
     (lambda t: _has(t, "חייב", "חוב", "לגבות", "גבייה", "יתרות"), _owed),
+    (lambda t: _has(t, "השבוע", "שבוע הקרוב") and _has(t, "שטח", "התקנ", "ביקור", "יומן"), _week),
     (lambda t: _has(t, "מחר", "היום") and _has(t, "שטח", "התקנ", "ביקור", "יומן", "מתקינ", "לאן"),
      _field),
     (lambda t: _has(t, "משקופ"), _blind_frames),
