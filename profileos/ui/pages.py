@@ -126,6 +126,7 @@ def _people_combo(combo: QComboBox) -> None:
     combo.addItems(known_people())
     combo.setCurrentIndex(-1)
     combo.lineEdit().setPlaceholderText("שם העובד")
+    combo.setMinimumWidth(150)
 
 
 class Page(QWidget):
@@ -1145,6 +1146,9 @@ class HomePage(Page):
             self.next_label.setText("כל שלבי הקו הושלמו — העבודה בדרך למשלוח.")
         else:
             self.next_label.setText(f"הצעד הבא: <b>{active_hebrew}</b>")
+        # The next step belongs to an open job; with none open it pointed at a
+        # line nobody had started.
+        self.next_label.setVisible(job is not None)
 
         self._recent = []
         try:
@@ -11239,7 +11243,6 @@ class SurveyPage(Page):
         second.addWidget(self.floor_finished)
 
         record = QPushButton("רשום מדידה")
-        record.setObjectName("Primary")
         record.clicked.connect(self.record_measurement)
         second.addWidget(record)
         second.addStretch(1)

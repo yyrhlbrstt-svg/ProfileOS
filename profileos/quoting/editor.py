@@ -271,6 +271,27 @@ def _default_mass_lookup(profile_id: str) -> float | None:
     return None
 
 
+def _in_option_glass(opening: Opening, kept: dict[str, Any]) -> Opening:
+    """The opening as an option prices it: its own glass named only where it
+    is glass the option must keep (safety glass); otherwise the option's."""
+    def named(spec_id: str | None) -> bool:
+        return bool(spec_id) and spec_id not in kept
+
+    if not (named(opening.glass_spec_id) or any(
+            named(cell.glass_spec_id) or (cell.sash and named(cell.sash.glass_spec_id))
+            for cell in opening.cells)):
+        return opening
+    copy = opening.model_copy(deep=True)
+    if named(copy.glass_spec_id):
+        copy.glass_spec_id = None
+    for cell in copy.cells:
+        if named(cell.glass_spec_id):
+            cell.glass_spec_id = None
+        if cell.sash is not None and named(cell.sash.glass_spec_id):
+            cell.sash.glass_spec_id = None
+    return copy
+
+
 # --------------------------------------------------------------------------- #
 # The draft
 # --------------------------------------------------------------------------- #
@@ -379,14 +400,20 @@ class QuoteDraft:
                     f"No glass build-up {variant.glass_id!r}. Have: "
                     + ", ".join(sorted(STANDARD_BUILDUPS))
                 )
+            # The option's glass is the quotation's choice for every opening —
+            # except safety glass an opening asks for by name (a balustrade in
+            # laminated glass is never quoted in plain double glazing).
+            kept = {key: build_up for key, build_up in STANDARD_BUILDUPS.items()
+                    if key.startswith("lam")}
+            catalogue = {glass.id: glass, **kept}
             builder = (
-                ElementBuilder.for_system(
-                    variant.system_id, glass_catalogue={glass.id: glass}
-                )
+                ElementBuilder.for_system(variant.system_id, glass_catalogue=catalogue)
                 if DIRECTORY.get(variant.system_id) is not None
-                else ElementBuilder(glass_catalogue={glass.id: glass})
+                else ElementBuilder(glass_catalogue=catalogue)
             )
-            variant.builds = [builder.build(opening) for opening in self.openings]
+            builder.default_glass = glass
+            variant.builds = [builder.build(_in_option_glass(opening, kept))
+                              for opening in self.openings]
             variant.bom = build_bom(
                 variant.builds,
                 project_name=self.project_name,

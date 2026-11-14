@@ -60,6 +60,12 @@ _JOBS = (
 )
 
 
+#: The showroom shop's estimating rates (System ← operator): ₪/kg of profile,
+#: ₪/m² of glass, ₪ a hardware set, ₪/m of gasket, ₪ a workshop hour.
+SHOWROOM_RATES = {"profile": 58.0, "glass_m2": 240.0, "hardware": 120.0,
+                  "gasket_m": 6.0, "labour_hour": 150.0}
+
+
 def showroom_dir() -> Path:
     """Beside the shop's documents, never inside its data folder."""
     from .ui.widgets import documents_dir
@@ -113,6 +119,23 @@ def build(folder: Path, *, today: date | None = None) -> Path:
     data.mkdir(parents=True, exist_ok=True)
     system = "klil-7300"
 
+    # The showroom shop's own estimating rates — its own, as any shop enters
+    # them on the System page — so every price below comes out of the same
+    # engine the quotation page uses, and the pages agree with one another.
+    from .core.config import save_settings
+
+    settings = get_settings()
+    settings.estimate_rates = dict(SHOWROOM_RATES)
+    save_settings(settings)
+    from .quoting.editor import QuoteDraft
+    from .quoting.rates import shop_labour, shop_rates
+
+    def priced(openings: list[Any]) -> float:
+        draft = QuoteDraft.start(openings, system_id="generic",
+                                 fallback_rates=shop_rates(), labour=shop_labour())
+        draft.set_margin(25.0)
+        return round(draft.totals()["net"], -2)
+
     customers = {cid: Customer(customer_id=cid, name=name, phone=phone, city=city,
                                address=address)
                  for cid, name, phone, city, address in _CUSTOMERS}
@@ -132,6 +155,8 @@ def build(folder: Path, *, today: date | None = None) -> Path:
         job.schedule = ElementSchedule(name=job.name, system_id=system, openings=[
             _opening(mark, kind, w, h, q, system) for mark, kind, w, h, q in openings])
         target = JobStatus(status)
+        if net:
+            net = priced(job.schedule.openings)
         if target is JobStatus.LOST:
             job.record_quote(float(net))
             job.advance(JobStatus.QUOTED, "הדגמה")

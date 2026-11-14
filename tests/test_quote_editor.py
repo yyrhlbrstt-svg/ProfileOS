@@ -341,3 +341,17 @@ def test_a_price_book_price_is_taken_fresh_when_the_fixtures_are_sent_again(draf
     draft.replace_origin("plumbing-fixtures", [
         {"description": "כיור", "quantity": 1, "item_code": "SINK", "unit_price": 560}])
     assert [line.unit_price for line in draft.extra_lines] == [560]
+
+
+def test_the_options_glass_prices_every_opening_but_safety_glass_is_kept():
+    from profileos.elements.model import Opening
+    from profileos.quoting.editor import QuoteDraft
+
+    plain = Opening(name="W1", width=1200, height=1400, glass_spec_id="dgu-6-16-6")
+    railing = Opening(name="B1", width=1200, height=1000, glass_spec_id="lam-66-2")
+    draft = QuoteDraft.start([plain, railing], glass_id="dgu-6-16-4")
+    builds = draft.variant().builds
+    assert not any("לא קיימת בקטלוג" in w for b in builds for w in b.warnings)
+    assert {panel.build_up.id for panel in builds[0].glass} == {"dgu-6-16-4"}
+    assert {panel.build_up.id for panel in builds[1].glass} == {"lam-66-2"}
+    assert plain.glass_spec_id == "dgu-6-16-6"            # the job's own opening untouched

@@ -145,6 +145,7 @@ class Sidebar(QWidget):
         # this stays correct as more pages are added, without retuning pixel
         # budgets by hand every time.
         scroll = QScrollArea()
+        self.scroll = scroll
         scroll.setObjectName("SidebarScroll")
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QScrollArea.Shape.NoFrame)
@@ -389,6 +390,10 @@ class MainWindow(QMainWindow):
             return
         self.stack.setCurrentIndex(index)
         self.sidebar.buttons[index].setChecked(True)
+        # The page you are on is always in sight in the sidebar.
+        scroll = getattr(self.sidebar, "scroll", None)
+        if scroll is not None:
+            scroll.ensureWidgetVisible(self.sidebar.buttons[index], 0, 24)
         self.pages[index].refresh()
         if hasattr(self.pages[index], "sync_design_actions"):
             self.pages[index].sync_design_actions()

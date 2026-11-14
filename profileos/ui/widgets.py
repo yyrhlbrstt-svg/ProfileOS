@@ -109,8 +109,11 @@ class StatTile(QFrame):
         empty = value.strip() in ("", "-", "—")
         if bool(self.value.property("empty")) != empty:
             self.value.setProperty("empty", empty)
-            self.value.style().unpolish(self.value)
-            self.value.style().polish(self.value)
+            # The tile too: an empty headline card is quiet, even the hero one.
+            self.setProperty("empty", empty)
+            for widget in (self, self.label, self.value, self.note):
+                widget.style().unpolish(widget)
+                widget.style().polish(widget)
 
 
 def _reversed_sections(display_format: str) -> str:

@@ -909,6 +909,24 @@ QPushButton#PipeStep {{ border: none; background: {p.surface}; border-radius: 14
 QStatusBar {{ background: {p.canvas}; border-top: none; }}
 QMenu {{ border: none; border-radius: 12px; padding: 6px; }}
 QMenu::item {{ border-radius: 7px; padding: 7px 18px; }}
+
+/* review: empty figures quiet, the page always visible, small fixes */
+#StatValue[empty="true"] {{ font-size: 22px; font-weight: 400; color: {p.text_faint}; }}
+#Card[hero="true"][empty="true"] {{ background: {p.surface}; }}
+#Card[hero="true"][empty="true"] #CardTitle {{ color: {p.text_muted}; }}
+#Card[hero="true"][empty="true"] #StatValue {{ color: {p.text_faint}; }}
+#Card[hero="true"][empty="true"] #StatLabel {{ color: {p.text_muted}; }}
+QPlainTextEdit[readOnly="true"], QTextEdit[readOnly="true"] {{
+    background: {p.canvas}; border: none; border-radius: 12px;
+}}
+#Card QTabBar::tab:selected {{ background: {p.accent_subtle}; color: {p.accent}; }}
+QScrollBar:vertical {{ width: 7px; margin: 6px 2px; }}
+QScrollBar:horizontal {{ height: 7px; margin: 2px 6px; }}
+QScrollBar::handle {{ border-radius: 3px; background: {"rgba(0,0,0,0.14)" if light else "rgba(255,255,255,0.16)"}; }}
+#Sidebar QScrollBar:vertical {{ width: 6px; }}
+#SidebarSection {{ padding: 8px 20px 2px; }}
+QPushButton#NavButton {{ min-height: 30px; }}
+QAbstractSpinBox::up-button, QAbstractSpinBox::down-button {{ width: 18px; margin-left: 4px; }}
 """
 
 
