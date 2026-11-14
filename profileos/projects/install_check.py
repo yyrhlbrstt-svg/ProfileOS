@@ -46,7 +46,17 @@ def not_ready(job: Any, *, cheques: Iterable[Any] = (), work_order: Any = None) 
     if needs:
         missing.append("מחכים מהלקוח: " + ", ".join(need.label for need in needs[:3]))
     account = job_account(job, list(cheques))
-    if account.total_gross > 0 and account.received + account.in_cheques <= 0.5:
+    from .payplan import view
+
+    # With payment terms, the crew goes out once everything due before the
+    # installation is paid or promised — the payment most often lost.
+    plan = view(job, account=account, install_booked=True)
+    if plan is not None:
+        if plan.due_now > 0.5:
+            before = next((s for s in plan.stages if s.key == "before_install"), None)
+            upto = f" (עד שלב ״לפני התקנה״ — ⁦{before.until:,.0f} ₪⁩)" if before else ""
+            missing.append(f"לגבות לפני ההתקנה ⁦{plan.due_now:,.0f} ₪⁩{upto}")
+    elif account.total_gross > 0 and account.received + account.in_cheques <= 0.5:
         missing.append("לא התקבלה מקדמה ולא צ׳ק")
     return missing
 

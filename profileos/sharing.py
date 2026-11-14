@@ -290,7 +290,8 @@ def catalogue_change_message(edition: Any, diff: Any, *, brand_name: str,
 
 
 def balance_message(*, brand_name: str, customer_name: str = "", job_name: str = "",
-                    account: Any, reminders: int = 0, payment_note: str = "") -> str:
+                    account: Any, reminders: int = 0, payment_note: str = "",
+                    stage: Any = None, due_now: float = 0.0) -> str:
     """What is still owed on a finished job, laid out so it cannot be argued.
 
     Every figure is from the job's own records — the agreed price, the extras
@@ -304,7 +305,8 @@ def balance_message(*, brand_name: str, customer_name: str = "", job_name: str =
     lines = [_greeting(customer_name), ""]
     lines.append(
         ("תזכורת נוספת לגבי " if reminders else "לגבי ")
-        + (f"העבודה ״{job_name}״:" if job_name else "העבודה שהסתיימה:")
+        + (f"העבודה ״{job_name}״:" if job_name else
+           ("העבודה:" if stage is not None else "העבודה שהסתיימה:"))
     )
     lines.append("")
     lines.append(f"סכום העבודה כולל מע״מ: {money(account.total_gross)}")
@@ -314,7 +316,13 @@ def balance_message(*, brand_name: str, customer_name: str = "", job_name: str =
         lines.append(f"שולם: {money(account.received)}")
     if account.in_cheques:
         lines.append(f"בצ׳קים שטרם נפרעו: {money(account.in_cheques)}")
-    lines.append(f"יתרה לתשלום: {money(account.uncovered)}")
+    if stage is not None and 0.5 < due_now < account.uncovered - 0.5:
+        # Under staged terms, what is due now — the stage reached — not the
+        # whole job before it is done.
+        lines.append(f"לתשלום עכשיו — שלב ״{stage.hebrew}״ (⁦{stage.pct:g}%⁩): {money(due_now)}")
+        lines.append(f"יתרת העבודה בסך הכול: {money(account.uncovered)}")
+    else:
+        lines.append(f"יתרה לתשלום: {money(account.uncovered)}")
     lines.append("")
     if payment_note:
         lines.append(payment_note)

@@ -145,6 +145,7 @@ def build(folder: Path, *, today: date | None = None) -> Path:
     # week and a half.
     settings.workshop_hours_per_week = 176.0
     settings.material_lead_working_days = 8
+    settings.payment_plan = {"signing": 30.0, "before_install": 50.0, "handover": 20.0}
     save_settings(settings)
     from .quoting.editor import QuoteDraft
     from .quoting.rates import shop_labour, shop_rates

@@ -201,6 +201,9 @@ class Settings(BaseModel):
     #: Working days from an order until profiles and glass are in the shop,
     #: as the shop knows its suppliers. 0 = not set (said, not assumed).
     material_lead_working_days: int = 0
+    #: Payment terms in percent by stage: signing, before_install,
+    #: handover. Empty until the shop sets them; must add up to 100.
+    payment_plan: dict[str, float] = Field(default_factory=dict)
     #: The phones' way in, served by the office window while it is open
     #: (System ← Phones). Off until somebody turns it on.
     phone_access: bool = False

@@ -1601,11 +1601,27 @@ class ProjectsPage(Page):
             lines.append(text)
         elif job.status.value in ("won", "in_production"):
             lines.append("חומר: עוד לא הוזמן")
+        plan_line = self._plan_line(job)
+        if plan_line:
+            lines.append(plan_line)
         self.job_summary.setText("  ·  ".join(lines[:1]) + "\n" + "\n".join(lines[1:]))
 
         for status in sorted(TRANSITIONS[job.status], key=lambda s: s.value):
             self.status_combo.addItem(status.hebrew, status.value)
         self.status_combo.setEnabled(self.status_combo.count() > 0)
+
+    def _plan_line(self, job: Any) -> str:
+        """The job's payment stages under the shop's terms, in one line."""
+        try:
+            from ..erp.collection import default_cheques
+            from ..projects.agenda import default_agenda
+            from ..projects.payplan import install_booked, view
+
+            booked = install_booked(job.job_id, default_agenda())
+            plan = view(job, list(default_cheques()), install_booked=booked)
+        except Exception:  # noqa: BLE001 - the summary stands without it
+            return ""
+        return f"תשלומים: {plan.describe()}" if plan is not None else ""
 
     # -- money owed ------------------------------------------------------------ #
     def send_balance(self) -> None:
@@ -1640,10 +1656,22 @@ class ProjectsPage(Page):
             )
             if answer != QMessageBox.StandardButton.Yes:
                 return
+        stage, due_now = None, 0.0
+        try:
+            from ..projects.agenda import default_agenda
+            from ..projects.payplan import install_booked, view
+
+            plan = view(job, account=account,
+                        install_booked=install_booked(job.job_id, default_agenda()))
+            if plan is not None and plan.current is not None:
+                stage, due_now = plan.current, plan.due_now
+        except Exception:  # noqa: BLE001 - the whole balance is still right
+            stage, due_now = None, 0.0
         message = balance_message(
             brand_name=active_brand().display_name, customer_name=job.customer_name,
             job_name=job.name, account=account, reminders=len(job.balance_reminders),
             payment_note=getattr(get_settings(), "payment_note", "") or "",
+            stage=stage, due_now=due_now,
         )
         try:
             store = self._store()
@@ -10543,6 +10571,27 @@ class SystemPage(Page):
         self.show_pace()
         self.status(f"הצעות חדשות יחושבו לפי ⁦{calibration.factor:.2f}⁩ מהנורמה")
 
+    def save_terms(self) -> None:
+        from ..core.config import get_settings, save_settings
+
+        plan = {key: float(box.value()) for key, box in self._plan_fields.items()
+                if box.value() > 0}
+        total = sum(plan.values())
+        if plan and abs(total - 100) > 0.01:
+            self.report(ProfileOSError(
+                f"השלבים מסתכמים ב־⁦{total:g}%⁩ — צריך ⁦100%⁩ בדיוק. "
+                "תקנו את האחוזים ושמרו שוב."), "תנאי התשלום לא נשמרו")
+            return
+        settings = get_settings()
+        settings.payment_plan = plan
+        try:
+            save_settings(settings)
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "תנאי התשלום לא נשמרו")
+            return
+        self.status("נשמרו תנאי התשלום — כל פרויקט מחושב לפיהם" if plan
+                    else "בלי שלבי תשלום — נבדקת רק המקדמה")
+
     def save_timing(self) -> None:
         from ..core.config import get_settings, save_settings
 
@@ -10766,6 +10815,36 @@ class SystemPage(Page):
         save_timing.clicked.connect(self.save_timing)
         timing.add(save_timing)
         layout.addWidget(timing)
+
+        # Payment terms: what is due when. The middle payment — before the
+        # crew goes out — is the one most often lost.
+        terms = Card("תנאי תשלום")
+        terms_hint = QLabel(
+            "כמה אחוז משלמים בכל שלב. לפני כל התקנה התוכנה בודקת שהשלבים עד "
+            "״לפני התקנה״ שולמו או מכוסים בצ׳ק, והודעת היתרה מבקשת בדיוק את השלב "
+            "שהגיע. ריק = בלי שלבים.")
+        terms_hint.setObjectName("Hint")
+        terms_hint.setWordWrap(True)
+        terms.add(terms_hint)
+        from ..projects.payplan import STAGES
+
+        entered = dict(getattr(settings, "payment_plan", {}) or {})
+        self._plan_fields: dict[str, QDoubleSpinBox] = {}
+        terms_grid = FieldGrid()
+        for key, hebrew in STAGES:
+            box = QDoubleSpinBox()
+            box.setRange(0, 100)
+            box.setDecimals(0)
+            box.setSuffix(" %")
+            box.setSpecialValueText("—")
+            box.setValue(float(entered.get(key, 0) or 0))
+            self._plan_fields[key] = box
+            terms_grid.add(hebrew, box)
+        terms.add(terms_grid)
+        save_terms = QPushButton("שמור תנאי תשלום")
+        save_terms.clicked.connect(self.save_terms)
+        terms.add(save_terms)
+        layout.addWidget(terms)
 
         note = QLabel(
             "הפרטים האלה מופיעים על הצעות מחיר, כרטיסי עבודה ובכותרת של כל "
