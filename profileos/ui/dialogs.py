@@ -1768,8 +1768,44 @@ class CrewWeekDialog(QDialog):
         close.clicked.connect(self.accept)
         layout.addWidget(close, 0, Qt.AlignmentFlag.AlignLeft)
 
+
+class RemakeDialog(_FormDialog):
+    """A piece scrapped on the floor: why, and what it cost if known."""
+
+    accept_text = "פסילה וייצור מחדש"
+
+    def __init__(self, parent: QWidget | None = None, *, item: Any) -> None:
+        super().__init__("פריט נפסל — לייצור מחדש", parent)
+        from ..mes.remakes import REASONS
+
+        self.reason = QComboBox()
+        for key, hebrew in REASONS:
+            self.reason.addItem(hebrew, key)
+        self.note = QLineEdit()
+        self.note.setPlaceholderText("למשל: נחתך 1180 במקום 1280")
+        self.cost = QDoubleSpinBox()
+        self.cost.setRange(0, 1_000_000)
+        self.cost.setDecimals(0)
+        self.cost.setSuffix(" ₪")
+        self.cost.setSpecialValueText("לא ידוע")
+        what = QLabel(f"⁦{item.item_id}⁩ · {item.description}")
+        what.setWordWrap(True)
+        self.grid.add("פריט", what)
+        self.grid.add("למה נפסל", self.reason)
+        self.grid.add("מה קרה", self.note)
+        self.grid.add("עלות הפריט", self.cost)
+        hint = QLabel("פריט חדש במקומו יחזור לתחילת הרצפה — לחיתוך או להזמנת הזכוכית הבאה.")
+        hint.setObjectName("Hint")
+        hint.setWordWrap(True)
+        self.grid.add("", hint)
+
+    def values(self) -> dict[str, Any]:
+        return {"reason": str(self.reason.currentData()), "note": self.note.text().strip(),
+                "cost": float(self.cost.value())}
+
 __all__ = [
     "CloseServiceCallDialog",
+    "RemakeDialog",
     "CrewWeekDialog",
     "ConfirmSystemDialog",
     "NewChequeDialog",

@@ -5978,6 +5978,10 @@ class ShopFloorPage(Page):
             caption = QLabel(label); caption.setObjectName("FieldLabel")
             row.addWidget(caption); row.addWidget(widget)
         row.addWidget(scan)
+        scrap = QPushButton("נפסל — לייצור מחדש")
+        scrap.setToolTip("פריט שנחתך לא נכון, נשרט או נשבר: נרשם עם הסיבה, ופריט חדש חוזר לרצפה")
+        scrap.clicked.connect(self.remake_item)
+        row.addWidget(scrap)
         row.addStretch(1)
         scan_card.add_layout(row)
         self.scan_result = QLabel("")
@@ -6278,6 +6282,37 @@ class ShopFloorPage(Page):
         self.scan_result.setText(message)
         self.scan_result.setStyleSheet(f"color: {colour};")
         self._refresh_items()
+
+    def remake_item(self) -> None:
+        """Scrap the chosen piece with its reason; a new one goes back on the floor."""
+        from ..mes.remakes import remake
+        from .dialogs import RemakeDialog
+
+        order = self.session.work_order
+        job = self.session.job
+        if order is None or job is None or order.project_id != job.job_id:
+            self.report(ProfileOSError("פתחו את הפרויקט ושחררו לו פקודת עבודה"), "אין פריט לפסול")
+            return
+        item = order.find(self.item.currentData() or "")
+        if item is None:
+            self.report(ProfileOSError("בחרו פריט ברשימה ״פריט״"), "לא נבחר פריט")
+            return
+        dialog = RemakeDialog(self, item=item)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        from ..mes.store import save_work_order
+
+        try:
+            fresh = remake(order, item.item_id, by=self.operator.currentText(),
+                           **dialog.values())
+            order = save_work_order(order, job.job_id, self._store())
+        except Exception as exc:  # noqa: BLE001
+            self.report(exc, "הפסילה לא נרשמה")
+            self.refresh()
+            return
+        self._show_order(order)
+        self._refresh_items()
+        self.scan_result.setText(f"⁦{item.item_id}⁩ נפסל — ⁦{fresh.item_id}⁩ חזר לתחילת הרצפה")
 
     def _refresh_items(self) -> None:
         order = self.session.work_order

@@ -568,6 +568,38 @@ def _pace(context: dict[str, Any], today: date) -> list[Insight]:
     )]
 
 
+def _remakes(context: dict[str, Any], today: date) -> list[Insight]:
+    """This month's scrapped-and-remade pieces, by the reason that repeats."""
+    from .mes.remakes import remakes
+
+    store = context.get("store")
+    if store is None:
+        return []
+    from .mes.store import load_work_order
+
+    orders = []
+    for job in context.get("jobs") or []:
+        if getattr(job.status, "value", job.status) not in ("in_production", "installed", "won"):
+            continue
+        try:
+            order = load_work_order(job.job_id, store)
+        except Exception:  # noqa: BLE001 - one unreadable order is not the month
+            continue
+        if order is not None:
+            orders.append((job.job_id, order))
+    report = remakes(orders, start=today.replace(day=1), end=today)
+    if not report.count:
+        return []
+    top, count, _cost = report.by_reason()[0]
+    return [Insight(
+        "warning" if report.count >= 5 else "info",
+        f"החודש נפסלו ⁦{report.count}⁩ פריטים ויוצרו מחדש",
+        report.describe() + ". סיבה שחוזרת היא מה שכדאי לתקן — "
+        + ("מסור, מידה, או הדרכה." if "מידה" in top else "בדקו מה גורם לה."),
+        "Shop floor", f"remakes:{today:%Y-%m}:{report.count}",
+    )]
+
+
 def _clashes(context: dict[str, Any], today: date) -> list[Insight]:
     """A crew booked twice on one day, or a visit on Shabbat or a festival,
     in the next two weeks — found while there is still time to move it."""
@@ -1236,7 +1268,7 @@ def _blind_frames(context: dict[str, Any], today: date) -> list[Insight]:
 
 RULES: tuple[Callable[[dict[str, Any], date], list[Insight]], ...] = (
     _data_safety, _jobs, _accounts, _field, _customers, _money, _service, _tasks,
-    _paperwork, _draft, _catalogue, _price_lists, _material, _remeasured, _install_ready, _clashes,
+    _paperwork, _draft, _catalogue, _price_lists, _material, _remeasured, _install_ready, _clashes, _remakes,
     _pace, _blind_frames,
 )
 
