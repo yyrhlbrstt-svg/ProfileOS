@@ -54,6 +54,8 @@ class AttachmentKind(StrEnum):
     ARCHITECT_DRAWING = "architect_drawing"
     PERMIT = "permit"
     CERTIFICATE = "certificate"
+    #: The new window drawn onto the customer's own façade, for the quotation.
+    VISUALISATION = "visualisation"
     OTHER = "other"
 
     @property
@@ -72,6 +74,7 @@ class AttachmentKind(StrEnum):
             "architect_drawing": "תוכנית אדריכל",
             "permit": "היתר",
             "certificate": "תעודה או אישור",
+            "visualisation": "הדמיה על הבית",
             "other": "אחר",
         }[self.value]
 

@@ -5060,6 +5060,11 @@ class QuotePage(Page):
         send.setObjectName("WhatsApp")
         send.clicked.connect(self.send_whatsapp)
         self.header.add_action(send)
+        # The window on the customer's own house: a photo, four corners.
+        visualise = QPushButton("הדמיה על הבית")
+        visualise.setToolTip("צילום של החזית, וגוררים את הפינות — החלון מופיע על הבית של הלקוח")
+        visualise.clicked.connect(self.visualise)
+        self.header.add_action(visualise)
 
         self.stats = StatRow([
             ("net", "לפני מע״מ"), ("vat", "מע״מ"), ("gross", "סה״כ לתשלום"),
@@ -5597,6 +5602,27 @@ class QuotePage(Page):
             return ""
         area = sum(opening.area * max(1, opening.quantity) for opening in draft.openings)
         return bench.judge(net, area)
+
+    def visualise(self) -> None:
+        """The quoted element on a photo of the customer's façade."""
+        from .visualise import VisualiseDialog
+
+        builds = list(self.session.builds)
+        colour = "natural"
+        if self.draft is not None:
+            from ..quoting.editor import FINISH_RENDER_COLOUR
+
+            variant = self.draft.variant()
+            builds = list(variant.builds) or builds
+            colour = (self.draft.display.render_colour
+                      or FINISH_RENDER_COLOUR.get(variant.finish_id, "natural"))
+        if not builds:
+            self.report(ProfileOSError("אין עדיין פתחים — תכננו פתח ואז חזרו להדמיה"),
+                        "אין מה להציג")
+            return
+        dialog = VisualiseDialog(self, builds=builds, colour=colour, job=self.session.job)
+        if dialog.exec() and dialog.saved is not None:
+            self.status(f"ההדמיה נשמרה בתיק הפרויקט: {dialog.saved.name}")
 
     def _show_promise(self, variant: Any) -> None:
         """The earliest honest installation date for this quotation."""
