@@ -744,7 +744,7 @@ class BlindFramesDialog(QDialog):
         self.stage = QLabel("")
         self.stage.setObjectName("FieldLabel")
         layout.addWidget(self.stage)
-        self.table = DataTable(["פתח", "הותקן", "מי התקין", "קו גובה", "אחרי הטיח", "הערה"],
+        self.table = DataTable(["פתח", "כמות", "הותקן", "מי התקין", "קו גובה", "אחרי הטיח", "הערה"],
                                empty_text="סמנו ״התקנה בשני שלבים״")
         self.table.setSelectionMode(self.table.SelectionMode.ExtendedSelection)
         self.table.stretch(5)
@@ -808,13 +808,13 @@ class BlindFramesDialog(QDialog):
         return [opening.element_id for opening, _frame in frames(self.job)]
 
     def show_frames(self) -> None:
-        from ..projects.blindframes import describe, frames, marking
+        from ..projects.blindframes import describe, frames, marking, units
 
         rows = []
         for opening, frame in frames(self.job):
             after = ("—" if frame.check_ok is None
                      else "תקין" if frame.check_ok else "לתיקון")
-            rows.append([marking(opening),
+            rows.append([marking(opening), f"⁦{units(opening)}⁩",
                          _day(frame.installed_on),
                          frame.installed_by or "—", frame.level_mark or "—", after,
                          frame.check_note])

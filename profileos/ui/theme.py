@@ -891,6 +891,12 @@ QHeaderView {{ background: transparent; border: none; }}
 #AnswerRows {{ font-size: {m.font_size}px; color: {p.text}; }}
 #WelcomeTitle {{ font-size: 30px; font-weight: 800; color: {p.text}; }}
 #WelcomeLead {{ font-size: {m.font_size + 2}px; color: {p.text_muted}; }}
+/* A page's form set on a card (#SheetBody): its plain containers and
+   scroll areas take the card's surface, not the canvas behind it. */
+#SheetBody, #SheetBody QScrollArea, #SheetBody QScrollArea > QWidget,
+#SheetBody QScrollArea > QWidget > QWidget, #SheetBody QWidget[sheet="true"] {{
+    background: transparent;
+}}
 #LessonCell {{ background: transparent; }}
 #LessonCell QLabel {{ background: transparent; }}
 #LessonTitle {{ font-size: {m.font_size + 2}px; font-weight: 700; color: {p.text}; }}

@@ -112,6 +112,15 @@ def marking(opening: Any) -> str:
     return str(getattr(opening, "reference", "") or opening.name)
 
 
+def units(opening: Any) -> int:
+    """How many blind frames one line of the schedule stands for: a line
+    "W1 × 3" is three frames on the site, set and checked together."""
+    try:
+        return max(1, int(round(float(getattr(opening, "quantity", 1) or 1))))
+    except (TypeError, ValueError):
+        return 1
+
+
 def set_two_stage(job: Any, on: bool) -> None:
     """Every opening gets a blind frame, or none does. A blind frame already
     recorded as installed is not taken off: that would erase a site visit."""
@@ -198,9 +207,10 @@ def describe(job: Any) -> str:
     if current is None:
         return "התקנה בשלב אחד"
     found = frames(job)
-    installed = sum(1 for _o, frame in found if frame.installed)
-    checked = sum(1 for _o, frame in found if frame.checked)
-    return (f"{current.hebrew} · הותקנו ⁦{installed}⁩ מתוך ⁦{len(found)}⁩"
+    installed = sum(units(o) for o, frame in found if frame.installed)
+    checked = sum(units(o) for o, frame in found if frame.checked)
+    total = sum(units(o) for o, _frame in found)
+    return (f"{current.hebrew} · הותקנו ⁦{installed}⁩ מתוך ⁦{total}⁩"
             + (f" · נבדקו אחרי הטיח ⁦{checked}⁩" if installed else ""))
 
 
@@ -271,6 +281,7 @@ __all__ = [
     "set_two_stage",
     "stage",
     "to_fix",
+    "units",
     "waiting_since",
     "windows_not_ready",
 ]

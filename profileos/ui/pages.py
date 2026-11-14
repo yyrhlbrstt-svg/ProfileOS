@@ -6567,11 +6567,22 @@ class PlumbingPage(Page):
         self.body.addWidget(self.stats)
 
         tabs = QTabWidget()
-        tabs.addTab(self._fixtures_tab(), "כלים סניטריים")
-        tabs.addTab(self._supply_tab(), "אספקה")
-        tabs.addTab(self._drainage_tab(), "דלוחין ואוורור")
-        tabs.addTab(self._hot_tab(), "מים חמים")
-        tabs.addTab(self._takeoff_tab(), "כתב כמויות")
+        # Each calculation sits on a card, as every other page's forms do: on
+        # the bare canvas the fields read as floating, not as one sheet.
+        for build_tab, title in ((self._fixtures_tab, "כלים סניטריים"),
+                                 (self._supply_tab, "אספקה"),
+                                 (self._drainage_tab, "דלוחין ואוורור"),
+                                 (self._hot_tab, "מים חמים"),
+                                 (self._takeoff_tab, "כתב כמויות")):
+            sheet = QFrame()
+            sheet.setObjectName("Card")
+            inner = QVBoxLayout(sheet)
+            inner.setContentsMargins(*(METRICS.space(5),) * 2, *(METRICS.space(5),) * 2)
+            body = build_tab()
+            if not body.objectName():
+                body.setObjectName("SheetBody")
+            inner.addWidget(body)
+            tabs.addTab(sheet, title)
         self.body.addWidget(tabs, 1)
         self.tabs = tabs
 

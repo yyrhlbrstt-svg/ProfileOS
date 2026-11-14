@@ -345,3 +345,11 @@ def test_a_survey_kept_before_sheets_had_a_stage_is_the_walls(shop):
 
     old = Survey.from_dict({"survey_id": "SV-OLD", "job_id": "J-1", "openings": []})
     assert old.stage == ""
+
+
+def test_the_count_is_frames_on_site_not_lines():
+    job = _job()
+    job.schedule.openings[0].quantity = 4          # W1 × 4
+    set_two_stage(job, True)
+    record_installed(job, ["W1"], by="יוסי")
+    assert "הותקנו ⁦4⁩ מתוך ⁦6⁩" in describe(job)
