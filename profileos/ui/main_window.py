@@ -292,6 +292,21 @@ class MainWindow(QMainWindow):
         outer = self.sidebar.layout()
         outer.insertWidget(outer.count() - 1, self.theme_button)
         self._label_theme_button()
+        # A showroom with a busy shop's month in it, in its own window and
+        # folder: what to show somebody new, without opening the real books.
+        from ..showroom import is_showroom
+
+        if is_showroom():
+            self.setWindowTitle(f"{self.windowTitle()} — הדגמה (נתונים לדוגמה בלבד)")
+        else:
+            self.showroom_button = QPushButton("פתיחת חלון הדגמה")
+            self.showroom_button.setObjectName("SidebarTheme")
+            self.showroom_button.setCursor(Qt.CursorShape.PointingHandCursor)
+            self.showroom_button.setToolTip(
+                "חלון נפרד עם מפעל לדוגמה — פרויקטים, הצעות, צ׳קים וייצור. "
+                "הנתונים האמיתיים לא נפתחים בו ולא משתנים.")
+            self.showroom_button.clicked.connect(self.open_showroom)
+            outer.insertWidget(outer.count() - 1, self.showroom_button)
 
         self.stack = QStackedWidget()
         layout.addWidget(self.stack, 1)
@@ -1044,6 +1059,22 @@ class MainWindow(QMainWindow):
             return True
         set_draft_aside()
         return False
+
+    def open_showroom(self) -> bool:
+        """The showroom, in a window of its own on its own folder."""
+        from PySide6.QtWidgets import QMessageBox
+
+        from ..showroom import open_showroom, showroom_dir
+
+        try:
+            open_showroom()
+        except Exception as exc:  # noqa: BLE001 - said, not only logged
+            QMessageBox.warning(self, "חלון ההדגמה לא נפתח", str(exc))
+            return False
+        self.statusBar().showMessage(
+            f"חלון ההדגמה נפתח (בפעם הראשונה זה לוקח כמה שניות) — הנתונים בתיקייה "
+            f"⁨{showroom_dir()}⁩, לא בנתונים שלכם", 15000)
+        return True
 
     def toggle_theme(self) -> None:
         self.apply_palette(LIGHT if self.colours.mode.value == "dark" else DARK)
