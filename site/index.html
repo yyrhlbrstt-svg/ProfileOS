@@ -1,0 +1,802 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ProfileOS — מערכת הנדסית לאלומיניום אדריכלי</title>
+<meta name="description" content="חבילת CAD/CAM, חישוב סטטי, אופטימיזציית חיתוך ופוסט-פרוססינג CNC לפרופילי אלומיניום. מוגדרת עבור דאדי בע״מ, בית אל.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Frank+Ruhl+Libre:wght@500;700;900&family=Heebo:wght@300;400;500;700&family=IBM+Plex+Mono:wght@400;600&display=swap">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='5' fill='%2312161C'/%3E%3Cpath d='M6 8h20v4H18v12h-5V12H6z' fill='%23E0A552'/%3E%3C/svg%3E">
+<style>
+/* ─────────────────────────────────────────────────────────────────────────
+   Tokens. Light is the bare :root; both dark paths redefine only tokens.
+   The palette is taken from the material: bronze anodising against the cool
+   grey of mill-finish aluminium, on drawing-paper grey.
+   ───────────────────────────────────────────────────────────────────────── */
+:root{
+  --paper:#FBF8F4; --surface:#FFFFFF; --sunken:#F4EEE6; --raised:#FFFFFF;
+  --ink:#241E17; --body:#463D31; --muted:#6E6252; --faint:#9C907D;
+  --rule:#E6DECF; --rule-firm:#C9BEA9;
+  --bronze:#B0671F; --bronze-ink:#8F5115; --bronze-wash:#F4E6D2;
+  --steel:#4E6379;
+  --ok:#2F7A4F; --ok-wash:#DFEDE4;
+  --warn:#9A7318; --warn-wash:#F2E9D3;
+  --bad:#A2413A; --bad-wash:#F5E1DE;
+  --shadow:0 1px 1px rgba(36,30,23,.04), 0 10px 30px -18px rgba(36,30,23,.28);
+  --web:#E4DCCC;
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --paper:#0F0E0D; --surface:#151413; --sunken:#0A0908; --raised:#1C1A18;
+    --ink:#F4F2EF; --body:#C9C3BB; --muted:#A7A199; --faint:#6C6862;
+    --rule:#262320; --rule-firm:#383430;
+    --bronze:#E29A47; --bronze-ink:#F0B269; --bronze-wash:rgba(224,154,71,.13);
+    --steel:#8FA6BC;
+    --ok:#3FA672; --ok-wash:rgba(63,166,114,.15);
+    --warn:#D9B13B; --warn-wash:rgba(217,177,59,.15);
+    --bad:#DE5D5D; --bad-wash:rgba(222,93,93,.15);
+    --shadow:0 1px 1px rgba(0,0,0,.5), 0 12px 34px -20px rgba(0,0,0,.9);
+    --web:#2A2723;
+  }
+}
+:root[data-theme="dark"]{
+  --paper:#0F0E0D; --surface:#151413; --sunken:#0A0908; --raised:#1C1A18;
+  --ink:#F4F2EF; --body:#C9C3BB; --muted:#A7A199; --faint:#6C6862;
+  --rule:#262320; --rule-firm:#383430;
+  --bronze:#E29A47; --bronze-ink:#F0B269; --bronze-wash:rgba(224,154,71,.13);
+  --steel:#8FA6BC;
+  --ok:#3FA672; --ok-wash:rgba(63,166,114,.15);
+  --warn:#D9B13B; --warn-wash:rgba(217,177,59,.15);
+  --bad:#DE5D5D; --bad-wash:rgba(222,93,93,.15);
+  --shadow:0 1px 1px rgba(0,0,0,.5), 0 12px 34px -20px rgba(0,0,0,.9);
+  --web:#2A2723;
+}
+
+*,*::before,*::after{box-sizing:border-box;}
+html{-webkit-text-size-adjust:100%;}
+body{
+  margin:0; background:var(--paper); color:var(--body);
+  font-family:"Heebo","Segoe UI",system-ui,sans-serif;
+  font-weight:400; font-size:17px; line-height:1.68;
+  -webkit-font-smoothing:antialiased; text-rendering:optimizeLegibility;
+}
+h1,h2,h3,h4{
+  font-family:"Frank Ruhl Libre","Heebo",Georgia,serif;
+  color:var(--ink); margin:0; text-wrap:balance; line-height:1.18;
+  font-weight:700; letter-spacing:-.005em;
+}
+p{margin:0;}
+a{color:var(--bronze); text-decoration-thickness:1px; text-underline-offset:4px;}
+a:hover{color:var(--bronze-ink);}
+:focus-visible{outline:2px solid var(--bronze); outline-offset:3px; border-radius:4px;}
+.mono,code,.num{font-family:"IBM Plex Mono",ui-monospace,monospace; font-variant-numeric:tabular-nums;}
+
+.wrap{max-width:1160px; margin:0 auto; padding:0 clamp(18px,4vw,40px);}
+.prose{max-width:62ch;}
+.eyebrow{
+  font-family:"IBM Plex Mono",monospace; font-size:.72rem; font-weight:600;
+  letter-spacing:.16em; text-transform:uppercase; color:var(--bronze);
+}
+
+/* ── the extrusion web: a hairline with chamber ticks, the way a section
+      divider is drawn on an aluminium profile detail ─────────────────────── */
+.web{height:11px; margin:clamp(56px,8vw,104px) 0; position:relative;}
+.web::before{
+  content:""; position:absolute; inset-block-start:5px; inset-inline:0;
+  height:1px; background:var(--web);
+}
+.web::after{
+  content:""; position:absolute; inset-block:0; inset-inline:0;
+  background-image:
+    linear-gradient(to bottom, var(--web) 0 100%),
+    linear-gradient(to bottom, var(--web) 0 100%);
+  background-size:1px 11px, 1px 11px;
+  background-position:12% 0, 61% 0;
+  background-repeat:no-repeat;
+}
+
+/* ── header ──────────────────────────────────────────────────────────────── */
+header{padding:clamp(44px,7vw,86px) 0 0;}
+.masthead{display:flex; align-items:baseline; gap:14px; flex-wrap:wrap;}
+.wordmark{
+  font-family:"IBM Plex Mono",monospace; font-weight:600; font-size:1.02rem;
+  letter-spacing:.05em; color:var(--ink);
+}
+.operator{
+  font-size:.88rem; color:var(--muted);
+  border-inline-start:1px solid var(--rule-firm); padding-inline-start:14px;
+}
+.theme-toggle{
+  margin-inline-start:auto; background:none; border:1px solid var(--rule-firm);
+  color:var(--muted); border-radius:999px; padding:5px 14px; cursor:pointer;
+  font:inherit; font-size:.8rem; line-height:1.4;
+}
+.theme-toggle:hover{color:var(--ink); border-color:var(--ink);}
+
+h1{
+  font-size:clamp(2.5rem,7vw,4.6rem); font-weight:900; margin:clamp(28px,5vw,52px) 0 0;
+  letter-spacing:-.02em;
+}
+.lede{
+  font-size:clamp(1.12rem,2.2vw,1.4rem); color:var(--body); margin-top:22px;
+  max-width:56ch; font-weight:300; line-height:1.6;
+}
+.lede strong{font-weight:500; color:var(--ink);}
+
+/* ── the qualifying figure, stated immediately ───────────────────────────── */
+.claim{
+  margin-top:clamp(34px,5vw,54px);
+  display:grid; gap:1px; background:var(--rule);
+  grid-template-columns:repeat(auto-fit,minmax(158px,1fr));
+  border:1px solid var(--rule); border-radius:12px; overflow:hidden;
+  box-shadow:var(--shadow);
+}
+.claim div{background:var(--surface); padding:18px 20px 16px;}
+.claim dt{
+  font-size:.74rem; letter-spacing:.09em; text-transform:uppercase;
+  color:var(--muted); font-weight:500; margin:0 0 6px;
+}
+.claim dd{
+  margin:0; font-family:"IBM Plex Mono",monospace; font-weight:600;
+  font-size:1.7rem; color:var(--ink); line-height:1.1;
+  /* "42 / 45" is one Latin expression. Left in the page's RTL flow the
+     bidi algorithm reorders the operands and it reads "45 / 42". */
+  direction:ltr; unicode-bidi:isolate;
+  /* Physical "right" on purpose: direction is forced to ltr for the operand
+     order, so the logical start edge would drag the figure away from its
+     right-aligned Hebrew label. */
+  text-align:right;
+}
+.claim dd small{
+  display:block; font:400 .74rem/1.5 "Heebo",sans-serif; color:var(--faint);
+  margin-top:5px; direction:rtl; unicode-bidi:isolate;
+}
+.claim dd.accent{color:var(--bronze);}
+
+/* ── sections ────────────────────────────────────────────────────────────── */
+section{scroll-margin-top:24px;}
+h2{font-size:clamp(1.7rem,3.6vw,2.5rem); font-weight:900;}
+h2 + .sub{color:var(--muted); margin-top:12px; max-width:60ch;}
+h3{font-size:1.12rem; font-weight:700;}
+
+.grid{display:grid; gap:16px; margin-top:34px;}
+.cols-3{grid-template-columns:repeat(auto-fit,minmax(268px,1fr));}
+.cols-2{grid-template-columns:repeat(auto-fit,minmax(320px,1fr));}
+
+.card{
+  background:var(--surface); border:1px solid var(--rule); border-radius:12px;
+  padding:22px 22px 20px; box-shadow:var(--shadow);
+}
+.card .tag{
+  font-family:"IBM Plex Mono",monospace; font-size:.68rem; font-weight:600;
+  letter-spacing:.1em; text-transform:uppercase; color:var(--bronze);
+  display:block; margin-bottom:9px;
+}
+.card p{margin-top:9px; font-size:.94rem; color:var(--body);}
+.card ul{margin:12px 0 0; padding-inline-start:1.05em; font-size:.9rem; color:var(--muted);}
+.card li{margin-top:5px;}
+
+/* ── comparison matrix ───────────────────────────────────────────────────── */
+.controls{
+  display:flex; flex-wrap:wrap; gap:8px; align-items:center;
+  margin:28px 0 16px;
+}
+.chip{
+  font:inherit; font-size:.82rem; cursor:pointer;
+  background:var(--surface); color:var(--muted);
+  border:1px solid var(--rule); border-radius:999px; padding:5px 14px;
+  transition:background .12s, color .12s, border-color .12s;
+}
+.chip:hover{color:var(--ink); border-color:var(--rule-firm);}
+.chip[aria-pressed="true"]{
+  background:var(--bronze-wash); color:var(--bronze-ink);
+  border-color:var(--bronze);
+}
+
+.table-scroll{
+  /* Forty-five rows is three screens of table. Scrolling it inside its own
+     box keeps the header row in view while you read a column, and keeps the
+     rest of the page reachable without paging past the whole matrix. */
+  overflow:auto; max-height:min(74vh, 780px);
+  overscroll-behavior:contain;
+  border:1px solid var(--rule); border-radius:12px;
+  background:var(--surface); box-shadow:var(--shadow);
+}
+table{border-collapse:collapse; width:100%; font-size:.88rem;}
+thead th{
+  position:sticky; top:0; z-index:2;
+  background:var(--raised); color:var(--muted);
+  font-weight:500; font-size:.76rem; letter-spacing:.03em;
+  padding:11px 8px; text-align:center; white-space:nowrap;
+  border-bottom:1px solid var(--rule-firm);
+}
+thead th:first-child{text-align:start; padding-inline-start:18px; min-width:230px;}
+thead th.own{color:var(--bronze); font-weight:600;}
+tbody th{
+  font-weight:400; text-align:start; padding:9px 8px 9px 18px;
+  padding-inline-start:18px; padding-inline-end:8px;
+  color:var(--ink); border-bottom:1px solid var(--rule);
+  min-width:230px;
+}
+tbody th .detail{display:block; color:var(--faint); font-size:.78rem; line-height:1.45; margin-top:2px;}
+tbody td{
+  text-align:center; padding:9px 8px; border-bottom:1px solid var(--rule);
+  font-family:"IBM Plex Mono",monospace; font-size:.78rem; font-weight:600;
+  white-space:nowrap;
+}
+tbody tr:hover th, tbody tr:hover td{background:var(--raised);}
+tr.area-head th{
+  background:var(--sunken); color:var(--muted); font-family:"IBM Plex Mono",monospace;
+  font-size:.7rem; letter-spacing:.12em; text-transform:uppercase; font-weight:600;
+  padding-block:7px;
+}
+.mark{display:inline-block; min-width:2.6em; border-radius:5px; padding:2px 7px;}
+.m-full{background:var(--ok-wash); color:var(--ok);}
+.m-part{background:var(--warn-wash); color:var(--warn);}
+.m-no{background:var(--bad-wash); color:var(--bad);}
+.m-unk{color:var(--faint);}
+td.own .m-full{background:var(--bronze-wash); color:var(--bronze-ink);}
+.star{color:var(--bronze); font-size:.9em;}
+
+.legend{
+  margin-top:14px; font-size:.83rem; color:var(--muted);
+  display:flex; flex-wrap:wrap; gap:8px 20px; align-items:center;
+}
+.legend .mark{font-family:"IBM Plex Mono",monospace; font-size:.76rem; font-weight:600;}
+
+/* ── plain lists ─────────────────────────────────────────────────────────── */
+.notes{margin:30px 0 0; padding:0; list-style:none;}
+.notes li{
+  padding:16px 0 16px 0; border-top:1px solid var(--rule);
+  display:grid; grid-template-columns:auto 1fr; gap:14px; align-items:start;
+}
+.notes li:last-child{border-bottom:1px solid var(--rule);}
+.notes .idx{
+  font-family:"IBM Plex Mono",monospace; font-size:.74rem; color:var(--faint);
+  padding-top:4px; font-weight:600;
+}
+.notes strong{color:var(--ink); font-weight:500;}
+
+pre{
+  margin:22px 0 0; background:var(--sunken); border:1px solid var(--rule);
+  border-radius:10px; padding:18px 20px; overflow-x:auto;
+  font-family:"IBM Plex Mono",monospace; font-size:.83rem; line-height:1.75;
+  color:var(--body); direction:ltr; text-align:left;
+}
+pre .c{color:var(--faint);}
+pre .k{color:var(--bronze);}
+
+footer{
+  margin-top:clamp(64px,9vw,120px); padding:34px 0 60px;
+  border-top:1px solid var(--rule); color:var(--muted); font-size:.88rem;
+}
+footer .row{display:flex; flex-wrap:wrap; gap:10px 26px; align-items:baseline;}
+footer .row .spacer{flex:1 1 auto;}
+
+@media (max-width:640px){
+  body{font-size:16px;}
+  tbody th{min-width:170px; font-size:.84rem;}
+  tbody th .detail{display:none;}
+}
+@media (prefers-reduced-motion:reduce){
+  *{animation:none !important; transition:none !important;}
+}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap">
+    <div class="masthead">
+      <span class="wordmark">ProfileOS</span>
+      <span class="operator">מוגדרת עבור דאדי בע״מ · בית אל</span>
+      <button class="theme-toggle" id="theme" type="button">מצב תצוגה</button>
+    </div>
+
+    <h1>הנדסה של אלומיניום,<br>מהשרטוט ועד המסור.</h1>
+
+    <p class="lede">
+      חבילה אחת שלוקחת חתך DXF של ספק, מודדת את תכונותיו, בונה ממנו חלון,
+      פורסת את המוטות והזכוכית, ומוציאה את קוד המכונה — <strong>ומוכיחה
+      כל שלב בדרך</strong>. תוכנית חיתוך שאף שולחן זכוכית לא יכול לבצע נפסלת
+      לפני שהיא מגיעה לרצפת הייצור.
+    </p>
+
+    <dl class="claim" id="claim"></dl>
+  </div>
+</header>
+
+<div class="wrap"><div class="web"></div></div>
+
+<main>
+
+<!-- ── engines ─────────────────────────────────────────────────────────── -->
+<section id="engines">
+  <div class="wrap">
+    <span class="eyebrow">מה יש בפנים</span>
+    <h2 style="margin-top:12px">שבעה־עשר מנועים, קו ייצור אחד</h2>
+    <p class="sub">
+      כל מנוע עומד בפני עצמו וניתן להפעלה משורת הפקודה, מה־API או מהמסך.
+      הסדר כאן הוא הסדר שבו עבודה זזה במפעל.
+    </p>
+
+    <div class="grid cols-3">
+      <div class="card">
+        <span class="tag">גאומטריה</span>
+        <h3>קריאת חתכים</h3>
+        <p>
+          ייבוא DXF, שחזור מדויק של קשתות bulge כולל כיוון שעון, שרשור קונטורים,
+          וזיהוי חללים לפי עומק קינון — לא לפי ניחוש.
+        </p>
+        <ul>
+          <li>סריקת עובי דופן בקרני חיפוש</li>
+          <li>איתור ניתוק תרמי אוטומטי</li>
+          <li>תיקון פערים ואימות סגירות</li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <span class="tag">חישוב סטטי</span>
+        <h3>תכונות חתך מדויקות</h3>
+        <p>
+          שטח, מרכז כובד ומומנטי אינרציה באינטגרלי קו מדויקים לפי משפט גרין —
+          כולל חורים — ולא בקירוב רשת.
+        </p>
+        <ul>
+          <li>צירים ראשיים ומודולי חתך פלסטיים</li>
+          <li>קבוע פיתול J ועיוות C_w ב־FEA (Tri6)</li>
+          <li>בדיקות לפי EN 1999-1-1 ומוטת מקסימום</li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <span class="tag">אלמנטים</span>
+        <h3>חלונות, דלתות, קירות מסך</h3>
+        <p>
+          מיקומי מולין וטרברס חופשיים, כנף לכל תא, ורשימת חיתוך שנוצרת מכללי
+          המערכת — כללים שניתן לערוך בלי לגעת בקוד.
+        </p>
+        <ul>
+          <li>ניכויי שקע ומרווחי זיגוג</li>
+          <li>אביזרים וגומיות לפי סוג פתיחה</li>
+          <li>אכיפת זכוכית בטיחות לפי תקן</li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <span class="tag">אופטימיזציה</span>
+        <h3>מוטות — ומוכח</h3>
+        <p>
+          בעיית ה־Cutting Stock נפתרת ב־Gilmore־Gomory עם יצירת עמודות, כך
+          שמספר המוטות <em>מוכח</em> אופטימלי ולא רק "טוב".
+        </p>
+        <ul>
+          <li>פיצוי מסור וזוויות מלוכסנות</li>
+          <li>מלאי שאריות שחוזר לעבודה הבאה</li>
+          <li>נפילה להיוריסטיקה כשאין פותר</li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <span class="tag">זיגוג</span>
+        <h3>זכוכית — ומאומת שניתן לחתוך</h3>
+        <p>
+          שולחן זכוכית חורץ מקצה לקצה ושובר. פריסה שלא ניתן לפרק לחיתוכים
+          כאלה היא גרוטאה, גם אם ניצול השטח שלה מושלם.
+        </p>
+        <ul>
+          <li>אימות גיליוטינה עם ספירת שלבים</li>
+          <li>מודל CP-SAT מדויק לדו־שלבי</li>
+          <li>כיוון גרעין, קיטום קצוות, מפות חיתוך</li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <span class="tag">CNC</span>
+        <h3>עשרה ניבי מכונה</h3>
+        <p>
+          ייצוג ניטרלי אחד של עיבודים, ומתוכו Elumatec, Schüco, Kaban ו־ISO
+          G-code. מכונה חדשה היא דרייבר, לא כתיבה מחדש.
+        </p>
+        <ul>
+          <li>מניעת התנגשות מלחציים</li>
+          <li>פיצוי רדיוס כלי (G41/G42)</li>
+          <li>מאקרו־עיבודים פרמטריים</li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <span class="tag">קטלוגים</span>
+        <h3>ספרייה שהיא שלכם</h3>
+        <p>
+          קליטה של טבלת הספק וחבילת השרטוטים שלו — ואז הצלבה: כל נתון מפורסם
+          מול אותו נתון שנמדד מה־DXF.
+        </p>
+        <ul>
+          <li>קריאת PDF, CSV ו־TSV</li>
+          <li>סתירות מדווחות, לא מוכרעות</li>
+          <li>פרופיל בסתירה לא נכנס לספרייה</li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <span class="tag">מסחר</span>
+        <h3>כתב כמויות והצעות מחיר</h3>
+        <p>
+          פרופילים, זכוכית, גומיות ואביזרים מתגלגלים לכתב כמויות אחד, ומשם
+          להצעת מחיר ללקוח ולבקשות מחיר לספקים.
+        </p>
+        <ul>
+          <li>מחירונים כתוסף חתום — מתעדכן חם</li>
+          <li>מדרגות כמות ומינימום חיוב</li>
+          <li>נייר מכתבים של המפעיל</li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <span class="tag">רצפת ייצור</span>
+        <h3>מעקב אמיתי</h3>
+        <p>
+          כרטיסי עבודה להדפסה, ברקוד Code 128 ו־QR שנוצרים בתוך התוכנה,
+          ומעקב תחנות שיודע לומר איפה העבודה באמת נמצאת.
+        </p>
+        <ul>
+          <li>מעברי מצב נאכפים</li>
+          <li>סריקה שגויה מוסברת</li>
+          <li>מפות חיתוך זכוכית להדפסה</li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <span class="tag">פלטפורמה</span>
+        <h3>מתעדכנת בעצמה</h3>
+        <p>
+          מניפסט חתום, בדיקת חתימה, אימות תוכן — ורק אז התקנה אטומית. כישלון
+          בחבילה אחת מגלגל את כל המנה לאחור.
+        </p>
+        <ul>
+          <li>טעינה חמה בלי לסגור את התוכנה</li>
+          <li>מדיניות AST על קוד תוספים</li>
+          <li>רישוי לא־מקוון + FIDO2/WebAuthn</li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <span class="tag">אינסטלציה</span>
+        <h3>גם צנרת</h3>
+        <p>
+          Darcy-Weisbach עם Colebrook-White, Hazen-Williams, ואיזון לולאות
+          Hardy Cross — לצנרת שנכנסת לבניין לצד האלומיניום.
+        </p>
+      </div>
+
+      <div class="card">
+        <span class="tag">ממשקים</span>
+        <h3>שולחן עבודה, CLI, API</h3>
+        <p>
+          תשע מסכים בעברית וב־RTL, 31 פקודות שורת פקודה ו־18 נקודות קצה
+          ב־REST. אין יכולת שקיימת רק במקום אחד.
+        </p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<div class="wrap"><div class="web"></div></div>
+
+<!-- ── comparison ──────────────────────────────────────────────────────── -->
+<section id="compare">
+  <div class="wrap">
+    <span class="eyebrow">השוואה</span>
+    <h2 style="margin-top:12px">מול התוכנות שכבר עובדות בשוק</h2>
+    <p class="sub">
+      כל טענה על ProfileOS קשורה לסמל אמיתי בקוד ונבדקת לפני שהטבלה נבנית —
+      אם מנוע נמחק, הטענה נופלת באותו commit. השורות של האחרים חלשות בכוונה:
+      הן מתעדות מה שהיצרן מפרסם, ו״לא״ פירושו <em>לא נמצא בחומר הפומבי</em>,
+      לעולם לא ״לא קיים״.
+    </p>
+
+    <div class="controls" id="controls"></div>
+    <div class="table-scroll"><table id="matrix"></table></div>
+    <p class="sub" style="margin-top:12px; font-size:.86rem">
+      הטבלה נגללת בתוך עצמה — שורת הכותרת נשארת מולכם.
+    </p>
+    <div class="legend">
+      <span><span class="mark m-full">כן</span> מתועד</span>
+      <span><span class="mark m-part">חלקי</span> חלקי או מודול בתשלום</span>
+      <span><span class="mark m-no">לא</span> לא נמצא בחומר הפומבי</span>
+      <span><span class="mark m-unk">?</span> לא נבדק</span>
+      <span><span class="star">★</span> הנדסה שאף חבילה מהמושוות לא מתעדת</span>
+    </div>
+  </div>
+</section>
+
+<div class="wrap"><div class="web"></div></div>
+
+<!-- ── verification ────────────────────────────────────────────────────── -->
+<section id="verified">
+  <div class="wrap">
+    <span class="eyebrow">איך זה נבדק</span>
+    <h2 style="margin-top:12px">מול מקורות עצמאיים, לא מול הפלט של עצמנו</h2>
+    <p class="sub">
+      בדיקה שמשווה תוכנה לתוצאה שהיא עצמה הפיקה מוכיחה רק שהיא עקבית.
+      כל מספר כאן נבדק מול משהו שנקבע מחוץ לקוד הזה.
+    </p>
+
+    <div class="grid cols-2">
+      <div class="card">
+        <span class="tag">גאומטריה</span>
+        <h3>מול ezdxf ומול נוסחאות סגורות</h3>
+        <p>
+          קשתות bulge הושוו לחישוב של ezdxf — כך התגלה שמרכז הקשת נפל בצד
+          הלא נכון בסיבוב עם כיוון השעון. תכונות חתך של צורות עם פתרון ידוע
+          (מלבן, זווית, צינור) הושוו לנוסחה.
+        </p>
+      </div>
+      <div class="card">
+        <span class="tag">אופטימיזציה</span>
+        <h3>מול חסמים תחתונים</h3>
+        <p>
+          פריסה שמגיעה לחסם התחתון היא אופטימלית — ואי אפשר להתווכח עם זה.
+          ליריעות נבנה גם חסם ״פריטים גדולים״ שגובר על חסם השטח בעבודות של
+          מעט לוחות גדולים.
+        </p>
+      </div>
+      <div class="card">
+        <span class="tag">זיגוג</span>
+        <h3>מול ערכי U מפורסמים</h3>
+        <p>
+          חישוב EN 673 הושווה לערכי U של הרכבים סטנדרטיים שמפורסמים בתקן
+          ובקטלוגי יצרנים, וחישוב U<sub>w</sub> לפי EN ISO 10077-1 לדוגמאות
+          המחושבות בתקן עצמו.
+        </p>
+      </div>
+      <div class="card">
+        <span class="tag">קטלוגים</span>
+        <h3>מול שגיאה שנשתלה בכוונה</h3>
+        <p>
+          לטבלת ספק הוכנס I<sub>x</sub> שגוי ב־27%. המנוע איתר את הסתירה,
+          שמר את הערך הנמדד, והשאיר את הפרופיל מחוץ לספרייה — בלי שאיש
+          אמר לו איפה לחפש.
+        </p>
+      </div>
+      <div class="card">
+        <span class="tag">חיתוך גיליוטינה</span>
+        <h3>מול הפינוויל</h3>
+        <p>
+          ארבעה מלבנים המסתובבים סביב ריבוע מרכזי ממלאים את הלוח במאה אחוז
+          ואי אפשר לחתוך אותם. המאמת פוסל אותם — וזו הראיה שהוא באמת בודק
+          ולא מסכים עם הפורס.
+        </p>
+      </div>
+      <div class="card">
+        <span class="tag">עדכון עצמי</span>
+        <h3>מקצה לקצה בתהליך אחד</h3>
+        <p>
+          מחירון נחתם, פורסם, נבדק והותקן דרך המסך — ומיד אחר כך מנוע התמחור
+          החזיר מחיר שדקה קודם לא ידע לענות עליו. בלי הפעלה מחדש.
+        </p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<div class="wrap"><div class="web"></div></div>
+
+<!-- ── limitations ─────────────────────────────────────────────────────── -->
+<section id="limits">
+  <div class="wrap">
+    <span class="eyebrow">מה שחסר</span>
+    <h2 style="margin-top:12px">הסייגים, בגוף הדף</h2>
+    <p class="sub">
+      אלה לא הערות שוליים. הם קובעים אם החבילה הזאת יכולה להחליף אצלכם
+      תוכנה קיימת, ולכן הם כתובים כאן ולא בהערת שוליים.
+    </p>
+    <ol class="notes" id="limits-list"></ol>
+  </div>
+</section>
+
+<div class="wrap"><div class="web"></div></div>
+
+<!-- ── run it ──────────────────────────────────────────────────────────── -->
+<section id="run">
+  <div class="wrap">
+    <span class="eyebrow">הפעלה</span>
+    <h2 style="margin-top:12px">מהמאגר עד המסך</h2>
+    <pre><span class="c"># התקנה</span>
+git clone -b claude/aluminum-cad-cam-system-dxfni8 &lt;repo&gt; &amp;&amp; cd ProfileOS
+pip install -e <span class="k">".[all,dev]"</span>
+
+<span class="c"># שולחן העבודה</span>
+profileos ui
+
+<span class="c"># פריסת זכוכית עם אימות חיתוך, וייצוא מפות</span>
+profileos glass nest examples/villa_elevations.json --trim 20 --svg maps/
+
+<span class="c"># בניית ספריית פרופילים מקטלוג הספק</span>
+profileos catalogue ingest --table klil.pdf --drawings dxf/ \
+    --series 4300 --plugin library.json
+
+<span class="c"># השוואת יכולות, ואימות שכל טענה מגובה בקוד</span>
+profileos compare --verify</pre>
+  </div>
+</section>
+
+</main>
+
+<footer>
+  <div class="wrap">
+    <div class="row">
+      <span>ProfileOS · מוגדרת עבור דאדי בע״מ, סולם יעקב 1, בית אל</span>
+      <span class="spacer"></span>
+      <span class="mono" id="build" dir="ltr"></span>
+    </div>
+    <p style="margin-top:14px; max-width:70ch; color:var(--faint); font-size:.83rem">
+      פרטי הקשר נלקחו מספריות עסקים פומביות. שמות המוצרים האחרים המוזכרים כאן
+      הם סימני המסחר של בעליהם, וההשוואה מתעדת חומר פומבי בלבד — דבר ממנה לא
+      נבדק מול התקנה של אף חבילה אחרת.
+    </p>
+  </div>
+</footer>
+
+<script id="data" type="application/json">{"summary":{"capabilities":52,"packages_compared":9,"profileos_implemented":52,"profileos_gaps":0,"not_documented_elsewhere":13,"claims_verified":true,"standing_limitations":5},"areas":[{"id":"geometry","he":"גאומטריה"},{"id":"structural","he":"חישוב סטטי"},{"id":"elements","he":"אלמנטים"},{"id":"glass","he":"זיגוג"},{"id":"optimisation","he":"אופטימיזציה"},{"id":"cnc","he":"CNC"},{"id":"shopfloor","he":"רצפת ייצור"},{"id":"commercial","he":"מסחר"},{"id":"catalogue","he":"קטלוגים"},{"id":"platform","he":"פלטפורמה"},{"id":"adjacent","he":"מעבר לאלומיניום"}],"capabilities":[["geometry","ייבוא חתכים מ-DXF","DXF profile import",0,"FFUUUUFUUU"],["geometry","קשתות מקודדות bulge","Bulge-encoded arcs",0,"FUUUUUUUUU"],["geometry","סריקת עובי דופן","Wall-thickness scan",1,"FNUUUUUUUU"],["structural","תכונות חתך מדויקות","Exact section properties",0,"FPUUUUUUUU"],["structural","מודולי חתך פלסטיים","Plastic section moduli",1,"FNNUUUUUUU"],["structural","פיתול ועיוות ב-FEA","Torsion and warping by FEA",1,"FNNNNNNUNN"],["structural","בדיקות לפי EN 1999-1-1","EN 1999-1-1 member checks",0,"FPUUPUUUUU"],["elements","חלונות ודלתות פרמטריים","Parametric windows and doors",0,"FFFFFFPUFF"],["elements","קירות מסך","Curtain walling",0,"FFFFFFUUUU"],["elements","כללי מערכת ניתנים לעריכה","Editable system rules",1,"FUUUUUUUUU"],["elements","תצוגת תלת-ממד","3D presentation views",0,"FFFUPFUUUU"],["elements","ייצוא glTF של המודל","glTF export of the model",1,"FUUUUUUUUU"],["glass","ספריית הרכבי זכוכית","Glass build-up library",0,"FFFFFFUUUU"],["glass","ערך U לפי EN 673 / 10077","U-value to EN 673 / EN ISO 10077",1,"FFFUFFUUUU"],["glass","תאימות זכוכית בטיחות","Safety-glass compliance",0,"FPUUUUUUUU"],["optimisation","אופטימיזציית חיתוך מוטות","1D bar nesting",0,"FFFFFFPUFF"],["optimisation","תוכנית חיתוך מוכחת אופטימלית","Proven-optimal cutting plans",1,"FNNNUUUUUU"],["optimisation","מלאי שאריות","Off-cut inventory",0,"FFUUUUUUUU"],["optimisation","אופטימיזציית זכוכית ולוחות","2D glass and panel nesting",0,"FFFFUUUUUU"],["optimisation","אימות חיתוך גיליוטינה","Proven-cuttable glass layouts",1,"FNNNNNUUNN"],["cnc","פוסט-פרוססור CNC","CNC post-processing",0,"FFFFFFFFUU"],["cnc","ריבוי ניבי מכונה","Multiple machine dialects",1,"FFFFPUPPUU"],["cnc","מניעת התנגשות מלחציים","Clamp collision avoidance",1,"FUUUUUFPUU"],["cnc","פיצוי רדיוס כלי","Cutter radius compensation",0,"FFUUUUFUUU"],["shopfloor","כרטיסי עבודה","Shop-floor job cards",0,"FFFFUUPPUU"],["shopfloor","ברקוד ו-QR","Barcodes and QR labels",0,"FFFFUUUUUU"],["shopfloor","מעקב ייצור","Production tracking",0,"FUFFUUUUUU"],["shopfloor","מפות חיתוך מודפסות","Printed cutting maps",0,"FFUUUUUUUU"],["commercial","כתב כמויות","Bill of materials",0,"FFFFFFUUFF"],["commercial","הצעות מחיר ללקוח","Customer quotations",0,"FFFFFFNUFF"],["commercial","בקשות מחיר לספקים","Supplier enquiries",0,"FFFUUUUUUU"],["commercial","מחירונים מתחלפים חמים","Hot-swappable price lists",1,"FFFUUUUUUU"],["catalogue","ספריית פרופילים של ספקים","Supplier profile library",0,"FFFFFFUUPP"],["catalogue","קליטת קטלוגים מ-PDF ו-DXF","Catalogue ingestion from PDF and DXF",1,"FNNNNNNNNN"],["catalogue","אימות צולב של קטלוגים","Catalogue cross-verification",1,"FNNNNNNUNN"],["platform","עדכון עצמי חתום","Signed self-update",1,"FFUUUUUUUU"],["platform","טעינה חמה של תוספים","Plugin hot reload",1,"FNNNNNNUNN"],["platform","רישוי לא מקוון","Offline licensing",1,"FPPPUUUUUU"],["platform","אימות במפתח חומרה","Hardware-key authentication",1,"FNNNNNNUNN"],["platform","ממשק REST","REST API",0,"FPUUUUUUUU"],["platform","שורת פקודה לתסריטים","Scriptable command line",1,"FNNNNNNUNN"],["platform","עברית וימין-לשמאל","Hebrew and right-to-left",1,"FNNNNNNNFF"],["platform","קוד מקור בידי המפעיל","Source available to the operator",1,"FNNNNNNNNN"],["adjacent","תכנון צנרת","Pipework sizing",1,"FNNNNNNNNN"],["adjacent","יחידות עומס וספיקה בו-זמנית","Fixture units and simultaneous demand",1,"FUUUUUUUUU"],["adjacent","תכנון דלוחין ואוורור","Drainage and vent sizing",1,"FUUUUUUUUU"],["adjacent","מחזור מים חמים וזנבות","Hot water circulation and dead legs",1,"FUUUUUUUUU"],["adjacent","כתב כמויות לאינסטלציה","Plumbing materials take-off",1,"FUUUUUUUUU"],["adjacent","מלאי, רכש והנהלת חשבונות","Stock, purchasing and the ledger",0,"FPFFUUNNUU"],["adjacent","התאמה משולשת של חשבוניות","Three-way invoice matching",1,"FUUUUUUUUU"],["adjacent","התאמת ספרים למלאי בפועל","Books reconciled to the racks",1,"FNNNUUUUUU"],["adjacent","תכנון קיבולת ומועדי אספקה","Capacity and delivery planning",0,"FPFFUUUUUU"]],"packages":[{"id":"logikal","name":"LogiKal","short":"LogiK","vendor":"Orgadata","origin":"Germany"},{"id":"klaes","name":"Klaes","short":"Klaes","vendor":"Horst Klaes GmbH","origin":"Germany"},{"id":"prefsuite","name":"PrefSuite","short":"PrefS","vendor":"Preference","origin":"Spain"},{"id":"schucal","name":"SchüCal","short":"SchüC","vendor":"Schüco","origin":"Germany"},{"id":"reynapro","name":"ReynaPro","short":"Reyna","vendor":"Reynaers Aluminium","origin":"Belgium"},{"id":"elucad","name":"eluCad","short":"eluCad","vendor":"Elumatec","origin":"Germany"},{"id":"kaban","name":"KBN Control","short":"KBN","vendor":"Kaban Makina","origin":"Turkey"},{"id":"shablul","name":"Shablul","short":"Shabl","vendor":"Israeli vendor","origin":"Israel"},{"id":"alkal","name":"Al-Kal","short":"AlKal","vendor":"Israeli vendor","origin":"Israel"}]}</script>
+<script>
+(function () {
+  "use strict";
+
+  var DATA = JSON.parse(document.getElementById("data").textContent);
+
+  /* ── theme ────────────────────────────────────────────────────────────── */
+  var root = document.documentElement;
+  var stored = null;
+  try { stored = localStorage.getItem("profileos-theme"); } catch (e) {}
+  if (stored === "dark" || stored === "light") root.setAttribute("data-theme", stored);
+
+  document.getElementById("theme").addEventListener("click", function () {
+    var dark = root.getAttribute("data-theme") === "dark" ||
+      (!root.hasAttribute("data-theme") &&
+        window.matchMedia("(prefers-color-scheme: dark)").matches);
+    var next = dark ? "light" : "dark";
+    root.setAttribute("data-theme", next);
+    try { localStorage.setItem("profileos-theme", next); } catch (e) {}
+  });
+
+  /* ── headline figures ─────────────────────────────────────────────────── */
+  var s = DATA.summary;
+  var figures = [
+    ["יכולות ממומשות", s.profileos_implemented + " / " + s.capabilities,
+      "וכל אחת קשורה לסמל בקוד"],
+    ["שאיש אחר לא מתעד", String(s.not_documented_elsewhere),
+      "מתוך " + s.packages_compared + " חבילות שנבדקו"],
+    ["יכולות שחסרות כאן", String(s.profileos_gaps), "רשומות בשמן למטה"],
+    ["מנועים", "17", "קו ייצור אחד"],
+    ["שפות ממשק", "6", "עברית תחילה"]
+  ];
+  document.getElementById("claim").innerHTML = figures.map(function (f, i) {
+    return '<div><dt>' + f[0] + '</dt><dd' + (i === 1 ? ' class="accent"' : '') +
+      '>' + f[1] + '<small>' + f[2] + '</small></dd></div>';
+  }).join("");
+
+  /* ── limitations ──────────────────────────────────────────────────────── */
+  var LIMITS_HE = [
+    ["הקטלוגים המצורפים הם דוגמאות.",
+      "ל־LogiKal יש כ־700 קטלוגי ספקים מאומתים שנבנו לאורך עשורים. מנוע " +
+      "הקליטה כאן מאפשר לבנות ספרייה משלכם ממה שהספקים שלכם כבר מפרסמים — " +
+      "אבל צריך לבנות אותה."],
+    ["פורמטי ה־CNC הקנייניים מעולם לא נחתכו על מכונה פיזית.",
+      "Elumatec NCX/ECX/NCW/DGX, Schüco MCO ו־Kaban KBN נוצרים כאן לפי " +
+      "המפרט, אך לא הורצו על מכונה. אמתו על גרוטאה לפני ייצור."],
+    ["ספר החשבונות הוא הנהלת חשבונות, לא הנהלת חשבונות מאושרת.",
+      "החוק הישראלי קובע דרישות לניהול ספרים ממוחשב ולהפקת חשבוניות מס, " +
+      "ודבר כאן לא הוגש לאישור מולן. השתמשו בו כחשבונאות ניהולית, והמשיכו " +
+      "להפיק מסמכים סטטוטוריים ממה שכבר מאושר."],
+    ["זמני התקן של המתזמן הם ערכי התחלה.",
+      "תאריך שהובטח טוב רק כמו הדקות־לחיתוך שמאחוריו. מדדו כמה עבודות " +
+      "אמיתיות במפעל שלכם וקבעו את הזמנים."],
+    ["ההשוואה מתעדת חומר פומבי בלבד.",
+      "דבר ממנה לא נבדק מול התקנה של חבילה אחרת, ו״לא מתועד״ אינו ״לא קיים״."]
+  ];
+  document.getElementById("limits-list").innerHTML = LIMITS_HE.map(function (l, i) {
+    return '<li><span class="idx">' + String(i + 1).padStart(2, "0") + '</span>' +
+      '<span><strong>' + l[0] + '</strong> ' + l[1] + '</span></li>';
+  }).join("");
+
+  /* ── comparison matrix ────────────────────────────────────────────────── */
+  var AREA_HE = {};
+  DATA.areas.forEach(function (a) { AREA_HE[a.id] = a.he; });
+
+  /* Support levels arrive as one letter per column: see tools/build_site.py. */
+  var MARK = {
+    F: '<span class="mark m-full">כן</span>',
+    P: '<span class="mark m-part">חלקי</span>',
+    N: '<span class="mark m-no">לא</span>',
+    U: '<span class="mark m-unk">?</span>'
+  };
+  var AREA = 0, HE = 1, EN = 2, STAR = 3, MARKS = 4;
+
+  var state = { area: "all", differences: false };
+
+  function rows() {
+    return DATA.capabilities.filter(function (c) {
+      if (state.area !== "all" && c[AREA] !== state.area) return false;
+      if (!state.differences) return true;
+      // A difference is a capability where this suite and at least one
+      // compared package land on opposite sides — not merely one nobody rated.
+      var own = c[MARKS][0] === "F";
+      for (var i = 1; i < c[MARKS].length; i++) {
+        var them = c[MARKS][i];
+        if (them === "U") continue;
+        if (own !== (them === "F")) return true;
+      }
+      return false;
+    });
+  }
+
+  function render() {
+    var list = rows();
+    var head = '<thead><tr><th>יכולת</th><th class="own">ProfileOS</th>' +
+      DATA.packages.map(function (p) {
+        return '<th title="' + p.name + ' — ' + p.vendor + ', ' + p.origin + '">' +
+          p.short + '</th>';
+      }).join("") + '</tr></thead>';
+
+    var body = "", lastArea = null;
+    list.forEach(function (c) {
+      if (c[AREA] !== lastArea) {
+        lastArea = c[AREA];
+        body += '<tr class="area-head"><th colspan="' + (DATA.packages.length + 2) +
+          '">' + (AREA_HE[c[AREA]] || c[AREA]) + '</th></tr>';
+      }
+      var cells = "";
+      for (var i = 1; i < c[MARKS].length; i++) {
+        cells += '<td>' + (MARK[c[MARKS][i]] || MARK.U) + '</td>';
+      }
+      body += '<tr><th>' + c[HE] +
+        (c[STAR] ? ' <span class="star">★</span>' : '') +
+        '<span class="detail">' + c[EN] + '</span></th>' +
+        '<td class="own">' + (MARK[c[MARKS][0]] || MARK.U) + '</td>' +
+        cells + '</tr>';
+    });
+
+    document.getElementById("matrix").innerHTML =
+      head + '<tbody>' + (body || '<tr><td colspan="' + (DATA.packages.length + 2) +
+        '" style="padding:26px;color:var(--muted)">אין שורות בסינון הזה.</td></tr>') +
+      '</tbody>';
+  }
+
+  var controls = document.getElementById("controls");
+  var chips = [{ id: "all", he: "הכול" }].concat(DATA.areas);
+  controls.innerHTML = chips.map(function (a) {
+    return '<button class="chip" type="button" data-area="' + a.id + '" ' +
+      'aria-pressed="' + (a.id === "all") + '">' + (a.he || a.id) + '</button>';
+  }).join("") +
+    '<button class="chip" type="button" id="diff" aria-pressed="false" ' +
+    'style="border-color:var(--rule-firm)">' +
+    'רק מה ששונה</button>';
+
+  controls.addEventListener("click", function (event) {
+    var button = event.target.closest(".chip");
+    if (!button) return;
+    if (button.id === "diff") {
+      state.differences = !state.differences;
+      button.setAttribute("aria-pressed", String(state.differences));
+    } else {
+      state.area = button.dataset.area;
+      controls.querySelectorAll("[data-area]").forEach(function (other) {
+        other.setAttribute("aria-pressed", String(other === button));
+      });
+    }
+    render();
+  });
+
+  render();
+
+  document.getElementById("build").textContent =
+    DATA.summary.capabilities + " capabilities · " +
+    DATA.summary.packages_compared + " packages compared · claims verified";
+})();
+</script>
+</body>
+</html>

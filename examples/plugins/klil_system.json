@@ -1,0 +1,53 @@
+{
+  "kind": "system_rules",
+  "id": "klil-9000",
+  "name": "Klil 9000 series",
+  "version": "1.0",
+  "supplier": "Klil Industries",
+  "frame": {
+    "face_width": 48.0,
+    "mitred_corners": true,
+    "corner_allowance": 0.0,
+    "installation_clearance": 10.0
+  },
+  "sash": {
+    "frame_overlap": 9.0,
+    "rebate_clearance": 2.0,
+    "bottom_clearance": 3.0,
+    "sash_face_width": 34.0
+  },
+  "glass": {
+    "edge_cover": 16.0,
+    "edge_clearance": 3.0,
+    "max_glass_thickness": 32.0,
+    "setting_block": 5.0
+  },
+  "gasket": { "corner_allowance": 35.0, "waste_factor": 1.06, "continuous": true },
+  "mullion": { "face_width": 52.0, "end_deduction": 0.0, "notch_depth": 12.0 },
+  "profiles": {
+    "frame": "KL9000-FRAME",
+    "sash": "KL9000-SASH",
+    "mullion": "KL9000-MULLION",
+    "transom": "KL9000-TRANSOM",
+    "bead": "KL9000-BEAD"
+  },
+  "hardware": {
+    "casement": [
+      { "code": "KL-HNG-100", "name": "Klil friction hinge pair", "quantity": 1, "unit": "pair", "supplier": "klil" },
+      { "code": "KL-HDL-220", "name": "Klil window handle", "quantity": 1, "unit": "pc", "supplier": "klil" }
+    ],
+    "tilt_turn": [
+      { "code": "KL-TT-500", "name": "Klil tilt-and-turn gear", "quantity": 1, "unit": "set", "supplier": "klil" },
+      { "code": "KL-HDL-220", "name": "Klil window handle", "quantity": 1, "unit": "pc", "supplier": "klil" }
+    ],
+    "sliding": [
+      { "code": "KL-ROL-310", "name": "Klil sliding roller", "quantity": 4, "unit": "pc", "supplier": "klil" }
+    ],
+    "door": [
+      { "code": "KL-DHG-700", "name": "Klil door hinge", "quantity": 3, "unit": "pc", "supplier": "klil" },
+      { "code": "KL-MPL-800", "name": "Klil multi-point lock", "quantity": 1, "unit": "pc", "supplier": "klil" }
+    ],
+    "fixed": []
+  },
+  "notes": "Illustrative values. Replace with the figures from the system supplier's technical manual before production use."
+}
