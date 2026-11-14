@@ -171,10 +171,9 @@ LIGHT = Palette(
 )
 
 
-#: The sidebar is graphite in both themes — the frame of the product, the way
-#: a window's anodised frame holds the glass. Its glyphs are painted, so they
-#: take this colour directly.
-SIDEBAR_ICON = "#9BA1AC"
+#: The sidebar's glyphs take the accent, as in macOS: painted, so they are
+#: given the colour directly (re-given on a theme switch).
+SIDEBAR_ICON = "#0071E3"
 
 
 @dataclass
@@ -345,14 +344,22 @@ def stylesheet(palette: Palette, metrics: Metrics = METRICS) -> str:
     # carries it at 4.7:1. Filled surfaces with white text use this one.
     accent_fill = p.accent if light else p.accent_pressed
     # Derived shades, so each palette only has to state its base colours.
-    sidebar_top, sidebar_bottom = ("#1E2128", "#14161B") if light else ("#17191E", "#0F1013")
-    sidebar_text = "#E7E9EE"
-    sidebar_muted = "#8D939E"
-    sidebar_line = "rgba(255,255,255,0.08)"
-    nav_hover = "rgba(255,255,255,0.07)"
-    card_line = "#E6E7EB" if light else "#38383A"
-    header_bg = p.surface if light else "#202022"
-    primary_top = "#1A84F0" if light else "#2A8CFF"
+    # macOS: a light sidebar a shade off the window, glyphs in the accent.
+    sidebar_top = sidebar_bottom = "#EEEEF2" if light else "#1F1F21"
+    sidebar_text = p.text
+    sidebar_muted = "#8A8A8F" if light else "#8E8E93"
+    sidebar_line = "rgba(0,0,0,0.06)" if light else "rgba(255,255,255,0.07)"
+    nav_hover = "rgba(0,0,0,0.05)" if light else "rgba(255,255,255,0.06)"
+    card_line = "transparent"
+    header_bg = p.canvas
+    primary_top = accent_fill
+    # Apple's fills: a translucent grey that works on white and on the canvas.
+    fill = "rgba(118,118,128,0.12)" if light else "rgba(118,118,128,0.24)"
+    fill_hover = "rgba(118,118,128,0.20)" if light else "rgba(118,118,128,0.32)"
+    fill_pressed = "rgba(118,118,128,0.28)" if light else "rgba(118,118,128,0.40)"
+    focus_ring = "rgba(0,113,227,0.55)" if light else "rgba(10,132,255,0.65)"
+    hairline = "rgba(60,60,67,0.12)" if light else "rgba(84,84,88,0.45)"
+    pill = m.control_height // 2 + 2
     row_line = "#F0F0F3" if light else "#333336"
     row_hover = "#F7F7F9" if light else "#323235"
     segment_bg = "#E8E8ED" if light else "#2C2C2E"
@@ -805,6 +812,99 @@ QPushButton#InsightDismiss:hover {{ color: {p.text}; }}
     background: {p.accent_subtle}; border-radius: 6px;
     padding: {m.space(1)}px {m.space(2)}px;
 }}
+
+/* =====================================================================
+   The Apple layer. Grey fills instead of outlines, pills for buttons,
+   white cards that float on the window, a large title on the canvas,
+   hairlines instead of borders. Written last, so it is what shows.
+   ===================================================================== */
+#PageHeader {{ background: {p.canvas}; border: none; }}
+#PageTitle {{ font-size: 30px; font-weight: 800; color: {p.text}; }}
+#PageSubtitle {{ font-size: {m.font_size + 1}px; color: {p.text_muted}; }}
+
+#Card, #FloorCard {{ background: {p.surface}; border: none; border-radius: 18px; }}
+#Canvas {{ border: none; border-radius: 18px; }}
+#CardTitle {{ font-size: {m.font_size + 1}px; font-weight: 700; color: {p.text}; }}
+#Card[stat="true"] #CardTitle {{ font-size: {m.font_size}px; font-weight: 600; color: {p.text_muted}; }}
+#StatValue {{ font-size: 32px; font-weight: 700; color: {p.text}; }}
+#StatLabel {{ font-size: {m.font_size_small + 1}px; color: {p.text_muted}; }}
+#Card[hero="true"] {{ border: none; background: {accent_fill}; }}
+#Card[hero="true"] #StatValue, #Card[hero="true"] #CardTitle, #Card[hero="true"] #StatLabel {{
+    color: #FFFFFF;
+}}
+
+QPushButton {{
+    background: {fill}; border: none; border-radius: {pill}px;
+    color: {p.text}; font-weight: 600; padding: 0 {m.space(5)}px;
+    min-height: {m.control_height + 4}px;
+}}
+QPushButton:hover {{ background: {fill_hover}; }}
+QPushButton:pressed {{ background: {fill_pressed}; }}
+QPushButton:disabled {{ background: {fill}; color: {p.text_faint}; }}
+QPushButton#Primary {{ background: {accent_fill}; color: #FFFFFF; border: none; }}
+QPushButton#Primary:hover {{ background: {p.accent_hover}; }}
+QPushButton#Primary:pressed {{ background: {p.accent_pressed}; }}
+QPushButton#Primary:disabled {{ background: {fill}; color: {p.text_faint}; }}
+QPushButton#Ghost {{ background: transparent; color: {p.accent}; }}
+QPushButton#Ghost:hover {{ background: {p.accent_subtle}; }}
+QPushButton#WhatsApp {{ background: {fill}; color: {whatsapp}; border: none; }}
+QPushButton#WhatsApp:hover {{ background: {whatsapp}; color: #FFFFFF; }}
+QToolButton#MoreButton {{
+    background: {fill}; border: none; border-radius: {pill}px;
+    padding: 6px 16px; color: {p.text}; font-weight: 600;
+}}
+QToolButton#MoreButton:hover {{ background: {fill_hover}; }}
+
+QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox, QPlainTextEdit, QTextEdit, QDateEdit {{
+    background: {fill}; border: 2px solid transparent; border-radius: 10px;
+    min-height: {m.control_height + 2}px;
+}}
+QLineEdit:hover, QSpinBox:hover, QDoubleSpinBox:hover, QComboBox:hover {{
+    border-color: transparent; background: {fill_hover};
+}}
+QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus,
+QPlainTextEdit:focus, QTextEdit:focus, QDateEdit:focus {{
+    border: 2px solid {focus_ring}; background: {p.surface};
+}}
+QLineEdit[invalid="true"] {{ border-color: {p.danger}; }}
+QComboBox QAbstractItemView {{ border: none; border-radius: 12px; padding: 6px; }}
+
+QTableWidget, QTableView, QTreeWidget, QTreeView, QListWidget {{
+    border: none; border-radius: 14px; background: {p.surface};
+    selection-background-color: {p.accent_subtle};
+}}
+QHeaderView::section {{
+    background: transparent; color: {p.text_muted};
+    border: none; border-bottom: 1px solid {hairline};
+    font-size: {m.font_size_small + 1}px; font-weight: 600;
+    padding: {m.space(2)}px {m.space(3)}px;
+}}
+QTableWidget::item, QTreeWidget::item {{ border-bottom: 1px solid {hairline}; }}
+QHeaderView {{ background: transparent; border: none; }}
+QTableCornerButton::section {{ background: transparent; border: none; }}
+
+QFrame#SegmentBar, QTabBar::tab {{ background: {fill}; }}
+QTabBar::tab:selected {{ background: {p.surface}; border: none; border-radius: 7px; }}
+
+#Sidebar {{ background: {sidebar_top}; border-left: 1px solid {sidebar_line}; }}
+#SidebarLogo {{ color: {p.text}; font-size: {m.font_size_large + 4}px; font-weight: 800; }}
+#SidebarVersion {{ border-bottom: none; }}
+#SidebarSection {{ color: {sidebar_muted}; letter-spacing: 0; font-size: {m.font_size_small}px; }}
+QPushButton#NavButton {{ border-radius: 8px; min-height: {m.row_height + 2}px; background: transparent; }}
+QPushButton#NavButton:hover {{ background: {nav_hover}; }}
+QPushButton#NavButton:checked {{ background: {accent_fill}; }}
+QPushButton#SidebarTheme {{ border-radius: 0; background: transparent; min-height: 0; font-weight: 500; }}
+#Sidebar #SidebarFooter {{ color: {p.text_faint}; }}
+#Sidebar #SidebarSafety {{ color: {p.success}; }}
+#Sidebar #SidebarSafety[state="warn"] {{ color: {p.warning}; }}
+#Sidebar #SidebarSafety[state="danger"] {{ color: {p.danger}; }}
+#Sidebar QScrollBar::handle:vertical {{ background: {scroll_handle}; }}
+
+#InsightRow {{ background: {p.canvas}; border: none; border-radius: 14px; }}
+QPushButton#PipeStep {{ border: none; background: {p.surface}; border-radius: 14px; }}
+QStatusBar {{ background: {p.canvas}; border-top: none; }}
+QMenu {{ border: none; border-radius: 12px; padding: 6px; }}
+QMenu::item {{ border-radius: 7px; padding: 7px 18px; }}
 """
 
 

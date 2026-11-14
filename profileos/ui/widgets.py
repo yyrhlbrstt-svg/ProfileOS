@@ -151,12 +151,39 @@ class _NumberFieldPolish(QObject):
         return False
 
 
+class _CardShadow(QObject):
+    """A soft shadow under every card, so it floats on the window the way a
+    panel does on macOS. Only on cards that hold no scrolling list, editor or
+    3D view: a shadow repaints everything inside it on every change, and a
+    long table or a live model would pay for it on every scroll."""
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:  # noqa: N802
+        if (event.type() == QEvent.Type.Polish and isinstance(watched, QFrame)
+                and watched.objectName() in ("Card", "FloorCard")
+                and watched.graphicsEffect() is None):
+            from PySide6.QtWidgets import QAbstractScrollArea, QGraphicsDropShadowEffect
+
+            heavy = watched.findChildren(QAbstractScrollArea)
+            if not heavy and not any(
+                    child.inherits("QQuickWidget") or child.inherits("QOpenGLWidget")
+                    for child in watched.findChildren(QWidget)):
+                shadow = QGraphicsDropShadowEffect(watched)
+                shadow.setBlurRadius(28)
+                shadow.setOffset(0, 4)
+                shadow.setColor(QColor(0, 0, 0, 22))
+                watched.setGraphicsEffect(shadow)
+        return False
+
+
 def install_number_field_polish(application: QApplication) -> None:
-    """Install :class:`_NumberFieldPolish` once per application."""
+    """Install :class:`_NumberFieldPolish` (and the cards' shadows) once per application."""
     if getattr(application, "_number_field_polish", None) is None:
         polish = _NumberFieldPolish(application)
         application.installEventFilter(polish)
         application._number_field_polish = polish
+        shadow = _CardShadow(application)
+        application.installEventFilter(shadow)
+        application._card_shadow = shadow
 
 
 class StatRow(QWidget):

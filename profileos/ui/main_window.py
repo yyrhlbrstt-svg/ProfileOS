@@ -91,8 +91,12 @@ class NavButton(QPushButton):
         self.label.setVisible(not collapsed)
         self.setToolTip(self._full_text if collapsed else "")
 
-    def restyle(self, colour: str, active: str) -> None:
+    #: The name's own colour, when it is not the glyph's (set per theme).
+    _text = ""
+
+    def restyle(self, colour: str, active: str, text: str = "") -> None:
         self._colour, self._active = colour, active
+        self._text = text
         self._paint()
 
     def _paint(self) -> None:
@@ -102,8 +106,12 @@ class NavButton(QPushButton):
         name = PAGE_ICONS.get(self._page_title)
         if name:
             self.glyph.setPixmap(pixmap(name, colour))
+        # macOS: the glyph in the accent, the name in the text colour; both
+        # white on the selected page. An empty colour leaves the theme's own.
+        text = self._active if self.isChecked() else self._text
         self.label.setStyleSheet(
-            f"color: {colour}; font-weight: {600 if self.isChecked() else 500};"
+            (f"color: {text}; " if text else "")
+            + f"font-weight: {600 if self.isChecked() else 500};"
         )
 
 
@@ -218,11 +226,11 @@ class Sidebar(QWidget):
         self._titles.append(page_title)
         return button
 
-    def restyle_icons(self, colour: str, active: str) -> None:
+    def restyle_icons(self, colour: str, active: str, text: str = "") -> None:
         """Re-render the glyphs after a theme change — they are painted, not themed."""
         self._icon_colour, self._icon_active = colour, active
         for button in self.buttons:
-            button.restyle(colour, active)
+            button.restyle(colour, active, text)
 
     def finish(self) -> None:
         self._layout.addStretch(1)
@@ -629,8 +637,8 @@ class MainWindow(QMainWindow):
             if application.property("profileos_stylesheet") != sheet:
                 application.setStyleSheet(sheet)
                 application.setProperty("profileos_stylesheet", sheet)
-        # The sidebar is graphite in both themes: its glyphs stay light.
-        self.sidebar.restyle_icons(SIDEBAR_ICON, "#FFFFFF")
+        # Sidebar glyphs in the accent, white on the selected page — macOS.
+        self.sidebar.restyle_icons(palette.accent, "#FFFFFF", palette.text)
         # Painted views hold their own colours, so they need telling directly.
         for page in self.pages:
             page.colours = palette
